@@ -66,3 +66,5 @@ datasets
 
 # Files for kuroko
 !source/isaaclab_assets/isaaclab_assets/robots/kuroko/**
+
+source/isaaclab_assets/isaaclab_assets/robots/kuroko/__pycache__/

@@ -34,7 +34,7 @@ class KurokoRewards(RewardsCfg):
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
-    # Feet-related terms (Kuroko: ankle_l_roll_link, ankle_r_roll_link)
+    # Feet-related terms (Kuroko: ankle_l_yaw_link, ankle_r_yaw_link)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         weight=0.25,
@@ -42,7 +42,7 @@ class KurokoRewards(RewardsCfg):
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names="ankle_.*_roll_link",  # e.g. ankle_l_roll_link, ankle_r_roll_link
+                body_names="ankle_.*_yaw_link",  # e.g. ankle_l_roll_link, ankle_r_roll_link
             ),
             "threshold": 0.4,
         },
@@ -53,11 +53,11 @@ class KurokoRewards(RewardsCfg):
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names="ankle_.*_roll_link",
+                body_names="ankle_.*_yaw_link",
             ),
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                body_names="ankle_.*_roll_link",
+                body_names="ankle_.*_yaw_link",
             ),
         },
     )
@@ -118,7 +118,7 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Scene / robot
         self.scene.robot = KUROKO_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         # height scanner should attach to Kuroko base link (body_link)
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/body_link"
+        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/Root/kuroko/body_link"
 
         # Terrain height scaling
         if self.scene.terrain.terrain_generator is not None:

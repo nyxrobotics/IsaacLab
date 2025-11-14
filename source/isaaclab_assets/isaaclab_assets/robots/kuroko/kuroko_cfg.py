@@ -12,6 +12,7 @@ _KUROKO_USD_PATH = os.path.join(_KUROKO_DIR, "kuroko.usda")
 KUROKO_MINIMAL_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=_KUROKO_USD_PATH,
+        activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             rigid_body_enabled=True,
             max_linear_velocity=10.0,

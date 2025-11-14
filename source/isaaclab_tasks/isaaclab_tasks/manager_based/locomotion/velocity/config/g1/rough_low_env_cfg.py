@@ -101,7 +101,7 @@ class G1Rewards(RewardsCfg):
 
 
 @configclass
-class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+class G1RoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
     rewards: G1Rewards = G1Rewards()
 
     def __post_init__(self):
@@ -152,7 +152,7 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
 
 @configclass
-class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
+class G1RoughLowEnvCfg_PLAY(G1RoughLowEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
@@ -168,7 +168,7 @@ class G1RoughEnvCfg_PLAY(G1RoughEnvCfg):
             self.scene.terrain.terrain_generator.num_rows = 5
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
-
+            
         self.commands.base_velocity.ranges.lin_vel_x = (1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)

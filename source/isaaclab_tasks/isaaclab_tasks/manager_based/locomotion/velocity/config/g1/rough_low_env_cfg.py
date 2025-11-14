@@ -111,6 +111,10 @@ class G1RoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.robot = G1_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
 
+        # Terrain height scaling
+        if self.scene.terrain.terrain_generator is not None:
+            self.scene.terrain.terrain_generator.difficulty_range = (0, 0.0001)
+
         # Randomization
         self.events.push_robot = None
         self.events.add_base_mass = None

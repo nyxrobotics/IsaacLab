@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import math
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -127,14 +128,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "chest_link")
+        base_paths = find_prim_paths(usd_path, "body_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("chest_link not found in USD!")
+            raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]         # /Root/kuroko/chest_link
-        base_link_name = os.path.basename(base_link_full)  # chest_link
+        base_link_full = base_paths[0]         # /Root/kuroko/body_link
+        base_link_name = os.path.basename(base_link_full)  # body_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
@@ -210,7 +211,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.push_robot = None
         self.events.add_base_mass = None
 
-        self.events.reset_robot_joints.params["position_range"] = (0.75, 1.25)
+        # Randomize initial joint angles
+        self.events.reset_robot_joints.params["position_range"] = (-0.25 * math.pi, 0.25 * math.pi)
+        self.events.reset_robot_joints.params["velocity_range"] = (-0.25 * math.pi, 0.25 * math.pi)
 
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},

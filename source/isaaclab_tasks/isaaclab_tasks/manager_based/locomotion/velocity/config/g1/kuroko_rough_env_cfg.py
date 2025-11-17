@@ -127,14 +127,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "body_link")
+        base_paths = find_prim_paths(usd_path, "chest_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("body_link not found in USD!")
+            raise RuntimeError("chest_link not found in USD!")
 
-        base_link_full = base_paths[0]         # /Root/kuroko/body_link
-        base_link_name = os.path.basename(base_link_full)  # body_link
+        base_link_full = base_paths[0]         # /Root/kuroko/chest_link
+        base_link_name = os.path.basename(base_link_full)  # chest_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
@@ -192,6 +192,16 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Base contact link:", base_link_name)
 
         # -----------------------------------------------------------
+        # 6. Explosion termination: use base_link as reference body
+        # -----------------------------------------------------------
+        if hasattr(self.terminations, "robot_exploded"):
+            self.terminations.robot_exploded.params["asset_cfg"] = SceneEntityCfg(
+                "robot",
+                body_names=[base_link_name],
+            )
+
+
+        # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------
         if self.scene.terrain.terrain_generator is not None:
@@ -200,7 +210,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.push_robot = None
         self.events.add_base_mass = None
 
-        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
+        self.events.reset_robot_joints.params["position_range"] = (0.75, 1.25)
 
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},

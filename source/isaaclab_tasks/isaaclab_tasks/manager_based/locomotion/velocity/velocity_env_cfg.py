@@ -263,6 +263,15 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
     )
+    robot_exploded = DoneTerm(
+        func=mdp.robot_exploded,
+        params={
+            "minimum_height": 0.05,
+            "limit_angle": 1.2,  # ≒ 70 deg
+            "asset_cfg": SceneEntityCfg("robot"),  # name だけ使われる
+        },
+        time_out=False,
+    )
 
 
 @configclass

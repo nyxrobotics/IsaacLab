@@ -156,3 +156,38 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
     return torch.any(
         torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold, dim=1
     )
+# isaaclab/envs/mdp/terminations.py
+
+from isaaclab.managers import SceneEntityCfg
+
+def robot_exploded(
+    env: "ManagerBasedRLEnv",
+    minimum_height: float,
+    limit_angle: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate when robot is clearly in an exploded state.
+
+    - base height が低すぎる
+    - 傾きが大きすぎる
+    - 数値が NaN / Inf になっている
+    """
+    # 公式の bad_orientation / root_height_below_minimum と同じ取り方
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # root pos / projected gravity
+    root_pos = asset.data.root_pos_w          # (num_envs, 3)
+    proj_g   = asset.data.projected_gravity_b # (num_envs, 3)
+
+    # 1) 数値が壊れている (NaN / Inf)
+    bad_numeric = (~torch.isfinite(root_pos).all(dim=-1)) | (~torch.isfinite(proj_g).all(dim=-1))
+
+    # 2) 高さが低すぎる
+    bad_height = root_pos[:, 2] < minimum_height
+
+    # 3) 傾きが limit_angle を超える
+    #    bad_orientation と同じく projected_gravity_b を使う
+    tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
+    bad_tilt = tilt > limit_angle
+
+    return bad_numeric | bad_height | bad_tilt

@@ -172,16 +172,12 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Detected robot prim path BEFORE spawn:", robot_prim_resolved)
 
         # -----------------------------------------------------------
-        # 4. Build raycaster prim path AFTER robot spawn resolves
-        #    The height scanner requires a FULL prim path.
-        # -----------------------------------------------------------
-        # Replace {ENV_REGEX_NS} later when IsaacLab expands this.
-    
-        # self.scene.height_scanner.prim_path = (
-        #     f"{robot_prim_resolved}/{base_link_name}"
-        # )
-        # print("[DEBUG] height_scanner prim_path:", self.scene.height_scanner.prim_path)
-
+        # 4.  Disable synthetic height scanner and its observation.
+        self.scene.height_scanner = None
+        if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "height_scan"):
+            self.observations.policy.height_scan = None
+        if hasattr(self.observations.policy, "contact_forces"):
+            self.observations.policy.contact_forces = None
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------

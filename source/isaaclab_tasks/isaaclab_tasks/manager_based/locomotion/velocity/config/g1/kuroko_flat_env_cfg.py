@@ -56,9 +56,9 @@ class KurokoFlatEnvCfg(KurokoRoughEnvCfg):
         # (already set in KurokoRoughEnvCfg.__post_init__)
 
         # Narrow the command range a bit for easier training on flat terrain
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.8)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.3, 0.3)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
+        self.commands.base_velocity.ranges.ang_vel_z = (-3.0, 3.0)
 
 
 @configclass

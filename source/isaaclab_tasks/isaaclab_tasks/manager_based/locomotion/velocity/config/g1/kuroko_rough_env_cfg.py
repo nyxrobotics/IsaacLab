@@ -211,6 +211,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             terrain_scale = 0.1
 
             # ★ 全ての段差の高さを 0.1 倍にスケールする処理 ★
+            tg.vertical_scale *=  0.1
+            
             for cfg in tg.sub_terrains.values():
                 # Mesh 系 stair: step_height_range
                 if hasattr(cfg, "step_height_range"):
@@ -288,11 +290,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shoulder_l_pitch", "shoulder_r_pitch"],
         )
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.3, 0.3)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
-        self.commands.base_velocity.ranges.ang_vel_z = (-3.0, 3.0)
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.2)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
 
 # ---------------------------------------------------------------------
 # PLAY config

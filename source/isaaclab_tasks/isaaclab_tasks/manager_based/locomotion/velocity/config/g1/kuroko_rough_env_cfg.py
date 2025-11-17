@@ -210,7 +210,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.push_robot = None
         self.events.add_base_mass = None
 
-        self.events.reset_robot_joints.params["position_range"] = (0.1, 0.5)
+        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
 
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
@@ -255,9 +255,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shoulder_l_pitch", "shoulder_r_pitch"],
         )
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.ang_vel_z = (-4.0, 4.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.3, 0.3)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
+        self.commands.base_velocity.ranges.ang_vel_z = (-3.0, 3.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
 

@@ -115,7 +115,7 @@ class KurokoRewards(RewardsCfg):
 # Main environment config
 # ---------------------------------------------------------------------
 @configclass
-class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
+class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
     rewards: KurokoRewards = KurokoRewards()
 
     def __post_init__(self):
@@ -265,7 +265,7 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
 # PLAY config
 # ---------------------------------------------------------------------
 @configclass
-class KurokoRoughLowEnvCfg_PLAY(KurokoRoughLowEnvCfg):
+class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
     """Visualization-friendly settings."""
 
     def __post_init__(self):

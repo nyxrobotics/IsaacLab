@@ -127,14 +127,14 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "chest_link")
+        base_paths = find_prim_paths(usd_path, "body_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("chest_link not found in USD!")
+            raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]         # /Root/kuroko/chest_link
-        base_link_name = os.path.basename(base_link_full)  # chest_link
+        base_link_full = base_paths[0]         # /Root/kuroko/body_link
+        base_link_name = os.path.basename(base_link_full)  # body_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
@@ -176,10 +176,11 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         #    The height scanner requires a FULL prim path.
         # -----------------------------------------------------------
         # Replace {ENV_REGEX_NS} later when IsaacLab expands this.
-        self.scene.height_scanner.prim_path = (
-            f"{robot_prim_resolved}/{base_link_name}"
-        )
-        print("[DEBUG] height_scanner prim_path:", self.scene.height_scanner.prim_path)
+    
+        # self.scene.height_scanner.prim_path = (
+        #     f"{robot_prim_resolved}/{base_link_name}"
+        # )
+        # print("[DEBUG] height_scanner prim_path:", self.scene.height_scanner.prim_path)
 
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
@@ -189,7 +190,17 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact.params["sensor_cfg"].body_names = base_link_name
+        self.terminations.base_contact.params["sensor_cfg"].body_names = [
+            "body_link", "chest_link",
+            "ankle_l_rear_passive_link", "ankle_l_roll_link",
+            "ankle_r_rear_passive_link", "ankle_r_roll_link",
+            "elbow_l_front_link", "elbow_l_rear_link", "elbow_r_front_link","elbow_r_rear_link",
+            "hip_l_pitch_link","hip_r_pitch_link","knee_l_passive_link","knee_r_passive_link",
+            "shin_l_active_link","shin_l_front_passive_link","shin_l_rear_passive_link",
+            "shin_r_active_link","shin_r_front_passive_link","shin_r_rear_passive_link",
+            "shoulder_l_roll_link","shoulder_r_roll_link",
+            "thigh_l_active_link","thigh_l_middle_passive_link", "thigh_l_rear_passive_link",
+            "thigh_r_active_link","thigh_r_middle_passive_link", "thigh_r_rear_passive_link"]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
@@ -225,13 +236,27 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_acc_l2.weight = -1.25e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
-            joint_names=["hip_.*", "shin_.*", "thigh_.*", "ankle_.*"],
+            joint_names=[ 
+                "shin_l_active", "shin_r_active",
+                "shoulder_l_roll", "shoulder_r_roll",
+                "thigh_l_active", "thigh_r_active",
+                "ankle_l_roll", "ankle_l_yaw", "ankle_r_roll", "ankle_r_yaw",
+                "chest", "elbow_l_front", "elbow_l_rear", "elbow_r_front",
+                "elbow_r_rear", "hip_l_pitch", "hip_l_roll", "hip_r_pitch", "hip_r_roll",
+                "shoulder_l_pitch", "shoulder_r_pitch"],
         )
 
         self.rewards.dof_torques_l2.weight = -1.5e-7
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
-            joint_names=["hip_.*", "shin_.*", "thigh_.*", "ankle_.*"],
+            joint_names=[ 
+                "shin_l_active", "shin_r_active",
+                "shoulder_l_roll", "shoulder_r_roll",
+                "thigh_l_active", "thigh_r_active",
+                "ankle_l_roll", "ankle_l_yaw", "ankle_r_roll", "ankle_r_yaw",
+                "chest", "elbow_l_front", "elbow_l_rear", "elbow_r_front",
+                "elbow_r_rear", "hip_l_pitch", "hip_l_roll", "hip_r_pitch", "hip_r_roll",
+                "shoulder_l_pitch", "shoulder_r_pitch"],
         )
 
         self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)

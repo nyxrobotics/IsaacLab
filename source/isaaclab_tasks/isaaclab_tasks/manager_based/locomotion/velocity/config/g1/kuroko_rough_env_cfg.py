@@ -186,17 +186,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "body_link", "chest_link",
-            "ankle_l_rear_passive_link", "ankle_l_roll_link",
-            "ankle_r_rear_passive_link", "ankle_r_roll_link",
-            "elbow_l_front_link", "elbow_l_rear_link", "elbow_r_front_link","elbow_r_rear_link",
-            "hip_l_pitch_link","hip_r_pitch_link","knee_l_passive_link","knee_r_passive_link",
-            "shin_l_active_link","shin_l_front_passive_link","shin_l_rear_passive_link",
-            "shin_r_active_link","shin_r_front_passive_link","shin_r_rear_passive_link",
-            "shoulder_l_roll_link","shoulder_r_roll_link",
-            "thigh_l_active_link","thigh_l_middle_passive_link", "thigh_l_rear_passive_link",
-            "thigh_r_active_link","thigh_r_middle_passive_link", "thigh_r_rear_passive_link"]
+        self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)

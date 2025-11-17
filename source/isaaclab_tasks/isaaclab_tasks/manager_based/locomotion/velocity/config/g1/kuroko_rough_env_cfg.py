@@ -134,7 +134,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         if not base_paths:
             raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]         # /Root/kuroko/body_link
+        base_link_full = base_paths[0]  # /Root/kuroko/body_link
         base_link_name = os.path.basename(base_link_full)  # body_link
 
         print("[DEBUG] base_link_full:", base_link_full)
@@ -173,12 +173,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Detected robot prim path BEFORE spawn:", robot_prim_resolved)
 
         # -----------------------------------------------------------
-        # 4.  Disable synthetic height scanner and its observation.
+        # 4. Disable synthetic height scanner and its observation.
+        # -----------------------------------------------------------
         self.scene.height_scanner = None
         if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "height_scan"):
             self.observations.policy.height_scan = None
         if hasattr(self.observations.policy, "contact_forces"):
             self.observations.policy.contact_forces = None
+
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------
@@ -201,7 +203,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 body_names=[base_link_name],
             )
 
-
         # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------
@@ -211,8 +212,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             terrain_scale = 0.1
 
             # ★ 全ての段差の高さを 0.1 倍にスケールする処理 ★
-            tg.vertical_scale *=  0.1
-            
+            tg.vertical_scale *= terrain_scale
+
             for cfg in tg.sub_terrains.values():
                 # Mesh 系 stair: step_height_range
                 if hasattr(cfg, "step_height_range"):
@@ -238,7 +239,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 setattr(cfg, attr, val * terrain_scale)
                             elif isinstance(val, tuple) and len(val) == 2:
                                 lo, hi = val
-                                setattr(cfg, attr, (lo *terrain_scale, hi * terrain_scale))
+                                setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
         self.events.push_robot = None
         self.events.add_base_mass = None
@@ -267,32 +268,85 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_acc_l2.weight = -1.25e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
-            joint_names=[ 
-                "shin_l_active", "shin_r_active",
-                "shoulder_l_roll", "shoulder_r_roll",
-                "thigh_l_active", "thigh_r_active",
-                "ankle_l_roll", "ankle_l_yaw", "ankle_r_roll", "ankle_r_yaw",
-                "chest", "elbow_l_front", "elbow_l_rear", "elbow_r_front",
-                "elbow_r_rear", "hip_l_pitch", "hip_l_roll", "hip_r_pitch", "hip_r_roll",
-                "shoulder_l_pitch", "shoulder_r_pitch"],
+            joint_names=[
+                "shin_l_active",
+                "shin_r_active",
+                "shoulder_l_roll",
+                "shoulder_r_roll",
+                "thigh_l_active",
+                "thigh_r_active",
+                "ankle_l_roll",
+                "ankle_l_yaw",
+                "ankle_r_roll",
+                "ankle_r_yaw",
+                "chest",
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear",
+                "hip_l_pitch",
+                "hip_l_roll",
+                "hip_r_pitch",
+                "hip_r_roll",
+                "shoulder_l_pitch",
+                "shoulder_r_pitch",
+            ],
         )
 
         self.rewards.dof_torques_l2.weight = -1.5e-7
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
-            joint_names=[ 
-                "shin_l_active", "shin_r_active",
-                "shoulder_l_roll", "shoulder_r_roll",
-                "thigh_l_active", "thigh_r_active",
-                "ankle_l_roll", "ankle_l_yaw", "ankle_r_roll", "ankle_r_yaw",
-                "chest", "elbow_l_front", "elbow_l_rear", "elbow_r_front",
-                "elbow_r_rear", "hip_l_pitch", "hip_l_roll", "hip_r_pitch", "hip_r_roll",
-                "shoulder_l_pitch", "shoulder_r_pitch"],
+            joint_names=[
+                "shin_l_active",
+                "shin_r_active",
+                "shoulder_l_roll",
+                "shoulder_r_roll",
+                "thigh_l_active",
+                "thigh_r_active",
+                "ankle_l_roll",
+                "ankle_l_yaw",
+                "ankle_r_roll",
+                "ankle_r_yaw",
+                "chest",
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear",
+                "hip_l_pitch",
+                "hip_l_roll",
+                "hip_r_pitch",
+                "hip_r_roll",
+                "shoulder_l_pitch",
+                "shoulder_r_pitch",
+            ],
         )
 
         self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.2)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
         self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+
+        # -----------------------------------------------------------
+        # FIX: physics_material の body_names/body_ids 衝突を解消
+        # -----------------------------------------------------------
+        if hasattr(self, "physics_material") and self.physics_material is not None:
+
+            # asset_cfg が無ければ新しく作る
+            if self.physics_material.asset_cfg is None:
+                self.physics_material.asset_cfg = SceneEntityCfg(
+                    "robot",
+                    body_names=[".*"],
+                )
+            else:
+                # body_ids があれば削除
+                if hasattr(self.physics_material.asset_cfg, "body_ids"):
+                    # body_ids フィールドが存在する（SceneEntityCfg仕様）
+                    if getattr(self.physics_material.asset_cfg, "body_ids") not in (None, [], ()):
+                        print("[DEBUG] Removing physics_material.asset_cfg.body_ids (conflict fix)")
+                        self.physics_material.asset_cfg.body_ids = None
+
+                # body_names は .* に強制上書き（最も安全）
+                self.physics_material.asset_cfg.body_names = [".*"]
+
 
 # ---------------------------------------------------------------------
 # PLAY config

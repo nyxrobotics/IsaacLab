@@ -30,14 +30,58 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
     ),
 
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.45),  # Initial Pose
-        joint_pos={".*": 0.0},
+        pos=(0.0, 0.0, 0.32),  # Initial Pose
+        joint_pos={
+            "ankle_l_roll": -0.17453292519943295,
+            "ankle_l_yaw": 0.0,
+            "ankle_r_roll": 0.17453292519943295,
+            "ankle_r_yaw": 0.0,
+            "chest": 0.0,
+            "elbow_l_front": -2.007128639793479,
+            "elbow_l_rear": -2.007128639793479,
+            "elbow_r_front": -2.007128639793479,
+            "elbow_r_rear": -2.007128639793479,
+            "hip_l_pitch": 0.0,
+            "hip_l_roll": 0.17453292519943295,
+            "hip_r_pitch": 0.0,
+            "hip_r_roll": -0.17453292519943295,
+            "shin_l_active": 0.0,
+            "shin_r_active": 0.0,
+            "shoulder_l_pitch": -1.1344640137963142,
+            "shoulder_l_roll": -1.4311699866353502,
+            "shoulder_r_pitch": -1.1344640137963142,
+            "shoulder_r_roll": 1.4311699866353502,
+            "thigh_l_active": 0.0,
+            "thigh_r_active": 0.0
+        },
         joint_vel={".*": 0.0},
     ),
 
     actuators={
         "all": ImplicitActuatorCfg(
-            joint_names_expr=[".*"],   # Actuators
+            joint_names_expr=[
+                "ankle_l_roll",
+                "ankle_l_yaw",
+                "ankle_r_roll",
+                "ankle_r_yaw",
+                "chest",
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear",
+                "hip_l_pitch",
+                "hip_l_roll",
+                "hip_r_pitch",
+                "hip_r_roll",
+                "shin_l_active",
+                "shin_r_active",
+                "shoulder_l_pitch",
+                "shoulder_l_roll",
+                "shoulder_r_pitch",
+                "shoulder_r_roll",
+                "thigh_l_active",
+                "thigh_r_active"
+            ],   # Actuators
             effort_limit_sim=150.0,
             stiffness=60.0,
             damping=3.0,

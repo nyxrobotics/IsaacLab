@@ -127,14 +127,14 @@ class KurokoRoughLowEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "body_link")
+        base_paths = find_prim_paths(usd_path, "chest_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("body_link not found in USD!")
+            raise RuntimeError("chest_link not found in USD!")
 
-        base_link_full = base_paths[0]         # /Root/kuroko/body_link
-        base_link_name = os.path.basename(base_link_full)  # body_link
+        base_link_full = base_paths[0]         # /Root/kuroko/chest_link
+        base_link_name = os.path.basename(base_link_full)  # chest_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)

@@ -21,8 +21,8 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
             enable_gyroscopic_forces=True,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
-            solver_position_iteration_count=8,
+            enabled_self_collisions=True,
+            solver_position_iteration_count=64,
             solver_velocity_iteration_count=1,
             sleep_threshold=0.005,
             stabilization_threshold=0.001,

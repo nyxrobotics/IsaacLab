@@ -206,7 +206,37 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Remaining default settings
         # -----------------------------------------------------------
         if self.scene.terrain.terrain_generator is not None:
-            self.scene.terrain.terrain_generator.difficulty_range = (0, 0.0001)
+            tg = self.scene.terrain.terrain_generator
+            tg.difficulty_range = (0, 1.0)
+            terrain_scale = 0.1
+
+            # ★ 全ての段差の高さを 0.1 倍にスケールする処理 ★
+            for cfg in tg.sub_terrains.values():
+                # Mesh 系 stair: step_height_range
+                if hasattr(cfg, "step_height_range"):
+                    lo, hi = cfg.step_height_range
+                    cfg.step_height_range = (lo * terrain_scale, hi * terrain_scale)
+
+                # Mesh 系 blocks: grid_height_range
+                elif hasattr(cfg, "grid_height_range"):
+                    lo, hi = cfg.grid_height_range
+                    cfg.grid_height_range = (lo * terrain_scale, hi * terrain_scale)
+
+                # HeightField 系: noise_range のように height を含むパラメータにも適用（必要なら）
+                elif hasattr(cfg, "noise_range"):
+                    lo, hi = cfg.noise_range
+                    cfg.noise_range = (lo * terrain_scale, hi * terrain_scale)
+
+                # 他にも "height" を含むパラメータ名があれば自動的に 0.1 倍
+                else:
+                    for attr in dir(cfg):
+                        if "height" in attr and isinstance(getattr(cfg, attr), (float, tuple)):
+                            val = getattr(cfg, attr)
+                            if isinstance(val, float):
+                                setattr(cfg, attr, val * terrain_scale)
+                            elif isinstance(val, tuple) and len(val) == 2:
+                                lo, hi = val
+                                setattr(cfg, attr, (lo *terrain_scale, hi * terrain_scale))
 
         self.events.push_robot = None
         self.events.add_base_mass = None

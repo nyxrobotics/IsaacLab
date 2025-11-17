@@ -24,8 +24,8 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
             enabled_self_collisions=True,
             solver_position_iteration_count=64,
             solver_velocity_iteration_count=1,
-            sleep_threshold=0.005,
-            stabilization_threshold=0.001,
+            sleep_threshold=0.0005,
+            stabilization_threshold=0.0001,
         ),
     ),
 
@@ -68,14 +68,14 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
                 "thigh_l_active",
                 "thigh_r_active",
             ],
-            # Spec: Max Force 3.1 [N·m]
-            effort_limit_sim=3.1,
-            # Spec: Stiffness 310.0
-            stiffness=310.0,
-            # Spec: Damping 8.32416
-            damping=8.32416,
-            # Spec: Maximum Joint Velocity 372.0 [deg/s] ≈ 6.49 [rad/s]
-            velocity_limit_sim=6.492624817418905
+            # Spec: Max Force 8.9 [N·m]
+            effort_limit_sim=8.9,
+            # Spec: Stiffness 889.99994
+            stiffness=889.99994,
+            # Spec: Damping 22.51299
+            damping=22.51299,
+            # Spec: Maximum Joint Velocity 395.0 [deg/s] ≈ 6.89 [rad/s]
+            velocity_limit_sim=6.894050545377602
         ),
 
         # XH430-W210
@@ -97,14 +97,14 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
                 "shoulder_l_pitch",
                 "shoulder_r_pitch",
             ],
-            # Spec: Max Force 8.9 [N·m]
-            effort_limit_sim=8.9,
-            # Spec: Stiffness 889.99994
-            stiffness=889.99994,
-            # Spec: Damping 22.51299
-            damping=22.51299,
-            # Spec: Maximum Joint Velocity 395.0 [deg/s] ≈ 6.89 [rad/s]
-            velocity_limit_sim=6.894050545377602
+            # Spec: Max Force 3.1 [N·m]
+            effort_limit_sim=3.1,
+            # Spec: Stiffness 310.0
+            stiffness=310.0,
+            # Spec: Damping 8.32416
+            damping=8.32416,
+            # Spec: Maximum Joint Velocity 372.0 [deg/s] ≈ 6.49 [rad/s]
+            velocity_limit_sim=6.492624817418905
         ),
     },
 )

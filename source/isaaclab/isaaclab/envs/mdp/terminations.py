@@ -177,11 +177,18 @@ def robot_exploded(
 
     # root pos / projected gravity
     root_pos = asset.data.root_pos_w          # (num_envs, 3)
+    root_quat = asset.data.root_link_quat_w
+    root_lin_vel = asset.data.root_vel_w
+    root_ang_vel =  asset.data.root_link_ang_vel_w
     proj_g   = asset.data.projected_gravity_b # (num_envs, 3)
 
     # 1) 数値が壊れている (NaN / Inf)
-    bad_numeric = (~torch.isfinite(root_pos).all(dim=-1)) | (~torch.isfinite(proj_g).all(dim=-1))
-
+    bad_numeric = (~torch.isfinite(root_pos).all(dim=-1)) \
+        | (~torch.isfinite(proj_g).all(dim=-1)) \
+        | (~torch.isfinite(root_quat).all(dim=-1)) \
+        | (~torch.isfinite(root_lin_vel).all(dim=-1)) \
+        | (~torch.isfinite(root_ang_vel).all(dim=-1))
+        
     # 2) 高さが低すぎる
     bad_height = root_pos[:, 2] < minimum_height
 

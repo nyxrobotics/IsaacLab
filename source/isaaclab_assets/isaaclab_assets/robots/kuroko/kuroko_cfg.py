@@ -1,5 +1,3 @@
-# source/isaaclab_assets/isaaclab_assets/robots/kuroko/kuroko_cfg.py
-
 from isaaclab.assets.articulation import ArticulationCfg
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
@@ -58,7 +56,26 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
     ),
 
     actuators={
-        "all": ImplicitActuatorCfg(
+        # xm540_w150
+        "xm540_w150": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "shin_l_active",
+                "shin_r_active",
+                "shoulder_l_roll",
+                "shoulder_r_roll",
+                "thigh_l_active",
+                "thigh_r_active",
+            ],
+            # from spec: Max Force: 3.1
+            effort_limit_sim=3.1,
+            # from spec: Stiffness: 310.0
+            stiffness=310.0,
+            # from spec: Damping: 8.32416
+            damping=8.32416,
+        ),
+
+        # xh430_w210
+        "xh430_w210": ImplicitActuatorCfg(
             joint_names_expr=[
                 "ankle_l_roll",
                 "ankle_l_yaw",
@@ -73,18 +90,15 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
                 "hip_l_roll",
                 "hip_r_pitch",
                 "hip_r_roll",
-                "shin_l_active",
-                "shin_r_active",
                 "shoulder_l_pitch",
-                "shoulder_l_roll",
                 "shoulder_r_pitch",
-                "shoulder_r_roll",
-                "thigh_l_active",
-                "thigh_r_active"
-            ],   # Actuators
-            effort_limit_sim=150.0,
-            stiffness=60.0,
-            damping=3.0,
+            ],
+            # from spec: Max Force: 8.9
+            effort_limit_sim=8.9,
+            # from spec: Stiffness: 889.99994
+            stiffness=889.99994,
+            # from spec: Damping: 22.51299
+            damping=22.51299,
         ),
     },
 )

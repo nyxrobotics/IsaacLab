@@ -125,6 +125,21 @@ class KurokoRewards(RewardsCfg):
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
     )
 
+    torso_height_limit = RewTerm(
+        func=mdp.torso_height_limit,
+        weight= -2.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=[
+                    "chest_link",
+                    "ankle_l_yaw_link",
+                    "ankle_r_yaw_link",
+                ],
+            ),
+            "min_height": 0.30,
+        },
+    )
 
 # ---------------------------------------------------------------------
 # Main environment config

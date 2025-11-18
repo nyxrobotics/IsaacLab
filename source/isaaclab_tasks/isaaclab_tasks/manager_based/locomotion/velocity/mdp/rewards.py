@@ -104,3 +104,38 @@ def track_ang_vel_z_world_exp(
     asset = env.scene[asset_cfg.name]
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
+
+
+def torso_height_limit(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    min_height: float,
+) -> torch.Tensor:
+    """Penalize if torso (chest_link) gets too close to ankles.
+
+    height = z(chest_link) - min(z(ankle_l_yaw_link), z(ankle_r_yaw_link))
+    penalty = relu(min_height - height)
+    """
+
+    # robot articulation
+    asset = env.scene[asset_cfg.name]  # usually "robot"
+
+    # world positions of all bodies: (num_envs, num_bodies, 3)
+    body_pos_w = asset.data.body_pos_w
+
+    # indices resolved from body_names in SceneEntityCfg
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    chest_z = body_pos_w[:, chest_id, 2]                  # (num_envs,)
+    ankles_z = body_pos_w[:, ankle_ids, 2]                # (num_envs, 2)
+    min_ankle_z = ankles_z.min(dim=-1).values            # (num_envs,)
+
+    # relative height (>= 0 が望ましい)
+    rel_height = chest_z - min_ankle_z
+
+    # しきい値より低い分だけペナルティ
+    penalty = (min_height - rel_height).clamp(min=0.0)
+
+    # RewardTerm の weight と掛け算されるので、ここでは負の値を返す
+    return -penalty

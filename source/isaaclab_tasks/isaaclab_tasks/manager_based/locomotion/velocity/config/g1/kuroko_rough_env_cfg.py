@@ -143,7 +143,7 @@ class KurokoRewards(RewardsCfg):
                     "ankle_r_yaw_link",
                 ],
             ),
-            "min_height": 0.31517,
+            "min_height": 0.3,
         },
     )
 

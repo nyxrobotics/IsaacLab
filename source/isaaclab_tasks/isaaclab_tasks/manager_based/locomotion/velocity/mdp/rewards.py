@@ -137,5 +137,5 @@ def torso_height_limit(
     # しきい値より低い分だけペナルティ
     penalty = (min_height - rel_height).clamp(min=0.0)
 
-    # RewardTerm の weight と掛け算されるので、ここでは負の値を返す
-    return -penalty
+    # RewardTerm の weight(<0) と掛け算されるので、ここでは正の値を返す
+    return penalty

@@ -67,12 +67,14 @@ class KurokoRewards(RewardsCfg):
 
     # Filled dynamically later
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=0.25,
+        func=mdp.feet_air_time_height_biped,
+        weight=+1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
-            "threshold": 0.4,
+            "asset_cfg": SceneEntityCfg("robot", body_names=[]),
+            "desired_lift_time": 0.2,
+            "desired_lift_height": 0.005,
         },
     )
 
@@ -133,7 +135,7 @@ class KurokoRewards(RewardsCfg):
 
     torso_height_limit = RewTerm(
         func=mdp.torso_height_limit,
-        weight= -10.0,
+        weight= -1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -143,7 +145,7 @@ class KurokoRewards(RewardsCfg):
                     "ankle_r_yaw_link",
                 ],
             ),
-            "min_height": 0.3,
+            "min_height": 0.32,
         },
     )
 
@@ -220,6 +222,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------
         self.rewards.feet_air_time.params["sensor_cfg"].body_names = ankle_names
+        self.rewards.feet_air_time.params["asset_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 

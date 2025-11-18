@@ -105,7 +105,6 @@ def track_ang_vel_z_world_exp(
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
 
-
 def torso_height_limit(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -139,3 +138,72 @@ def torso_height_limit(
 
     # RewardTerm の weight(<0) と掛け算されるので、ここでは正の値を返す
     return penalty
+
+def feet_air_time_height_biped(
+    env,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    desired_lift_time: float,
+    desired_lift_height: float,
+) -> torch.Tensor:
+    """Reward for foot lift height × single-stance air-time for bipeds.
+
+    If commanded motion (vx, vy, yaw) is extremely small, the agent is not
+    required to lift its feet (reward = 0).
+    """
+    # --------------------------------------------------------
+    # 0) commanded motion check (vx, vy, yaw)
+    # --------------------------------------------------------
+    cmd = env.command_manager.get_command(command_name)  # typically (N, 3): vx, vy, yaw
+
+    xy_speed = torch.norm(cmd[:, :2], dim=1)
+    yaw_speed = torch.abs(cmd[:, 2])
+
+    # No step is required if both xy and yaw motions are very small
+    no_step_required = (xy_speed <= 0.001) & (yaw_speed <= 0.001)
+
+    # --------------------------------------------------------
+    # 1) air-time part
+    # --------------------------------------------------------
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+
+    in_contact = contact_time > 0.0
+    in_mode_time = torch.where(in_contact, contact_time, air_time)
+
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1
+
+    base_reward = torch.min(
+        torch.where(single_stance.unsqueeze(-1), in_mode_time, torch.zeros_like(in_mode_time)),
+        dim=1,
+    )[0]
+    base_reward = torch.clamp(base_reward, max=desired_lift_time)
+
+    # --------------------------------------------------------
+    # 2) foot-lift (height difference)
+    # --------------------------------------------------------
+    robot = env.scene[asset_cfg.name]
+    body_pos_w = robot.data.body_pos_w
+
+    left_id, right_id = asset_cfg.body_ids
+    left_z = body_pos_w[:, left_id, 2]
+    right_z = body_pos_w[:, right_id, 2]
+
+    foot_lift = torch.abs(left_z - right_z)  # height difference
+
+    lift_factor = foot_lift / (desired_lift_height + 1e-6)
+    lift_factor = torch.clamp(lift_factor, max=1.0)
+
+    lift_factor = torch.where(single_stance, lift_factor, torch.zeros_like(lift_factor))
+
+    reward = base_reward * lift_factor
+
+    # --------------------------------------------------------
+    # 3) Override reward when no stepping is required
+    # --------------------------------------------------------
+    reward = torch.where(no_step_required, torch.zeros_like(reward), reward)
+
+    return reward

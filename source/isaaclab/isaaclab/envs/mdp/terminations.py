@@ -162,13 +162,11 @@ from isaaclab.managers import SceneEntityCfg
 
 def robot_exploded(
     env: "ManagerBasedRLEnv",
-    minimum_height: float,
     limit_angle: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Terminate when robot is clearly in an exploded state.
 
-    - base height が低すぎる
     - 傾きが大きすぎる
     - 数値が NaN / Inf になっている
     """
@@ -189,12 +187,10 @@ def robot_exploded(
         | (~torch.isfinite(root_lin_vel).all(dim=-1)) \
         | (~torch.isfinite(root_ang_vel).all(dim=-1))
         
-    # 2) 高さが低すぎる
-    bad_height = root_pos[:, 2] < minimum_height
 
-    # 3) 傾きが limit_angle を超える
+    # 2) 傾きが limit_angle を超える
     #    bad_orientation と同じく projected_gravity_b を使う
     tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
     bad_tilt = tilt > limit_angle
 
-    return bad_numeric | bad_height | bad_tilt
+    return bad_numeric | bad_tilt

@@ -266,7 +266,6 @@ class TerminationsCfg:
     robot_exploded = DoneTerm(
         func=mdp.robot_exploded,
         params={
-            "minimum_height": 0.05,
             "limit_angle": 1.2,  # ≒ 70 deg
             "asset_cfg": SceneEntityCfg("robot"),  # name だけ使われる
         },

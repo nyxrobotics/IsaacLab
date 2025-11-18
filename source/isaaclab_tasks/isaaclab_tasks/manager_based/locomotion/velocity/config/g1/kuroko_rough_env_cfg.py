@@ -87,7 +87,7 @@ class KurokoRewards(RewardsCfg):
 
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-1.0,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_roll",
                 "ankle_l_yaw",
@@ -95,13 +95,19 @@ class KurokoRewards(RewardsCfg):
                 "ankle_r_yaw"])},
     )
 
-    joint_deviation_hip = RewTerm(
+    joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
+                "hip_r_pitch"])},
+    )
+
+    joint_deviation_hip_roll = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.2,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
-                "hip_r_pitch",
                 "hip_r_roll"])},
     )
 
@@ -127,7 +133,7 @@ class KurokoRewards(RewardsCfg):
 
     torso_height_limit = RewTerm(
         func=mdp.torso_height_limit,
-        weight= -2.0,
+        weight= -10.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -137,7 +143,7 @@ class KurokoRewards(RewardsCfg):
                     "ankle_r_yaw_link",
                 ],
             ),
-            "min_height": 0.30,
+            "min_height": 0.31517,
         },
     )
 
@@ -217,7 +223,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
         self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
@@ -270,13 +275,13 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 lo, hi = val
                                 setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
-        self.events.push_robot = None
-        self.events.add_base_mass = None
 
         # Randomize initial joint angles
+        self.events.push_robot = None
+        self.events.add_base_mass = None
         self.events.reset_robot_joints.params["position_range"] = (-0.25 * math.pi, 0.25 * math.pi)
         self.events.reset_robot_joints.params["velocity_range"] = (-0.25 * math.pi, 0.25 * math.pi)
-
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {

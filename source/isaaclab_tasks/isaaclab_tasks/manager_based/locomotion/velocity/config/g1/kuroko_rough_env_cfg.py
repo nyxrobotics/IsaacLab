@@ -65,16 +65,37 @@ class KurokoRewards(RewardsCfg):
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
-    # Filled dynamically later
+    joint_deviation_torso = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.02,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
+    )
+
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_height_biped,
-        weight=+1.0,
+        weight=0.4,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
             "asset_cfg": SceneEntityCfg("robot", body_names=[]),
-            "desired_lift_time": 0.2,
-            "desired_lift_height": 0.005,
+            "desired_lift_time": 0.3,
+            "desired_lift_height": 0.008,
+        },
+    )
+
+    torso_height_limit = RewTerm(
+        func=mdp.torso_height_limit,
+        weight= -0.4,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=[
+                    "body_link",
+                    "ankle_l_yaw_link",
+                    "ankle_r_yaw_link",
+                ],
+            ),
+            "min_height": 0.32,
         },
     )
 
@@ -87,35 +108,17 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    dof_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "ankle_l_roll",
-                "ankle_l_yaw",
-                "ankle_r_roll",
-                "ankle_r_yaw"])},
-    )
-
-    joint_deviation_hip_pitch = RewTerm(
+    joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.4,
+        weight=-0.05,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
     )
 
-    joint_deviation_hip_roll = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "hip_l_roll",
-                "hip_r_roll"])},
-    )
-
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shin_l_active",
                 "shin_r_active",
@@ -127,27 +130,7 @@ class KurokoRewards(RewardsCfg):
                 "elbow_r_rear",])},
     )
 
-    joint_deviation_torso = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
-    )
 
-    torso_height_limit = RewTerm(
-        func=mdp.torso_height_limit,
-        weight= -1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[
-                    "chest_link",
-                    "ankle_l_yaw_link",
-                    "ankle_r_yaw_link",
-                ],
-            ),
-            "min_height": 0.32,
-        },
-    )
 
 # ---------------------------------------------------------------------
 # Main environment config
@@ -165,14 +148,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "chest_link")
+        base_paths = find_prim_paths(usd_path, "body_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("chest_link not found in USD!")
+            raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]  # /Root/kuroko/chest_link
-        base_link_name = os.path.basename(base_link_full)  # chest_link
+        base_link_full = base_paths[0]  # /Root/kuroko/body_link
+        base_link_name = os.path.basename(base_link_full)  # body_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
@@ -297,12 +280,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2.weight = 0.0
+        self.rewards.lin_vel_z_l2.weight = -1.0e-7
+        self.rewards.lin_acc_z_l2 = None
+        self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.flat_orientation_l2.weight = -0.1
         self.rewards.action_rate_l2.weight = -0.005
 
-        self.rewards.dof_acc_l2.weight = -1.25e-7
+        self.rewards.dof_acc_l2.weight = -2.0e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
@@ -330,7 +315,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],
         )
 
-        self.rewards.dof_torques_l2.weight = -1.5e-7
+        self.rewards.dof_torques_l2.weight = -1.0e-7
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
@@ -360,7 +345,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.2)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        # self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消

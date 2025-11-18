@@ -45,20 +45,10 @@ class KurokoFlatEnvCfg(KurokoRoughEnvCfg):
         # (picked conservative values; feel free to tune)
         # ------------------------------------------------------------------
 
-        # Angular velocity tracking is slightly down-weighted on flat terrain
-        self.rewards.track_ang_vel_z_exp.weight = 1.0
-
-        # Penalize vertical motion of the base a bit instead of 0.0
-        if self.rewards.lin_vel_z_l2 is not None:
-            self.rewards.lin_vel_z_l2.weight = -0.2
-
-        # Keep the action rate / joint regularization from rough cfg
-        # (already set in KurokoRoughEnvCfg.__post_init__)
-
-        # Narrow the command range a bit for easier training on flat terrain
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.3, 0.3)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
-        self.commands.base_velocity.ranges.ang_vel_z = (-3.0, 3.0)
+        # Change the command range
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.2)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
 
 @configclass

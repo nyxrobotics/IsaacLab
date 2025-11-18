@@ -88,22 +88,36 @@ class KurokoRewards(RewardsCfg):
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["ankle_.*_roll", "ankle_.*_yaw"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "ankle_l_roll",
+                "ankle_l_yaw",
+                "ankle_r_roll",
+                "ankle_r_yaw"])},
     )
 
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["hip_.*"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "hip_l_pitch",
+                "hip_l_roll",
+                "hip_r_pitch",
+                "hip_r_roll"])},
     )
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["shoulder_.*", "elbow_.*"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "shin_l_active",
+                "shin_r_active",
+                "shoulder_l_roll",
+                "shoulder_r_roll",
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear",])},
     )
-
-    joint_deviation_fingers = None
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -128,14 +142,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = KUROKO_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "body_link")
+        base_paths = find_prim_paths(usd_path, "chest_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("body_link not found in USD!")
+            raise RuntimeError("chest_link not found in USD!")
 
-        base_link_full = base_paths[0]  # /Root/kuroko/body_link
-        base_link_name = os.path.basename(base_link_full)  # body_link
+        base_link_full = base_paths[0]  # /Root/kuroko/chest_link
+        base_link_name = os.path.basename(base_link_full)  # chest_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)

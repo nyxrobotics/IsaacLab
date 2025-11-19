@@ -233,7 +233,9 @@ def feet_air_time_height_biped(
     # --------------------------------------------------------
     # 4) Combine time and height rewards
     # --------------------------------------------------------
-    reward = time_reward + height_reward
+    reward = time_reward * height_reward
+    reward = torch.clamp(reward, min=0.0)
+    reward = torch.sqrt(reward)
 
     # No reward if no step is required
     reward = torch.where(no_step_required, torch.zeros_like(reward), reward)

@@ -79,7 +79,7 @@ class KurokoRewards(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
             "asset_cfg": SceneEntityCfg("robot", body_names=[]),
             "desired_lift_time": 0.3,
-            "desired_lift_height": 0.008,
+            "desired_lift_height": 0.01,
         },
     )
 
@@ -110,7 +110,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.05,
+        weight=-0.01,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
@@ -118,11 +118,25 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.2,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "shin_l_active",
-                "shin_r_active",
+                "shoulder_l_pitch",
                 "shoulder_l_roll",
+                "shoulder_r_pitch",
+                "shoulder_r_roll",
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear",])},
+    )
+
+    joint_acc_arms = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-1.0e-6,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "shoulder_l_pitch",
+                "shoulder_l_roll",
+                "shoulder_r_pitch",
                 "shoulder_r_roll",
                 "elbow_l_front",
                 "elbow_l_rear",
@@ -285,7 +299,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -0.1
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

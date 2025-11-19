@@ -55,13 +55,13 @@ class KurokoRewards(RewardsCfg):
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=2.0,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=13.0,
+        weight=6.5,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
@@ -119,20 +119,6 @@ class KurokoRewards(RewardsCfg):
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "shoulder_l_pitch",
-                "shoulder_l_roll",
-                "shoulder_r_pitch",
-                "shoulder_r_roll",
-                "elbow_l_front",
-                "elbow_l_rear",
-                "elbow_r_front",
-                "elbow_r_rear",])},
-    )
-
-    joint_acc_arms = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-1.0e-6,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
@@ -223,7 +209,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
-        self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
+        self.terminations.base_contact = None
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
@@ -358,9 +345,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],
         )
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.2, 0.2)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         # self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
         # -----------------------------------------------------------

@@ -55,25 +55,25 @@ class KurokoRewards(RewardsCfg):
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=8.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=46.0,
+        weight=13.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.001,
+        weight=-0.01,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
     )
 
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_height_biped,
-        weight=10.0,
+        func=mdp.feet_air_time_height_penalty,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
@@ -84,8 +84,8 @@ class KurokoRewards(RewardsCfg):
     )
 
     torso_height_limit = RewTerm(
-        func=mdp.torso_height_limit,
-        weight= -30.0,
+        func=mdp.torso_height_penalty,
+        weight= 20.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -299,8 +299,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -40.0
-        self.rewards.action_rate_l2.weight = -0.001
+        self.rewards.flat_orientation_l2.weight = -0.4
+        self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(

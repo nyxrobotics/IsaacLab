@@ -105,41 +105,42 @@ def track_ang_vel_z_world_exp(
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
 
-def torso_height_limit(
+def torso_height_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
     min_height: float,
 ) -> torch.Tensor:
-    """Penalize if torso (chest_link) gets too close to ankles.
-
-    height = z(chest_link) - min(z(ankle_l_yaw_link), z(ankle_r_yaw_link))
-    penalty = relu(min_height - height)
+    """Penalty version:
+    - Returns 0 if torso height is sufficient.
+    - Returns negative value proportional to height deficiency (meters).
     """
 
     # robot articulation
-    asset = env.scene[asset_cfg.name]  # usually "robot"
+    asset = env.scene[asset_cfg.name]
 
     # world positions of all bodies: (num_envs, num_bodies, 3)
     body_pos_w = asset.data.body_pos_w
 
-    # indices resolved from body_names in SceneEntityCfg
     chest_id = asset_cfg.body_ids[0]
     ankle_ids = asset_cfg.body_ids[1:]
 
-    chest_z = body_pos_w[:, chest_id, 2]                  # (num_envs,)
-    ankles_z = body_pos_w[:, ankle_ids, 2]                # (num_envs, 2)
-    min_ankle_z = ankles_z.min(dim=-1).values            # (num_envs,)
+    chest_z = body_pos_w[:, chest_id, 2]               # (num_envs,)
+    ankles_z = body_pos_w[:, ankle_ids, 2]             # (num_envs,2)
+    min_ankle_z = ankles_z.min(dim=-1).values          # (num_envs,)
 
-    # relative height (>= 0 が望ましい)
-    rel_height = chest_z - min_ankle_z
+    # torso height above lowest ankle
+    rel_height = chest_z - min_ankle_z                 # (num_envs,)
 
-    # しきい値より低い分だけペナルティ
-    penalty = (min_height - rel_height).clamp(min=0.0)
+    # height deficiency (meters)
+    height_missing = torch.relu(min_height - rel_height)
 
-    # RewardTerm の weight(<0) と掛け算されるので、ここでは正の値を返す
+    # negative penalty
+    penalty = -height_missing
+
     return penalty
 
-def feet_air_time_height_biped(
+
+def feet_air_time_height_penalty(
     env,
     command_name: str,
     sensor_cfg: SceneEntityCfg,
@@ -147,10 +148,11 @@ def feet_air_time_height_biped(
     desired_lift_time: float,
     desired_lift_height: float,
 ) -> torch.Tensor:
-    """Reward for foot lift height * single-stance air-time for bipeds,
-    with a time-varying target height that increases linearly until half of air_time
-    and decreases linearly afterwards.
+    """Penalty version:
+    0 when the foot lifts sufficiently.
+    Negative when lift height or lift time is insufficient.
     """
+
     # --------------------------------------------------------
     # 0) commanded motion check (vx, vy, yaw)
     # --------------------------------------------------------
@@ -159,14 +161,11 @@ def feet_air_time_height_biped(
     yaw_speed = torch.abs(cmd[:, 2])
     no_step_required = (xy_speed <= 0.001) & (yaw_speed <= 0.001)
 
-    # reward tensors (per env)
-    reward = torch.zeros_like(xy_speed)
-    time_reward = torch.zeros_like(xy_speed)
-    height_reward = torch.zeros_like(xy_speed)
+    # output penalties (negative or zero)
+    penalty = torch.zeros_like(xy_speed)
 
-    # If desired_lift_time is effectively zero, return zeros
     if desired_lift_time < 1.0e-6:
-        return reward
+        return penalty
 
     # --------------------------------------------------------
     # 1) air-time part
@@ -175,69 +174,63 @@ def feet_air_time_height_biped(
     air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]      # (N, 2)
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]  # (N, 2)
 
-    in_contact = contact_time > 0.0                                            # (N, 2)
-    in_mode_time = torch.where(in_contact, contact_time, air_time)            # (N, 2)
+    in_contact = contact_time > 0.0
+    in_mode_time = torch.where(in_contact, contact_time, air_time)              # (N, 2)
 
-    single_stance = torch.sum(in_contact.int(), dim=1) == 1                   # (N,)
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1                     # (N,)
 
-    # normalized single-stance time in [0, 1]
-    time_reward = torch.min(
+    # actual single-stance time (N,)
+    actual_time = torch.min(
         torch.where(
             single_stance.unsqueeze(-1),
             in_mode_time,
             torch.zeros_like(in_mode_time),
         ),
         dim=1,
-    )[0]  # (N,)
-    time_reward = torch.clamp(time_reward, max=desired_lift_time) / desired_lift_time
+    )[0]
+
+    # desired_lift_time に対する不足量
+    time_missing = torch.relu(desired_lift_time - actual_time)                  # (N,)
+    time_penalty = -(time_missing / (desired_lift_time + 1e-6))                 # (N,)
 
     # --------------------------------------------------------
-    # 2) Time-varying target foot lift height (per foot)
+    # 2) Time-varying target foot lift height
     # --------------------------------------------------------
-    # progress: 0 → 1 during desired_lift_time
-    progress = torch.clamp(in_mode_time / desired_lift_time, max=1.0)          # (N, 2)
-    # simple "parabolic" peak at progress=0.5: 1 - (2p-1)^2
-    height_limit_scale = 1.0 - (2.0 * progress - 1.0) * (2.0 * progress - 1.0)
-    height_limit_scale = torch.clamp(height_limit_scale, min=0.0)              # (N, 2)
-
-    # target height over time for each foot
-    required_height = desired_lift_height * height_limit_scale                 # (N, 2)
+    progress = torch.clamp(in_mode_time / desired_lift_time, max=1.0)           # (N, 2)
+    height_limit_scale = 1.0 - (2.0 * progress - 1.0) ** 2
+    height_limit_scale = torch.clamp(height_limit_scale, min=0.0)
+    required_height = desired_lift_height * height_limit_scale                  # (N, 2)
 
     # --------------------------------------------------------
-    # 3) Actual foot height difference and height reward
+    # 3) Actual foot height
     # --------------------------------------------------------
     robot = env.scene[asset_cfg.name]
-    body_pos_w = robot.data.body_pos_w                                         # (N, num_bodies, 3)
+    body_pos_w = robot.data.body_pos_w
 
     left_id, right_id = asset_cfg.body_ids
-    left_z = body_pos_w[:, left_id, 2]                                         # (N,)
-    right_z = body_pos_w[:, right_id, 2]                                       # (N,)
-    foot_lift = torch.abs(left_z - right_z)                                    # (N,)
+    left_z = body_pos_w[:, left_id, 2]
+    right_z = body_pos_w[:, right_id, 2]
+    foot_lift = torch.abs(left_z - right_z)                                     # (N,)
+    foot_lift_exp = foot_lift.unsqueeze(-1).expand_as(required_height)          # (N, 2)
 
-    # Expand to match (N, 2) so we can align with required_height per-foot
-    foot_lift_expanded = foot_lift.unsqueeze(-1).expand_as(required_height)    # (N, 2)
+    eps = 1e-6
+    active = (required_height > eps) & single_stance.unsqueeze(-1)              # (N, 2)
 
-    # Avoid division issues for very small required_height by using a mask
-    eps = 1.0e-6
-    active = (required_height > eps) & single_stance.unsqueeze(-1)             # (N, 2)
+    # required_height と比較：不足していたら負
+    height_missing = torch.relu(required_height - foot_lift_exp)                # (N, 2)
+    height_penalty_foot = -(height_missing / (desired_lift_height + eps))       # (N, 2)
 
-    raw_ratio = foot_lift_expanded / (required_height + eps)                   # (N, 2)
-    height_ratio = torch.clamp(raw_ratio, max=1.0)                             # (N, 2)
+    # swing foot only
+    height_penalty_foot = torch.where(active, height_penalty_foot, torch.zeros_like(height_penalty_foot))
 
-    # Only count height where swing/stance pattern is valid
-    height_ratio = torch.where(active, height_ratio, torch.zeros_like(height_ratio))
-
-    # Reduce over feet dimension to get per-env height reward
-    height_reward = torch.max(height_ratio, dim=1)[0]                          # (N,)
+    height_penalty = torch.min(height_penalty_foot, dim=1)[0]                   # (N,)
 
     # --------------------------------------------------------
-    # 4) Combine time and height rewards
+    # 4) total penalty (more negative = worse)
     # --------------------------------------------------------
-    reward = time_reward * height_reward
-    reward = torch.clamp(reward, min=0.0)
-    reward = torch.sqrt(reward)
+    penalty = time_penalty + height_penalty
 
-    # No reward if no step is required
-    reward = torch.where(no_step_required, torch.zeros_like(reward), reward)
+    # no-step → no penalty
+    penalty = torch.where(no_step_required, torch.zeros_like(penalty), penalty)
 
-    return reward
+    return penalty

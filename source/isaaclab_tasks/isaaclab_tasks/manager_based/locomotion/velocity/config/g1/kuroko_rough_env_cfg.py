@@ -73,7 +73,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_height_biped,
-        weight=0.4,
+        weight=10.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
@@ -85,7 +85,7 @@ class KurokoRewards(RewardsCfg):
 
     torso_height_limit = RewTerm(
         func=mdp.torso_height_limit,
-        weight= -0.4,
+        weight= -1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -280,14 +280,15 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2.weight = -1.0e-7
+        self.rewards.lin_vel_z_l2 = None
         self.rewards.lin_acc_z_l2 = None
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
+        self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -0.1
-        self.rewards.action_rate_l2.weight = -0.005
+        self.rewards.action_rate_l2.weight = -0.001
 
-        self.rewards.dof_acc_l2.weight = -2.0e-7
+        self.rewards.dof_acc_l2.weight = -1.25e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
@@ -315,7 +316,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],
         )
 
-        self.rewards.dof_torques_l2.weight = -1.0e-7
+        self.rewards.dof_torques_l2.weight = -1.5e-7
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[

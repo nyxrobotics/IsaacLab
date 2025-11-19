@@ -19,7 +19,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import RewardTermCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-
+from isaaclab.utils.math import quat_rotate_inverse
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -95,7 +95,45 @@ def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
     return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+    
+def flat_orientation_links_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    margin: float = 0.3,
+) -> torch.Tensor:
+    """
+    Penalize non-flat orientation for multiple links with a tolerance margin.
 
+    - Compute projected gravity in body frames
+    - Take L2 norm of xy components (tilt magnitude)
+    - If tilt <= margin → penalty = 0
+    - If tilt > margin → penalty = -(tilt - margin)
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # body orientations
+    body_quat_w = asset.data.body_quat_w            # (N, B, 4)
+
+    # world gravity expanded to (N, B, 3)
+    g_w = torch.zeros_like(asset.data.body_pos_w)
+    g_w[..., 2] = -1.0
+
+    # gravity in body frame
+    g_b = quat_rotate_inverse(body_quat_w, g_w)     # (N, B, 3)
+
+    # select target bodies
+    body_ids = asset_cfg.body_ids
+    g_sel = g_b[:, body_ids, :2]                    # (N, K, 2)  K=selected bodies
+
+    # tilt magnitude: L2 norm of xy components
+    l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
+    l2_mean = torch.mean(l2_per_body, dim=1)        # (N,)
+
+    # margin-based penalty
+    excess = torch.relu(l2_mean - margin)           # tilt above margin
+    penalty = -excess                               # negative penalty
+
+    return penalty
 
 def base_height_l2(
     env: ManagerBasedRLEnv,

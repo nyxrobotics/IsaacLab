@@ -67,7 +67,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
     )
 
@@ -126,11 +126,19 @@ class KurokoRewards(RewardsCfg):
         func=mdp.joint_torques_l2,
         weight=-0.01,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "chest",
                 "hip_l_pitch",
                 "hip_l_roll",
                 "hip_r_pitch",
                 "hip_r_roll"])},
+    )
+
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+                "margin": 0.1},
     )
 
 
@@ -213,7 +221,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact = None
+        # self.terminations.base_contact = None
+        self.terminations.base_contact.params["sensor_cfg"].body_names = [
+            "chest_link",
+            "body_link",
+            "hip_r_pitch_link",
+            "hip_l_pitch_link",
+            "shoulder_r_roll_link",
+            "shoulder_l_roll_link"]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
@@ -289,7 +304,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -0.4
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

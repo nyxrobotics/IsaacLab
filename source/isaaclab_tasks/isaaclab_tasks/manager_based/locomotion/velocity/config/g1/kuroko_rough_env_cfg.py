@@ -67,7 +67,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.01,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
     )
 
@@ -79,7 +79,7 @@ class KurokoRewards(RewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
             "asset_cfg": SceneEntityCfg("robot", body_names=[]),
             "desired_lift_time": 0.3,
-            "desired_lift_height": 0.01,
+            "desired_lift_height": 0.02,
         },
     )
 
@@ -120,6 +120,17 @@ class KurokoRewards(RewardsCfg):
                 "elbow_l_rear",
                 "elbow_r_front",
                 "elbow_r_rear",])},
+    )
+
+    joint_torque_hips = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-0.01,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "chest",
+                "hip_l_pitch",
+                "hip_l_roll",
+                "hip_r_pitch",
+                "hip_r_roll"])},
     )
 
 

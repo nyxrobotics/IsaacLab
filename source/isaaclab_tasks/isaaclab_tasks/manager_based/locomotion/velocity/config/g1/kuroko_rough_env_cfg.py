@@ -108,14 +108,6 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_hip = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.001,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "hip_l_pitch",
-                "hip_r_pitch"])},
-    )
-
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.01,

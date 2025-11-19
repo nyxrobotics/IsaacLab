@@ -50,19 +50,19 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-1000.0,
+        weight=-100.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
-        params={"command_name": "base_velocity", "std": 0.5},
+        weight=100.0,
+        params={"command_name": "base_velocity", "std": 0.05},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=6.5,
-        params={"command_name": "base_velocity", "std": 0.5},
+        weight=100.0,
+        params={"command_name": "base_velocity", "std": 0.05},
     )
 
     joint_deviation_torso = RewTerm(
@@ -396,6 +396,21 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
 
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+        self.events.reset_base.params = {
+            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
+            "velocity_range": {
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (0.0, 0.0),
+            },
+        }
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
         # disable randomization for play

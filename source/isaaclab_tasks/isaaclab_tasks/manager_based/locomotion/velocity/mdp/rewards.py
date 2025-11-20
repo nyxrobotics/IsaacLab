@@ -152,6 +152,8 @@ def feet_air_time_height_penalty(
     """Penalty version:
     0 when the foot lifts sufficiently.
     Negative when lift height or lift time is insufficient.
+
+    両足接地中（single_stance=False）は常にペナルティ0。
     """
 
     # --------------------------------------------------------
@@ -162,7 +164,6 @@ def feet_air_time_height_penalty(
     yaw_speed = torch.abs(cmd[:, 2])
     no_step_required = (xy_speed <= 0.001) & (yaw_speed <= 0.001)
 
-    # output penalties (negative or zero)
     penalty = torch.zeros_like(xy_speed)
 
     if desired_lift_time < 1.0e-6:
@@ -172,35 +173,35 @@ def feet_air_time_height_penalty(
     # 1) air-time part
     # --------------------------------------------------------
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]      # (N, 2)
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]          # (N, 2)
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]  # (N, 2)
 
-    in_contact = contact_time > 0.0
-    in_mode_time = torch.where(in_contact, contact_time, air_time)              # (N, 2)
+    in_contact = contact_time > 0.0                                                 # (N, 2)
+    in_mode_time = torch.where(in_contact, contact_time, air_time)                 # (N, 2)
 
-    single_stance = torch.sum(in_contact.int(), dim=1) == 1                     # (N,)
+    # ちょうど片足だけ接地しているステップを single_stance とする
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1                        # (N,)
 
-    # actual single-stance time (N,)
-    actual_time = torch.min(
-        torch.where(
-            single_stance.unsqueeze(-1),
-            in_mode_time,
-            torch.zeros_like(in_mode_time),
-        ),
-        dim=1,
-    )[0]
+    # single_stance のときだけ実際の時間を使う。それ以外は desired_lift_time とみなして time_missing=0 にする
+    actual_time_raw = torch.min(in_mode_time, dim=1)[0]                             # (N,)
+    actual_time = torch.where(
+        single_stance,
+        actual_time_raw,
+        torch.full_like(actual_time_raw, desired_lift_time),
+    )
 
-    # desired_lift_time に対する不足量
-    time_missing = torch.relu(desired_lift_time - actual_time)                  # (N,)
-    time_penalty = -(time_missing / (desired_lift_time + 1e-6))                 # (N,)
+    # desired_lift_time に対する不足量（single_stance 以外は0になる）
+    time_missing = torch.relu(desired_lift_time - actual_time)                      # (N,)
+    time_missing = torch.where(single_stance, time_missing, torch.zeros_like(time_missing))
+    time_penalty = -(time_missing / (desired_lift_time + 1e-6))                     # (N,)
 
     # --------------------------------------------------------
     # 2) Time-varying target foot lift height
     # --------------------------------------------------------
-    progress = torch.clamp(in_mode_time / desired_lift_time, max=1.0)           # (N, 2)
+    progress = torch.clamp(in_mode_time / desired_lift_time, max=1.0)               # (N, 2)
     height_limit_scale = 1.0 - (2.0 * progress - 1.0) ** 2
     height_limit_scale = torch.clamp(height_limit_scale, min=0.0)
-    required_height = desired_lift_height * height_limit_scale                  # (N, 2)
+    required_height = desired_lift_height * height_limit_scale                      # (N, 2)
 
     # --------------------------------------------------------
     # 3) Actual foot height
@@ -211,20 +212,20 @@ def feet_air_time_height_penalty(
     left_id, right_id = asset_cfg.body_ids
     left_z = body_pos_w[:, left_id, 2]
     right_z = body_pos_w[:, right_id, 2]
-    foot_lift = torch.abs(left_z - right_z)                                     # (N,)
-    foot_lift_exp = foot_lift.unsqueeze(-1).expand_as(required_height)          # (N, 2)
+    foot_lift = torch.abs(left_z - right_z)                                         # (N,)
+    foot_lift_exp = foot_lift.unsqueeze(-1).expand_as(required_height)              # (N, 2)
 
     eps = 1e-6
-    active = (required_height > eps) & single_stance.unsqueeze(-1)              # (N, 2)
+    active = (required_height > eps) & single_stance.unsqueeze(-1)                  # (N, 2)
 
-    # required_height と比較：不足していたら負
-    height_missing = torch.relu(required_height - foot_lift_exp)                # (N, 2)
-    height_penalty_foot = -(height_missing / (desired_lift_height + eps))       # (N, 2)
+    height_missing = torch.relu(required_height - foot_lift_exp)                    # (N, 2)
+    height_penalty_foot = -(height_missing / (desired_lift_height + eps))           # (N, 2)
 
-    # swing foot only
+    # swing foot のときだけ高さペナルティを有効にする
     height_penalty_foot = torch.where(active, height_penalty_foot, torch.zeros_like(height_penalty_foot))
 
-    height_penalty = torch.min(height_penalty_foot, dim=1)[0]                   # (N,)
+    # 両足のうち「より悪い方」を採用（必要なら max に変更）
+    height_penalty = torch.min(height_penalty_foot, dim=1)[0]                       # (N,)
 
     # --------------------------------------------------------
     # 4) total penalty (more negative = worse)
@@ -235,6 +236,7 @@ def feet_air_time_height_penalty(
     penalty = torch.where(no_step_required, torch.zeros_like(penalty), penalty)
 
     return penalty
+
 
 def track_lin_vel_xy_yaw_frame_linear_penalty(
     env: ManagerBasedRLEnv,

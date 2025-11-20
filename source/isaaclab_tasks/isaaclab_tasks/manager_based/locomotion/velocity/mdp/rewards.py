@@ -416,12 +416,11 @@ def step_reflex_penalty(
     """
     Step-reflex penalty with:
       - tilt-dependent allowable double-stance time
-      - correct swing foot detection (higher foot)
-      - air_time of swing foot
-      - required swing height
+      - swing foot detection: higher foot, AND higher foot not in contact, lower foot in contact
+      - swing air-time and height checks
+
     All penalties <= 0 (0 is ideal).
     """
-
     # --------------------------------------------------------
     # 1) Command magnitude (should we step?)
     # --------------------------------------------------------
@@ -450,19 +449,15 @@ def step_reflex_penalty(
     air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]       # (N,2)
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
 
-    in_contact = contact_time > 0.0                                   # (N,2)
+    in_contact = contact_time > 0.0                                              # (N,2)
     left_contact = in_contact[:, 0]
     right_contact = in_contact[:, 1]
-    num_contact = torch.sum(in_contact.int(), dim=1)
-    double_stance = num_contact == 2
-    single_stance = num_contact == 1
-    no_stance = num_contact == 0
 
-    # double stance 時間（両足接地時は両方接地時間の min）
-    double_stance_time = torch.min(contact_time, dim=1)[0]
+    # double-stance「時間」（純粋な接地時間ベース）
+    double_stance_time = torch.min(contact_time, dim=1)[0]                       # (N,)
 
     # --------------------------------------------------------
-    # 4) Swing foot detection by height
+    # 4) Swing foot detection by height & contact
     # --------------------------------------------------------
     robot = env.scene[asset_cfg.name]
     pos = robot.data.body_pos_w
@@ -471,10 +466,32 @@ def step_reflex_penalty(
     left_z = pos[:, left_id, 2]     # (N,)
     right_z = pos[:, right_id, 2]   # (N,)
 
-    # swing foot = 高さが高い方
-    is_left_swing = left_z > right_z       # (N,)
-    swing_air_time = torch.where(is_left_swing, air_time[:, 0], air_time[:, 1])   # (N,)
-    swing_height = torch.abs(left_z - right_z)                                    # (N,)
+    # 高さ関係
+    left_higher = left_z > right_z
+    right_higher = right_z > left_z
+
+    # 条件:
+    # - swing foot: 高い方の足
+    # - stance foot: 低い方の足
+    # - stance foot は接触している
+    # - swing foot は接触していない
+    left_swing  = (~left_contact)  & right_contact & left_higher   # (N,)
+    right_swing = (~right_contact) & left_contact  & right_higher  # (N,)
+
+    is_swing = left_swing | right_swing
+
+    # 「不正な」状態（両足接地、両足浮き、接触パターンがおかしい 等）は
+    # すべて double-stance 扱いにする（step-reflex の観点で）
+    reflex_single_stance = need_to_step & is_swing
+    reflex_double_stance = need_to_step & (~is_swing)
+
+    # swing foot の air_time
+    swing_air_time_lr = torch.where(left_swing, air_time[:, 0], air_time[:, 1])  # どちらか候補
+    swing_air_time = torch.where(is_swing, swing_air_time_lr,
+                                 torch.zeros_like(swing_air_time_lr))            # non-swing は 0
+
+    # swing height（高い足と低い足の高さ差）
+    swing_height = torch.abs(left_z - right_z)                                   # (N,)
 
     # --------------------------------------------------------
     # 5) Penalty A: too-long double stance (tilt dependent)
@@ -483,7 +500,7 @@ def step_reflex_penalty(
     stance_penalty = -stance_missing
 
     stance_penalty = torch.where(
-        need_to_step & double_stance,
+        reflex_double_stance,
         stance_penalty,
         torch.zeros_like(stance_penalty),
     )
@@ -495,7 +512,7 @@ def step_reflex_penalty(
     air_penalty = -air_missing
 
     air_penalty = torch.where(
-        need_to_step & single_stance,
+        reflex_single_stance,
         air_penalty,
         torch.zeros_like(air_penalty),
     )
@@ -507,7 +524,7 @@ def step_reflex_penalty(
     height_penalty = -height_missing
 
     height_penalty = torch.where(
-        need_to_step & single_stance,
+        reflex_single_stance,
         height_penalty,
         torch.zeros_like(height_penalty),
     )

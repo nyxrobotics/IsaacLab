@@ -110,7 +110,7 @@ class KurokoRewards(RewardsCfg):
             "tilt_margin": 0.2,
             "min_air_time": 0.2,
             "max_stance_time": 0.2,
-            "min_air_height": 0.02,
+            "min_air_height": 0.01,
         },
     )
     
@@ -160,7 +160,7 @@ class KurokoRewards(RewardsCfg):
                 "hip_l_pitch",
                 "hip_r_pitch"])},
     )
-    
+
     joint_torque_hip_roll = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-0.8,
@@ -352,7 +352,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.flat_orientation_l2.weight = -100.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

@@ -579,11 +579,50 @@ def step_reflex_penalty(
         -height_missing,
         torch.zeros_like(height_missing),
     )
+    # --------------------------------------------------------
+    # 8) Penalty: insufficient local swing height
+    # --------------------------------------------------------
+    # world → torso frame transform
+    torso_quat = asset.data.body_quat_w[:, asset_cfg.body_ids[0]]   # chest_link の quat
+    torso_pos  = asset.data.body_pos_w[:, asset_cfg.body_ids[0]]    # chest_link の pos
 
+    # swing foot world pos
+    swing_pos_w = torch.where(
+        left_swing.unsqueeze(-1),
+        pos[:, left_id],
+        pos[:, right_id],
+    )
+
+    # stance foot world pos:
+    #   - normal single stance: lower foot
+    #   - both feet air: use lower foot as reference
+    stance_pos_w = torch.where(
+        left_higher.unsqueeze(-1),
+        pos[:, right_id],  # left higher → right is stance
+        pos[:, left_id],   # right higher → left is stance
+    )
+
+    # transform to torso frame:
+    # p_local = R(torso)^T * (p_world - torso_world)
+    swing_pos_local  = quat_rotate_inverse(torso_quat, swing_pos_w - torso_pos)
+    stance_pos_local = quat_rotate_inverse(torso_quat, stance_pos_w - torso_pos)
+
+    # height difference in torso frame
+    local_height_diff = swing_pos_local[:, 2] - stance_pos_local[:, 2]
+
+    local_height_missing = torch.relu(min_air_height - local_height_diff) / (min_air_height + eps)
+    local_height_penalty = -local_height_missing
+
+    # apply only during swing
+    local_height_penalty = torch.where(
+        reflex_single,
+        local_height_penalty,
+        torch.zeros_like(local_height_penalty),
+    )
     # --------------------------------------------------------
-    # 8) Total penalty
+    # 9) Total penalty
     # --------------------------------------------------------
-    total_penalty = stance_penalty + air_penalty + height_penalty
+    total_penalty = stance_penalty + air_penalty + height_penalty + local_height_penalty
     total_penalty = torch.where(
         need_to_step, total_penalty, torch.zeros_like(total_penalty)
     )

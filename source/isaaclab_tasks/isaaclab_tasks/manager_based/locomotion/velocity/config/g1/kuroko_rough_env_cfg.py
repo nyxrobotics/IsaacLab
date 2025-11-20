@@ -55,7 +55,7 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=65.0,
+        weight=75.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -360,7 +360,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -100.0
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

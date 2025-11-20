@@ -420,83 +420,80 @@ def step_reflex_penalty(
     0 is best, more negative is worse.
 
     When the robot is commanded to move or becomes tilted, this term:
-      - Penalizes double-stance that is too long
+      - penalizes double-stance that is too long
         (allowed time shrinks linearly with tilt)
-      - Penalizes swing air-time that is too short
-      - Penalizes swing height that is too low
+      - penalizes swing air-time that is too short
+      - penalizes swing height that is too low (world frame)
+      - penalizes swing height that is too low (root-local frame)
+      - penalizes swing foot velocity opposite to desired direction (world & root-local)
+      - penalizes swing foot yaw velocity opposite to yaw command
 
-    Swing foot detection:
-      - Normal single stance:
-          lower foot in contact, higher foot not in contact
-          + （傾きが小さいときに限り）
-            反対側の stance foot の contact_time >= min_air_time
-            → これで「同じ足の連続スイング」を抑制し、交互ステップを促す
-      - Both feet in air:
-          higher foot is treated as swing foot
-      - Otherwise:
-          treated as "double stance" from reflex viewpoint
+    Assumptions:
+      - asset_cfg.body_ids: [left_foot_id, right_foot_id]
+      - torso frame: articulation root pose (root_pos_w, root_quat_w)
     """
 
-    eps = 1e-6
+    eps = 1.0e-6
 
     # --------------------------------------------------------
     # 1) Command magnitude (should we step?)
     # --------------------------------------------------------
-    cmd = env.command_manager.get_command(command_name)
-    cmd_xy = torch.norm(cmd[:, :2], dim=1)
-    cmd_yaw = torch.abs(cmd[:, 2])
+    cmd = env.command_manager.get_command(command_name)  # (N,3): [vx, vy, yaw]
+    cmd_xy = torch.norm(cmd[:, :2], dim=1)              # (N,)
+    cmd_yaw = torch.abs(cmd[:, 2])                      # (N,)
     cmd_speed = torch.sqrt(cmd_xy * cmd_xy + cmd_yaw * cmd_yaw)
 
     # --------------------------------------------------------
-    # 2) Torso tilt
+    # 2) Torso tilt (root frame)
     # --------------------------------------------------------
     asset = env.scene[asset_cfg.name]
-    g_b = asset.data.projected_gravity_b
+    g_b = asset.data.projected_gravity_b                # (N,3)
     tilt_l2 = torch.sum(g_b[:, :2] * g_b[:, :2], dim=1)
 
     need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
 
-    # 傾きに応じて許容ダブルスタンス時間を縮める
+    # tilt-dependent allowed double-stance time:
     tilt_norm = torch.clamp(tilt_l2 / (tilt_margin + eps), 0.0, 1.0)
     effective_max_stance_time = max_stance_time * (1.0 - tilt_norm)
 
-    # 「傾いていない」領域（ここでは tilt_margin 以下）でのみ
-    # 交互ステップ（スタンス時間条件）を強める
+    # near-level region: encourage alternating steps
     near_level = tilt_l2 <= tilt_margin
 
     # --------------------------------------------------------
-    # 3) Contact info
+    # 3) Contact info (feet)
     # --------------------------------------------------------
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]         # (N,2)
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] # (N,2)
 
     in_contact = contact_time > 0.0
     left_contact = in_contact[:, 0]
     right_contact = in_contact[:, 1]
 
-    # 両足接地時間（2足の contact_time の min）
-    double_stance_time = torch.min(contact_time, dim=1)[0]
+    # double-stance time: min of contact_time
+    double_stance_time = torch.min(contact_time, dim=1)[0]  # (N,)
 
     # --------------------------------------------------------
     # 4) Swing foot detection (height + contact + stance_time)
     # --------------------------------------------------------
     robot = env.scene[asset_cfg.name]
-    pos = robot.data.body_pos_w
+    pos = robot.data.body_pos_w           # (N, num_bodies, 3)
+    vel_w = robot.data.body_lin_vel_w     # (N, num_bodies, 3)
+    ang_vel_w = robot.data.body_ang_vel_w # (N, num_bodies, 3)
 
+    # asset_cfg.body_ids は [left_foot, right_foot] を想定
     left_id, right_id = asset_cfg.body_ids
+
     left_z = pos[:, left_id, 2]
     right_z = pos[:, right_id, 2]
 
     left_higher = left_z > right_z
     right_higher = right_z > left_z
 
-    # 反対足の stance_time（contact_time）:
     left_stance_time = contact_time[:, 0]
     right_stance_time = contact_time[:, 1]
 
-    # 傾きが小さいときだけ「十分なスタンス時間」を要求する
-    #   -> 同じ足が着地直後すぐにまたスイングに戻るのを抑制
+    # 傾きが小さいときだけ、反対足の stance_time を要求して交互ステップを促す
     right_stance_ok_for_left = torch.where(
         near_level,
         right_stance_time >= min_air_time,
@@ -508,16 +505,13 @@ def step_reflex_penalty(
         torch.ones_like(left_stance_time, dtype=torch.bool),
     )
 
-    # --- normal single-stance swing ---
-    # 高い方の足が接触しておらず、低い方が接触している
-    # かつ「傾いていないときは」反対足の stance_time が十分に長いこと
+    # normal single-stance swing
     left_swing_single = (
         left_higher
         & (~left_contact)
         & right_contact
         & right_stance_ok_for_left
     )
-
     right_swing_single = (
         right_higher
         & (~right_contact)
@@ -525,12 +519,11 @@ def step_reflex_penalty(
         & left_stance_ok_for_right
     )
 
-    # --- both feet in air: treat higher as swing foot ---
+    # both feet in air: higher foot is swing
     both_air = (~left_contact) & (~right_contact)
     left_swing_air = both_air & left_higher
     right_swing_air = both_air & right_higher
 
-    # final swing flags
     left_swing = left_swing_single | left_swing_air
     right_swing = right_swing_single | right_swing_air
     is_swing = left_swing | right_swing
@@ -538,17 +531,15 @@ def step_reflex_penalty(
     reflex_single = need_to_step & is_swing
     reflex_double = need_to_step & (~is_swing)
 
+    # swing foot air-time & height (world)
     swing_air_time_lr = torch.where(left_swing, air_time[:, 0], air_time[:, 1])
     swing_air_time = torch.where(
-        is_swing,
-        swing_air_time_lr,
-        torch.zeros_like(swing_air_time_lr),
+        is_swing, swing_air_time_lr, torch.zeros_like(swing_air_time_lr)
     )
-
     swing_height = torch.abs(left_z - right_z)
 
     # --------------------------------------------------------
-    # 5) Penalty: long double stance
+    # 5) Penalty: long double-stance (tilt-dependent)
     # --------------------------------------------------------
     stance_missing = torch.relu(double_stance_time - effective_max_stance_time) / (
         max_stance_time + eps
@@ -560,7 +551,7 @@ def step_reflex_penalty(
     )
 
     # --------------------------------------------------------
-    # 6) Penalty: insufficient swing time
+    # 6) Penalty: insufficient swing time (world)
     # --------------------------------------------------------
     air_missing = torch.relu(min_air_time - swing_air_time) / (min_air_time + eps)
     air_penalty = torch.where(
@@ -570,7 +561,7 @@ def step_reflex_penalty(
     )
 
     # --------------------------------------------------------
-    # 7) Penalty: insufficient swing height
+    # 7) Penalty: insufficient swing height (world)
     # --------------------------------------------------------
     height_missing = torch.relu(min_air_height - swing_height) / (min_air_height + eps)
     height_penalty = torch.where(
@@ -578,52 +569,154 @@ def step_reflex_penalty(
         -height_missing,
         torch.zeros_like(height_missing),
     )
-    # --------------------------------------------------------
-    # 8) Penalty: insufficient local swing height
-    # --------------------------------------------------------
-    # world → torso frame transform
-    torso_quat = asset.data.body_quat_w[:, asset_cfg.body_ids[0]]   # chest_link の quat
-    torso_pos  = asset.data.body_pos_w[:, asset_cfg.body_ids[0]]    # chest_link の pos
 
-    # swing foot world pos
+    # --------------------------------------------------------
+    # 8) Penalty: insufficient local swing height (root frame)
+    # --------------------------------------------------------
+    torso_quat = asset.data.root_quat_w  # (N,4)
+    torso_pos = asset.data.root_pos_w    # (N,3)
+
     swing_pos_w = torch.where(
         left_swing.unsqueeze(-1),
         pos[:, left_id],
         pos[:, right_id],
     )
-
-    # stance foot world pos:
-    #   - normal single stance: lower foot
-    #   - both feet air: use lower foot as reference
     stance_pos_w = torch.where(
         left_higher.unsqueeze(-1),
-        pos[:, right_id],  # left higher → right is stance
-        pos[:, left_id],   # right higher → left is stance
+        pos[:, right_id],   # left higher -> right is stance
+        pos[:, left_id],    # right higher -> left is stance
     )
 
-    # transform to torso frame:
-    # p_local = R(torso)^T * (p_world - torso_world)
-    swing_pos_local  = quat_rotate_inverse(torso_quat, swing_pos_w - torso_pos)
+    swing_pos_local = quat_rotate_inverse(torso_quat, swing_pos_w - torso_pos)
     stance_pos_local = quat_rotate_inverse(torso_quat, stance_pos_w - torso_pos)
 
-    # height difference in torso frame
     local_height_diff = swing_pos_local[:, 2] - stance_pos_local[:, 2]
-
-    local_height_missing = torch.relu(min_air_height - local_height_diff) / (min_air_height + eps)
-    local_height_penalty = -local_height_missing
-
-    # apply only during swing
+    local_height_missing = torch.relu(min_air_height - local_height_diff) / (
+        min_air_height + eps
+    )
     local_height_penalty = torch.where(
         reflex_single,
-        local_height_penalty,
-        torch.zeros_like(local_height_penalty),
+        -local_height_missing,
+        torch.zeros_like(local_height_missing),
     )
+
     # --------------------------------------------------------
-    # 9) Total penalty
+    # 9) Penalty: swing foot velocity opposite desired dir (world xy)
     # --------------------------------------------------------
-    total_penalty = stance_penalty + air_penalty + height_penalty + local_height_penalty
+    cmd_xy_vec = cmd[:, :2]                                  # (N,2)
+    cmd_xy_norm = torch.norm(cmd_xy_vec, dim=1, keepdim=True)
+
+    root_vel_xy = asset.data.root_lin_vel_w[:, :2]           # (N,2)
+    root_vel_norm = torch.norm(root_vel_xy, dim=1, keepdim=True)
+
+    cmd_dir = cmd_xy_vec / (cmd_xy_norm + eps)
+    fall_dir = root_vel_xy / (root_vel_norm + eps)
+
+    use_cmd = cmd_xy_norm > 1.0e-3
+    use_fall = (~use_cmd) & (root_vel_norm > 1.0e-3)
+
+    dir_world_xy = torch.where(
+        use_cmd,
+        cmd_dir,
+        torch.where(use_fall, fall_dir, torch.zeros_like(cmd_dir)),
+    )  # (N,2)
+
+    has_dir = torch.norm(dir_world_xy, dim=1) > 0.0
+
+    swing_vel_w = torch.where(
+        left_swing.unsqueeze(-1),
+        vel_w[:, left_id],
+        vel_w[:, right_id],
+    )  # (N,3)
+
+    swing_vel_xy = swing_vel_w[:, :2]
+
+    v_par_world = torch.sum(swing_vel_xy * dir_world_xy, dim=1)
+    opp_world = torch.relu(-v_par_world)
+    vel_world_penalty = torch.where(
+        reflex_single & has_dir,
+        -opp_world,
+        torch.zeros_like(opp_world),
+    )
+
+    # --------------------------------------------------------
+    # 10) Penalty: swing foot velocity opposite desired dir (local xy)
+    # --------------------------------------------------------
+    dir_world_3d = torch.stack(
+        [
+            dir_world_xy[:, 0],
+            dir_world_xy[:, 1],
+            torch.zeros_like(dir_world_xy[:, 0]),
+        ],
+        dim=1,
+    )  # (N,3)
+    dir_local_3d = quat_rotate_inverse(torso_quat, dir_world_3d)
+    swing_vel_local = quat_rotate_inverse(torso_quat, swing_vel_w)
+
+    dir_local_xy = dir_local_3d[:, :2]
+    swing_vel_local_xy = swing_vel_local[:, :2]
+
+    v_par_local = torch.sum(swing_vel_local_xy * dir_local_xy, dim=1)
+    opp_local = torch.relu(-v_par_local)
+    vel_local_penalty = torch.where(
+        reflex_single & has_dir,
+        -opp_local,
+        torch.zeros_like(opp_local),
+    )
+
+    # --------------------------------------------------------
+    # 11) Penalty: swing foot yaw velocity opposite yaw command (world)
+    # --------------------------------------------------------
+    yaw_cmd = cmd[:, 2]
+    has_yaw_cmd = torch.abs(yaw_cmd) > 1.0e-4
+
+    swing_ang_vel_w = torch.where(
+        left_swing.unsqueeze(-1),
+        ang_vel_w[:, left_id],
+        ang_vel_w[:, right_id],
+    )  # (N,3)
+
+    swing_yaw_vel = swing_ang_vel_w[:, 2]
+
+    v_par_yaw = yaw_cmd * swing_yaw_vel
+    opp_yaw = torch.relu(-v_par_yaw)
+    yaw_penalty = torch.where(
+        reflex_single & has_yaw_cmd,
+        -opp_yaw,
+        torch.zeros_like(opp_yaw),
+    )
+
+    # --------------------------------------------------------
+    # 12) Penalty: swing foot yaw velocity opposite yaw command (local)
+    # --------------------------------------------------------
+    swing_ang_vel_local = quat_rotate_inverse(torso_quat, swing_ang_vel_w)
+    swing_yaw_vel_local = swing_ang_vel_local[:, 2]
+
+    v_par_yaw_local = yaw_cmd * swing_yaw_vel_local
+    opp_yaw_local = torch.relu(-v_par_yaw_local)
+    yaw_local_penalty = torch.where(
+        reflex_single & has_yaw_cmd,
+        -opp_yaw_local,
+        torch.zeros_like(opp_yaw_local),
+    )
+
+    # --------------------------------------------------------
+    # 13) Total penalty
+    # --------------------------------------------------------
+    total_penalty = (
+        stance_penalty
+        + air_penalty
+        + height_penalty
+        + local_height_penalty
+        + vel_world_penalty
+        + vel_local_penalty
+        + yaw_penalty
+        + yaw_local_penalty
+    )
     total_penalty = torch.where(
-        need_to_step, total_penalty, torch.zeros_like(total_penalty)
+        need_to_step,
+        total_penalty,
+        torch.zeros_like(total_penalty),
     )
 
     return total_penalty

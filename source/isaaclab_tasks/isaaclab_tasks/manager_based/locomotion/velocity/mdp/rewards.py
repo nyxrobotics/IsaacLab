@@ -402,8 +402,10 @@ def alive_bonus_torso(
 
     return alive
 
+
+
 def step_reflex_penalty(
-    env,
+    env: ManagerBasedRLEnv,
     command_name: str,
     sensor_cfg: SceneEntityCfg,
     asset_cfg: SceneEntityCfg,
@@ -414,13 +416,23 @@ def step_reflex_penalty(
     min_air_height: float,
 ) -> torch.Tensor:
     """
-    Step-reflex penalty with:
-      - tilt-dependent allowable double-stance time
-      - swing foot detection: higher foot, AND higher foot not in contact, lower foot in contact
-      - swing air-time and height checks
+    Step-reflex penalty.
 
-    All penalties <= 0 (0 is ideal).
+    0 is best, more negative is worse.
+
+    When the robot is commanded to move or becomes tilted, this term:
+      A) Penalizes double-stance too long (allowed time shrinks with tilt)
+      B) Penalizes swing air-time too short
+      C) Penalizes swing height too low
+
+    Swing foot detection:
+      - single stance: lower foot in contact, higher foot not in contact
+      - both feet in air: higher foot is treated as swing foot
+      - otherwise: treated as double stance for reflex purposes
     """
+
+    eps = 1e-6
+
     # --------------------------------------------------------
     # 1) Command magnitude (should we step?)
     # --------------------------------------------------------
@@ -433,106 +445,96 @@ def step_reflex_penalty(
     # 2) Torso tilt
     # --------------------------------------------------------
     asset = env.scene[asset_cfg.name]
-    g_b = asset.data.projected_gravity_b          # (N,3)
+    g_b = asset.data.projected_gravity_b
     tilt_l2 = torch.sum(g_b[:, :2] * g_b[:, :2], dim=1)
 
     need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
 
-    eps = 1e-6
     tilt_norm = torch.clamp(tilt_l2 / (tilt_margin + eps), 0.0, 1.0)
-    effective_max_stance_time = max_stance_time * (1.0 - tilt_norm)       # (N,)
+    effective_max_stance_time = max_stance_time * (1.0 - tilt_norm)
 
     # --------------------------------------------------------
     # 3) Contact info
     # --------------------------------------------------------
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]       # (N,2)
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
 
-    in_contact = contact_time > 0.0                                              # (N,2)
+    in_contact = contact_time > 0.0
     left_contact = in_contact[:, 0]
     right_contact = in_contact[:, 1]
 
-    # double-stance「時間」（純粋な接地時間ベース）
-    double_stance_time = torch.min(contact_time, dim=1)[0]                       # (N,)
+    double_stance_time = torch.min(contact_time, dim=1)[0]
 
     # --------------------------------------------------------
-    # 4) Swing foot detection by height & contact
+    # 4) Swing foot detection (height + contact)
     # --------------------------------------------------------
     robot = env.scene[asset_cfg.name]
     pos = robot.data.body_pos_w
 
     left_id, right_id = asset_cfg.body_ids
-    left_z = pos[:, left_id, 2]     # (N,)
-    right_z = pos[:, right_id, 2]   # (N,)
+    left_z = pos[:, left_id, 2]
+    right_z = pos[:, right_id, 2]
 
-    # 高さ関係
     left_higher = left_z > right_z
     right_higher = right_z > left_z
 
-    # 条件:
-    # - swing foot: 高い方の足
-    # - stance foot: 低い方の足
-    # - stance foot は接触している
-    # - swing foot は接触していない
-    left_swing  = (~left_contact)  & right_contact & left_higher   # (N,)
-    right_swing = (~right_contact) & left_contact  & right_higher  # (N,)
+    # --- single stance swing: higher foot not contacting, lower foot contacting ---
+    left_swing_single  = left_higher  & (~left_contact)  & right_contact
+    right_swing_single = right_higher & (~right_contact) & left_contact
 
+    # --- both feet in air: treat higher foot as swing foot ---
+    both_air = (~left_contact) & (~right_contact)
+    left_swing_air  = both_air & left_higher
+    right_swing_air = both_air & right_higher
+
+    # final swing flags
+    left_swing  = left_swing_single  | left_swing_air
+    right_swing = right_swing_single | right_swing_air
     is_swing = left_swing | right_swing
 
-    # 「不正な」状態（両足接地、両足浮き、接触パターンがおかしい 等）は
-    # すべて double-stance 扱いにする（step-reflex の観点で）
-    reflex_single_stance = need_to_step & is_swing
-    reflex_double_stance = need_to_step & (~is_swing)
+    reflex_single = need_to_step & is_swing
+    reflex_double = need_to_step & (~is_swing)
 
-    # swing foot の air_time
-    swing_air_time_lr = torch.where(left_swing, air_time[:, 0], air_time[:, 1])  # どちらか候補
-    swing_air_time = torch.where(is_swing, swing_air_time_lr,
-                                 torch.zeros_like(swing_air_time_lr))            # non-swing は 0
+    swing_air_time_lr = torch.where(left_swing, air_time[:, 0], air_time[:, 1])
+    swing_air_time = torch.where(is_swing, swing_air_time_lr, torch.zeros_like(swing_air_time_lr))
 
-    # swing height（高い足と低い足の高さ差）
-    swing_height = torch.abs(left_z - right_z)                                   # (N,)
+    swing_height = torch.abs(left_z - right_z)
 
     # --------------------------------------------------------
-    # 5) Penalty A: too-long double stance (tilt dependent)
+    # 5) Penalty: long double stance
     # --------------------------------------------------------
     stance_missing = torch.relu(double_stance_time - effective_max_stance_time) / (max_stance_time + eps)
-    stance_penalty = -stance_missing
-
     stance_penalty = torch.where(
-        reflex_double_stance,
-        stance_penalty,
-        torch.zeros_like(stance_penalty),
+        reflex_double,
+        -stance_missing,
+        torch.zeros_like(stance_missing),
     )
 
     # --------------------------------------------------------
-    # 6) Penalty B: insufficient swing time
+    # 6) Penalty: insufficient swing time
     # --------------------------------------------------------
     air_missing = torch.relu(min_air_time - swing_air_time) / (min_air_time + eps)
-    air_penalty = -air_missing
-
     air_penalty = torch.where(
-        reflex_single_stance,
-        air_penalty,
-        torch.zeros_like(air_penalty),
+        reflex_single,
+        -air_missing,
+        torch.zeros_like(air_missing),
     )
 
     # --------------------------------------------------------
-    # 7) Penalty C: insufficient swing height
+    # 7) Penalty: insufficient swing height
     # --------------------------------------------------------
     height_missing = torch.relu(min_air_height - swing_height) / (min_air_height + eps)
-    height_penalty = -height_missing
-
     height_penalty = torch.where(
-        reflex_single_stance,
-        height_penalty,
-        torch.zeros_like(height_penalty),
+        reflex_single,
+        -height_missing,
+        torch.zeros_like(height_missing),
     )
 
     # --------------------------------------------------------
     # 8) Total penalty
     # --------------------------------------------------------
-    penalty = stance_penalty + air_penalty + height_penalty
-    penalty = torch.where(need_to_step, penalty, torch.zeros_like(penalty))
+    total_penalty = stance_penalty + air_penalty + height_penalty
+    total_penalty = torch.where(need_to_step, total_penalty, torch.zeros_like(total_penalty))
 
-    return penalty
+    return total_penalty

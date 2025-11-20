@@ -113,6 +113,7 @@ class KurokoRewards(RewardsCfg):
             "min_air_height": 0.02,
         },
     )
+    
     torso_height_limit = RewTerm(
         func=mdp.torso_height_penalty,
         weight= 10.0,
@@ -154,7 +155,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hips = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.2,
+        weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_l_roll",

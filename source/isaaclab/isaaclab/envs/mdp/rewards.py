@@ -345,3 +345,58 @@ def track_ang_vel_z_exp(
     # compute the error
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
     return torch.exp(-ang_vel_error / std**2)
+
+
+def joint_deviation_axis_scaled_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    axis: str,         # "x", "y", "yaw"
+    axis_max: float,   # command range max
+) -> torch.Tensor:
+    """
+    Penalize deviation from default joint positions when commanded velocity is small.
+
+    axis:
+        "x"   -> use lin_vel_x
+        "y"   -> use lin_vel_y
+        "yaw" -> use ang_vel_z
+    """
+    # -----------------------------------------
+    # 1) Get the command component
+    # -----------------------------------------
+    cmd = env.command_manager.get_command(command_name)
+
+    if axis == "x":
+        v = torch.abs(cmd[:, 0])
+    elif axis == "y":
+        v = torch.abs(cmd[:, 1])
+    elif axis == "yaw":
+        v = torch.abs(cmd[:, 2])
+    else:
+        raise ValueError(f"axis must be 'x','y','yaw', got {axis}")
+
+    eps = 1e-6
+    v_norm = torch.clamp(v / (axis_max + eps), 0.0, 1.0)
+    scale = 1.0 - v_norm    # small command → strong penalty
+
+    # -----------------------------------------
+    # 2) Joint deviation from defaults
+    # -----------------------------------------
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # positions (N, #dofs_selected)
+    pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+
+    deviation = torch.abs(pos - default)
+
+    # baseline penalty: L1 deviation sum (same as joint_deviation_l1)
+    base_penalty = torch.sum(deviation, dim=1)   # (N,)
+
+    # -----------------------------------------
+    # 3) Command-scaled penalty (negative)
+    # -----------------------------------------
+    penalty = -base_penalty * scale
+
+    return penalty

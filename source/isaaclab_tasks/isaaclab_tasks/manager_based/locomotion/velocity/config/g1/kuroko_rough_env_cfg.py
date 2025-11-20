@@ -61,14 +61,17 @@ class KurokoRewards(RewardsCfg):
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=100.0,
+        weight=1000.0,
         params={"command_name": "base_velocity", "std": 0.05},
     )
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
+        weight=-10.0,
+        params={"asset_cfg": SceneEntityCfg("robot", 
+            joint_names=[
+                "chest"
+            ])},
     )
 
     feet_air_time = RewTerm(
@@ -85,7 +88,7 @@ class KurokoRewards(RewardsCfg):
 
     torso_height_limit = RewTerm(
         func=mdp.torso_height_penalty,
-        weight= 20.0,
+        weight= 100.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -101,7 +104,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-0.01,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
             "asset_cfg": SceneEntityCfg("robot", body_names=[]),
@@ -110,7 +113,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.01,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
@@ -141,7 +144,18 @@ class KurokoRewards(RewardsCfg):
                 "margin": 0.1},
     )
 
-
+    cmd_yaw_joint_penalty = RewTerm(
+        func=mdp.joint_deviation_axis_scaled_penalty,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "chest", "ankle_r_yaw", "ankle_l_yaw"
+            ]),
+            "axis_max": 0.1,
+            "axis": "yaw",
+        },
+    )
 
 # ---------------------------------------------------------------------
 # Main environment config

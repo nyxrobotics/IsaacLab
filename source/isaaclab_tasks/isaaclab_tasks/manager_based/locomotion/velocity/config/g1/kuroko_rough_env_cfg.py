@@ -95,7 +95,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.step_reflex_penalty,
-        weight=10.0,
+        weight=20.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -153,13 +153,19 @@ class KurokoRewards(RewardsCfg):
                 "elbow_r_rear",])},
     )
 
-    joint_torque_hips = RewTerm(
+    joint_torque_hip_pitch = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
+                "hip_r_pitch"])},
+    )
+    
+    joint_torque_hip_roll = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-0.8,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
-                "hip_r_pitch",
                 "hip_r_roll"])},
     )
 

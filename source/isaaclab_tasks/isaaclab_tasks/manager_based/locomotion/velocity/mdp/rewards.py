@@ -403,7 +403,6 @@ def alive_bonus_torso(
     return alive
 
 
-
 def step_reflex_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,

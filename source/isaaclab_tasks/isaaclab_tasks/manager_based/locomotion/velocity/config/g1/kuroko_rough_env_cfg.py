@@ -168,6 +168,14 @@ class KurokoRewards(RewardsCfg):
                 "hip_l_roll",
                 "hip_r_roll"])},
     )
+    
+    joint_torque_ankle_roll = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-0.4,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "ankle_l_roll",
+                "ankle_r_roll"])},
+    )
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,

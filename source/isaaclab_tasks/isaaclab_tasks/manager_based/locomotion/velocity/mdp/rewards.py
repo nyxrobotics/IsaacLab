@@ -234,3 +234,120 @@ def feet_air_time_height_penalty(
     penalty = torch.where(no_step_required, torch.zeros_like(penalty), penalty)
 
     return penalty
+
+def track_lin_vel_xy_yaw_frame_linear_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """
+    Linear penalty for tracking linear velocity commands (x,y) in the yaw-aligned robot frame.
+
+    - Perfect tracking → 0
+    - Velocity mismatch → negative penalty proportional to L2 error
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # transform linear velocity into yaw-aligned base frame
+    vel_yaw = quat_rotate_inverse(
+        yaw_quat(asset.data.root_quat_w),
+        asset.data.root_lin_vel_w[:, :3]
+    )  # (N, 3)
+
+    # commanded linear velocity (x, y) only
+    cmd = env.command_manager.get_command(command_name)[:, :2]   # (N, 2)
+
+    # linear L2 error
+    error_vec = cmd - vel_yaw[:, :2]     # (N, 2)
+    lin_vel_error = torch.linalg.norm(error_vec, ord=1, dim=1)
+    # ※ L1（absの和）にしたい場合は ord=1、L2（二乗和ルート）なら ord=2
+
+    # return negative penalty
+    return -lin_vel_error
+
+def track_ang_vel_z_world_linear_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Linear penalty for tracking yaw angular velocity (ang_vel_z) in world frame.
+
+    - Perfect tracking: penalty = 0
+    - Mismatch: negative penalty proportional to |cmd - actual|
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # commanded yaw rate
+    cmd_yaw = env.command_manager.get_command(command_name)[:, 2]      # (N,)
+
+    # actual yaw rate in world frame
+    yaw_actual = asset.data.root_ang_vel_w[:, 2]                       # (N,)
+
+    # absolute error
+    ang_vel_error = torch.abs(cmd_yaw - yaw_actual)                    # (N,)
+
+    # negative penalty
+    penalty = -ang_vel_error
+
+    return penalty
+
+
+def command_ratio_alignment_penalty(
+    env,
+    command_name: str,
+    asset_cfg=SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """
+    Penalize mismatch between the ratio (direction) of command velocity
+    and actual velocity: x, y, yaw components considered as one 3D vector.
+
+    Perfect ratio match (same direction) → 0
+    Larger mismatch → negative penalty
+    """
+
+    # -----------------------------
+    # 1) Command vector c = [vx, vy, yaw]
+    # -----------------------------
+    cmd = env.command_manager.get_command(command_name)
+    c = cmd[:, :3]   # (N, 3): vx, vy, yaw_cmd
+
+    # -----------------------------
+    # 2) Actual velocity vector v
+    #     - linear vel xy in yaw frame
+    #     - yaw rate in world frame
+    # -----------------------------
+    asset = env.scene[asset_cfg.name]
+
+    # convert linear vel to yaw-aligned frame
+    vel_yaw = quat_rotate_inverse(
+        yaw_quat(asset.data.root_quat_w),
+        asset.data.root_lin_vel_w[:, :3]
+    )
+
+    vx = vel_yaw[:, 0]
+    vy = vel_yaw[:, 1]
+    yaw_rate = asset.data.root_ang_vel_w[:, 2]
+
+    v = torch.stack([vx, vy, yaw_rate], dim=1)
+
+    # -----------------------------
+    # 3) Cosine similarity
+    # -----------------------------
+    eps = 1e-6
+    c_norm = torch.norm(c, dim=1) + eps
+    v_norm = torch.norm(v, dim=1) + eps
+
+    cos_sim = torch.sum(c * v, dim=1) / (c_norm * v_norm)  # (N,)
+
+    # clamp to avoid numerical issues
+    cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
+
+    # -----------------------------
+    # 4) Penalty = negative mismatch
+    # -----------------------------
+    penalty = cos_sim - 1.0
+    # cos_sim = 1 → penalty = 0
+    # cos_sim = 0 → penalty = -1
+    # cos_sim = -1 → penalty = -2
+
+    return penalty

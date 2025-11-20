@@ -94,17 +94,25 @@ class KurokoRewards(RewardsCfg):
     )
 
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_height_penalty,
-        weight=10.0,
+        func=mdp.step_reflex_penalty,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=[]),
-            "desired_lift_time": 0.2,
-            "desired_lift_height": 0.02,
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "vel_thresh": 0.0001,
+            "tilt_margin": 0.2,
+            "min_air_time": 0.2,
+            "max_stance_time": 0.2,
+            "min_air_height": 0.02,
         },
     )
-
     torso_height_limit = RewTerm(
         func=mdp.torso_height_penalty,
         weight= 10.0,
@@ -156,7 +164,7 @@ class KurokoRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.01,
+        weight=0.1,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
@@ -337,7 +345,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -100.0
+        self.rewards.flat_orientation_l2.weight = -1.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

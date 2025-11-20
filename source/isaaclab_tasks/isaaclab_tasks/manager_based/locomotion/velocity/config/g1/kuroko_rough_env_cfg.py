@@ -55,7 +55,7 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=40.0,
+        weight=65.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -80,7 +80,7 @@ class KurokoRewards(RewardsCfg):
 
     track_trajectory_penalty = RewTerm(
         func=mdp.command_ratio_alignment_penalty,
-        weight=20.0,
+        weight=10.0,
         params={"command_name": "base_velocity"},
     )
 
@@ -146,12 +146,34 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hips = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.1,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_l_roll",
                 "hip_r_pitch",
                 "hip_r_roll"])},
+    )
+
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=0.01,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+                "margin": 0.2},
+    )
+
+    cmd_yaw_joint_penalty = RewTerm(
+        func=mdp.joint_deviation_axis_scaled_penalty,
+        weight=0.01,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "chest", "ankle_r_yaw", "ankle_l_yaw"
+            ]),
+            "axis_max": 0.1,
+            "axis": "yaw",
+        },
     )
 
 # ---------------------------------------------------------------------
@@ -315,7 +337,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -10.0
+        self.rewards.flat_orientation_l2.weight = -100.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

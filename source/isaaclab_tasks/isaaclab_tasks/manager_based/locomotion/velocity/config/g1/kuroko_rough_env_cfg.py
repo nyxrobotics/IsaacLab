@@ -100,17 +100,18 @@ class KurokoRewards(RewardsCfg):
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "vel_thresh": 0.0001,
             "tilt_margin": 0.2,
             "min_air_time": 0.2,
             "max_stance_time": 0.2,
             "min_air_height": 0.01,
+            "accel_margin": 1.0,
         },
     )
 
@@ -282,8 +283,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------
-        self.rewards.feet_air_time.params["sensor_cfg"].body_names = ankle_names
-        self.rewards.feet_air_time.params["asset_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 

@@ -424,7 +424,6 @@ def alive_bonus_torso(
     return alive
 
 
-
 def step_reflex_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -435,6 +434,7 @@ def step_reflex_penalty(
     min_air_time: float,
     max_stance_time: float,
     min_air_height: float,
+    accel_margin: float,
 ) -> torch.Tensor:
     """
     Step-reflex penalty.
@@ -455,189 +455,175 @@ def step_reflex_penalty(
       - torso frame: articulation root pose (root_pos_w, root_quat_w)
     """
 
-    eps = 1.0e-6
+    eps = 1e-6
 
-    # --------------------------------------------------------
-    # 1) Command magnitude (should we step?)
-    # --------------------------------------------------------
-    cmd = env.command_manager.get_command(command_name)  # (N,3): [vx, vy, yaw]
-    cmd_xy = torch.norm(cmd[:, :2], dim=1)              # (N,)
-    cmd_yaw = torch.abs(cmd[:, 2])                      # (N,)
+    # -------------------------------------------------------
+    # body IDs: [torso, left_foot, right_foot]
+    # -------------------------------------------------------
+    torso_id, left_id, right_id = asset_cfg.body_ids
+
+    asset = env.scene[asset_cfg.name]
+
+    # full body states
+    body_pos = asset.data.body_pos_w          # (N, B, 3)
+    body_quat = asset.data.body_quat_w        # (N, B, 4)
+    body_vel = asset.data.body_lin_vel_w      # (N, B, 3)
+    body_acc = asset.data.body_lin_acc_w      # (N, B, 3)
+
+    # torso state
+    torso_pos = body_pos[:, torso_id]
+    torso_quat = body_quat[:, torso_id]
+    torso_vel = body_vel[:, torso_id]
+    torso_acc = body_acc[:, torso_id]
+
+    # feet z
+    left_z = body_pos[:, left_id, 2]
+    right_z = body_pos[:, right_id, 2]
+
+    # -------------------------------------------------------
+    # 1) Command magnitude
+    # -------------------------------------------------------
+    cmd = env.command_manager.get_command(command_name)  # (N,3)
+    cmd_xy = torch.norm(cmd[:, :2], dim=1)
+    cmd_yaw = torch.abs(cmd[:, 2])
     cmd_speed = torch.sqrt(cmd_xy * cmd_xy + cmd_yaw * cmd_yaw)
-
     # --------------------------------------------------------
-    # 2) Torso tilt (root frame)
+    # 2) Torso tilt (torso(body_link) frame)
     # --------------------------------------------------------
     asset = env.scene[asset_cfg.name]
-    g_b = asset.data.projected_gravity_b                # (N,3)
-    tilt_l2 = torch.sum(g_b[:, :2] * g_b[:, :2], dim=1)
+    torso_g_b = asset.data.projected_gravity_b
+    tilt_l2 = torch.sum(torso_g_b[:, :2] * torso_g_b[:, :2], dim=1)
 
-    need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
 
     # tilt-dependent allowed double-stance time:
     tilt_norm = torch.clamp(tilt_l2 / (tilt_margin + eps), 0.0, 1.0)
     effective_max_stance_time = max_stance_time * (1.0 - tilt_norm)
-
     # near-level region: encourage alternating steps
     near_level = tilt_l2 <= tilt_margin
+    
+    need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
 
     # --------------------------------------------------------
-    # 3) Contact info (feet)
+    # 2b) forward acceleration-based stance shrink (torso-based)
     # --------------------------------------------------------
+    v_xy = torso_vel[:, :2]
+    a_xy = torso_acc[:, :2]
+
+    v_norm = torch.norm(v_xy, dim=1)
+    v_unit = v_xy / (v_norm.unsqueeze(-1) + 1e-6)
+
+    a_forward = torch.sum(v_unit * a_xy, dim=1)
+    a_forward_pos = torch.relu(a_forward)
+
+    if accel_margin > 0:
+        acc_ratio = torch.clamp(a_forward_pos / (accel_margin + eps), 0.0, 1.0)
+        acc_scale = 1.0 - acc_ratio
+    else:
+        acc_scale = torch.ones_like(a_forward_pos)
+
+    accelerating_forward = (a_forward_pos > 1.0e-4) & (v_norm > 1.0e-4)
+
+    accel_scale_factor = torch.where(
+        accelerating_forward, acc_scale, torch.ones_like(acc_scale)
+    )
+
+    effective_max_stance_time = effective_max_stance_time * accel_scale_factor
+
+    need_to_step = need_to_step | accelerating_forward
+
+    # -------------------------------------------------------
+    # 3) Contact info
+    # -------------------------------------------------------
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]         # (N,2)
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] # (N,2)
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids[1:]]      # left,right
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids[1:]]
 
-    in_contact = contact_time > 0.0
+    in_contact = contact_time > 0
     left_contact = in_contact[:, 0]
     right_contact = in_contact[:, 1]
+    double_stance_time = torch.min(contact_time, dim=1)[0]
 
-    # double-stance time: min of contact_time
-    double_stance_time = torch.min(contact_time, dim=1)[0]  # (N,)
-
-    # --------------------------------------------------------
-    # 4) Swing foot detection (height + contact + stance_time)
-    # --------------------------------------------------------
-    robot = env.scene[asset_cfg.name]
-    pos = robot.data.body_pos_w           # (N, num_bodies, 3)
-    vel_w = robot.data.body_lin_vel_w     # (N, num_bodies, 3)
-    ang_vel_w = robot.data.body_ang_vel_w # (N, num_bodies, 3)
-
-    # asset_cfg.body_ids は [left_foot, right_foot] を想定
-    left_id, right_id = asset_cfg.body_ids
-
-    left_z = pos[:, left_id, 2]
-    right_z = pos[:, right_id, 2]
-
+    # -------------------------------------------------------
+    # 4) Swing foot detection
+    # -------------------------------------------------------
     left_higher = left_z > right_z
     right_higher = right_z > left_z
 
     left_stance_time = contact_time[:, 0]
     right_stance_time = contact_time[:, 1]
 
-    # 傾きが小さいときだけ、反対足の stance_time を要求して交互ステップを促す
-    right_stance_ok_for_left = torch.where(
+    right_stance_ok = torch.where(
         near_level,
         right_stance_time >= min_air_time,
         torch.ones_like(right_stance_time, dtype=torch.bool),
     )
-    left_stance_ok_for_right = torch.where(
+    left_stance_ok = torch.where(
         near_level,
         left_stance_time >= min_air_time,
         torch.ones_like(left_stance_time, dtype=torch.bool),
     )
 
-    # normal single-stance swing
-    left_swing_single = (
-        left_higher
-        & (~left_contact)
-        & right_contact
-        & right_stance_ok_for_left
-    )
-    right_swing_single = (
-        right_higher
-        & (~right_contact)
-        & left_contact
-        & left_stance_ok_for_right
-    )
+    left_swing = (
+        left_higher & (~left_contact) & right_contact & right_stance_ok
+    ) | ((~left_contact) & (~right_contact) & left_higher)
 
-    # both feet in air: higher foot is swing
-    both_air = (~left_contact) & (~right_contact)
-    left_swing_air = both_air & left_higher
-    right_swing_air = both_air & right_higher
+    right_swing = (
+        right_higher & (~right_contact) & left_contact & left_stance_ok
+    ) | ((~left_contact) & (~right_contact) & right_higher)
 
-    left_swing = left_swing_single | left_swing_air
-    right_swing = right_swing_single | right_swing_air
     is_swing = left_swing | right_swing
-
     reflex_single = need_to_step & is_swing
     reflex_double = need_to_step & (~is_swing)
 
-    # swing foot air-time & height (world)
-    swing_air_time_lr = torch.where(left_swing, air_time[:, 0], air_time[:, 1])
-    swing_air_time = torch.where(
-        is_swing, swing_air_time_lr, torch.zeros_like(swing_air_time_lr)
-    )
+    swing_air_time = torch.where(left_swing, air_time[:, 0], air_time[:, 1])
+    swing_air_time = torch.where(is_swing, swing_air_time, torch.zeros_like(swing_air_time))
+
     swing_height = torch.abs(left_z - right_z)
 
-    # --------------------------------------------------------
-    # 5) Penalty: long double-stance (tilt-dependent)
-    # --------------------------------------------------------
-    stance_missing = torch.relu(double_stance_time - effective_max_stance_time) / (
-        max_stance_time + eps
-    )
-    stance_penalty = torch.where(
-        reflex_double,
-        -stance_missing,
-        torch.zeros_like(stance_missing),
-    )
+    # -------------------------------------------------------
+    # 5) Stance-time penalty
+    # -------------------------------------------------------
+    stance_missing = torch.relu(double_stance_time - effective_max_stance_time) / (max_stance_time + eps)
+    stance_penalty = torch.where(reflex_double, -stance_missing, torch.zeros_like(stance_missing))
 
-    # --------------------------------------------------------
-    # 6) Penalty: insufficient swing time (world)
-    # --------------------------------------------------------
+    # -------------------------------------------------------
+    # 6) Swing time penalty
+    # -------------------------------------------------------
     air_missing = torch.relu(min_air_time - swing_air_time) / (min_air_time + eps)
-    air_penalty = torch.where(
-        reflex_single,
-        -air_missing,
-        torch.zeros_like(air_missing),
-    )
+    air_penalty = torch.where(reflex_single, -air_missing, torch.zeros_like(air_missing))
 
-    # --------------------------------------------------------
-    # 7) Penalty: insufficient swing height (world)
-    # --------------------------------------------------------
+    # -------------------------------------------------------
+    # 7) Swing height penalty (world)
+    # -------------------------------------------------------
     height_missing = torch.relu(min_air_height - swing_height) / (min_air_height + eps)
-    height_penalty = torch.where(
-        reflex_single,
-        -height_missing,
-        torch.zeros_like(height_missing),
-    )
+    height_penalty = torch.where(reflex_single, -height_missing, torch.zeros_like(height_missing))
 
-    # --------------------------------------------------------
-    # 8) Penalty: insufficient local swing height (root frame)
-    # --------------------------------------------------------
-    torso_quat = asset.data.root_quat_w  # (N,4)
-    torso_pos = asset.data.root_pos_w    # (N,3)
+    # -------------------------------------------------------
+    # 8) Swing height penalty (local torso frame)
+    # -------------------------------------------------------
+    swing_pos = torch.where(left_swing.unsqueeze(-1), body_pos[:, left_id], body_pos[:, right_id])
+    stance_pos = torch.where(left_higher.unsqueeze(-1), body_pos[:, right_id], body_pos[:, left_id])
 
-    swing_pos_w = torch.where(
-        left_swing.unsqueeze(-1),
-        pos[:, left_id],
-        pos[:, right_id],
-    )
-    stance_pos_w = torch.where(
-        left_higher.unsqueeze(-1),
-        pos[:, right_id],   # left higher -> right is stance
-        pos[:, left_id],    # right higher -> left is stance
-    )
+    swing_local = quat_rotate_inverse(torso_quat, swing_pos - torso_pos)
+    stance_local = quat_rotate_inverse(torso_quat, stance_pos - torso_pos)
 
-    swing_pos_local = quat_rotate_inverse(torso_quat, swing_pos_w - torso_pos)
-    stance_pos_local = quat_rotate_inverse(torso_quat, stance_pos_w - torso_pos)
+    local_height_diff = swing_local[:, 2] - stance_local[:, 2]
+    local_height_missing = torch.relu(min_air_height - local_height_diff) / (min_air_height + eps)
+    local_height_penalty = torch.where(reflex_single, -local_height_missing, torch.zeros_like(local_height_missing))
 
-    local_height_diff = swing_pos_local[:, 2] - stance_pos_local[:, 2]
-    local_height_missing = torch.relu(min_air_height - local_height_diff) / (
-        min_air_height + eps
-    )
-    local_height_penalty = torch.where(
-        reflex_single,
-        -local_height_missing,
-        torch.zeros_like(local_height_missing),
-    )
-
-    # --------------------------------------------------------
-    # 9) Total penalty
-    # --------------------------------------------------------
+    # -------------------------------------------------------
+    # 9) Total
+    # -------------------------------------------------------
     total_penalty = (
         stance_penalty
         + air_penalty
         + height_penalty
         + local_height_penalty
     )
-    total_penalty = torch.where(
-        need_to_step,
-        total_penalty,
-        torch.zeros_like(total_penalty),
-    )
 
-    return total_penalty
+    return torch.where(need_to_step, total_penalty, torch.zeros_like(total_penalty))
+
+
 
 def feet_contact_angle_penalty(
     env,

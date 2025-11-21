@@ -87,6 +87,54 @@ from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+# =====================================================================
+# SAFETY PATCH: Clamp policy.log_std after every PPO.update
+#   + warn when invalid values are detected
+# =====================================================================
+from rsl_rl.algorithms.ppo import PPO
+
+_original_ppo_update = PPO.update
+
+def _safe_ppo_update(self, *args, **kwargs):
+    # Run original update
+    out = _original_ppo_update(self, *args, **kwargs)
+
+    # safety guard for log_std
+    with torch.no_grad():
+        policy = self.policy
+        if hasattr(policy, "log_std"):
+            log_std = policy.log_std.data
+
+            # detect invalid values
+            invalid_mask = ~torch.isfinite(log_std)
+            if invalid_mask.any():
+                print(
+                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). "
+                    "They have been reset to 0.0."
+                )
+                log_std[invalid_mask] = 0.0
+
+            # detect values outside safe range
+            too_low  = (log_std < -20.0)
+            too_high = (log_std > 2.0)
+
+            if too_low.any() or too_high.any():
+                print(
+                    "[WARNING] Detected policy.log_std outside safe range "
+                    "(-20, 2). Values have been clamped."
+                )
+
+            # clamp range so std = exp(log_std) stays valid
+            log_std.clamp_(min=-20.0, max=2.0)
+
+            # write back
+            policy.log_std.data.copy_(log_std)
+
+    return out
+
+# Patch PPO.update
+PPO.update = _safe_ppo_update
+# =====================================================================
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path

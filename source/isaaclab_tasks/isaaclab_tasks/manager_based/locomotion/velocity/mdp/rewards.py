@@ -109,7 +109,7 @@ def torso_height_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
     target_height: float,
-    upward_scale: float = 0.1,
+    upward_scale: float = 1.0,
 ) -> torch.Tensor:
     """
     Height-maintenance penalty with asymmetric weight:
@@ -310,6 +310,7 @@ def command_ratio_alignment_penalty(
     env,
     command_name: str,
     asset_cfg=SceneEntityCfg("robot"),
+    speed_scale: float = 1.0,
 ) -> torch.Tensor:
     """
     Penalize mismatch between the ratio (direction) of command velocity
@@ -363,6 +364,13 @@ def command_ratio_alignment_penalty(
     # cos_sim = 1 → penalty = 0
     # cos_sim = 0 → penalty = -1
     # cos_sim = -1 → penalty = -2
+
+
+    # -----------------------------
+    # 5) Scale mismatch by speed
+    # -----------------------------
+    v_mag = torch.norm(v, dim=1)   # (N,)
+    penalty = penalty * v_mag * speed_scale
 
     return penalty
 

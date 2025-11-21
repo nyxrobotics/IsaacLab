@@ -101,7 +101,7 @@ class KurokoRewards(RewardsCfg):
 
     track_trajectory_penalty = RewTerm(
         func=mdp.command_ratio_alignment_penalty,
-        weight=10.0,
+        weight=1.0,
         params={"command_name": "base_velocity"},
     )
 

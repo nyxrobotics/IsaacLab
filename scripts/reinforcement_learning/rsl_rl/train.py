@@ -134,6 +134,54 @@ def _safe_ppo_update(self, *args, **kwargs):
 
 # Patch PPO.update
 PPO.update = _safe_ppo_update
+
+# =====================================================================
+# SAFETY PATCH 2: Guard ActorCritic.act so that invalid std doesn't crash
+# =====================================================================
+from rsl_rl.modules.actor_critic import ActorCritic
+
+_original_act = ActorCritic.act
+
+def _safe_act(self, *args, **kwargs):
+    try:
+        # まず元の act をそのまま呼ぶ
+        return _original_act(self, *args, **kwargs)
+    except RuntimeError as e:
+        # std が負/NaN で normal() がコケたケースだけを捕まえる
+        msg = str(e)
+        if "normal expects all elements of std" not in msg:
+            # それ以外のエラーはそのまま投げる
+            raise
+
+        print("[WARNING] ActorCritic.act: invalid std detected. Trying to repair policy.log_std and retry...")
+
+        with torch.no_grad():
+            if hasattr(self, "log_std"):
+                log_std = self.log_std.data
+
+                # NaN / Inf を 0.0 に置き換え
+                invalid = ~torch.isfinite(log_std)
+                if invalid.any():
+                    print("          - Found NaN/Inf in log_std. Resetting those entries to 0.0.")
+                    log_std[invalid] = 0.0
+
+                # 範囲外（-20, 2の外）を検出
+                too_low = log_std < -20.0
+                too_high = log_std > 2.0
+                if too_low.any() or too_high.any():
+                    print("          - Found log_std outside [-20, 2]. Clamping into this range.")
+
+                # クランプ
+                log_std.clamp_(min=-20.0, max=2.0)
+                self.log_std.data.copy_(log_std)
+            else:
+                print("          - WARNING: policy has no log_std attribute. Cannot repair.")
+
+        # 1回だけリトライしてみる
+        return _original_act(self, *args, **kwargs)
+
+# ActorCritic.act を差し替え
+ActorCritic.act = _safe_act
 # =====================================================================
 
 import isaaclab_tasks  # noqa: F401

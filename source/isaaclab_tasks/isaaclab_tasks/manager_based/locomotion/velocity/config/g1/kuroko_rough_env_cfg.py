@@ -55,17 +55,17 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=75.0,
+        weight=60.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=["chest_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
-            "min_height": 0.2,
-            "max_tilt": 0.6,
+            "min_height": 0.32,
+            "max_tilt": 0.3,
         },
     )
-        
+
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_linear_penalty,
         weight=40.0,
@@ -113,22 +113,6 @@ class KurokoRewards(RewardsCfg):
             "min_air_height": 0.01,
         },
     )
-    
-    torso_height_limit = RewTerm(
-        func=mdp.torso_height_penalty,
-        weight= 10.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[
-                    "body_link",
-                    "ankle_l_yaw_link",
-                    "ankle_r_yaw_link",
-                ],
-            ),
-            "min_height": 0.32,
-        },
-    )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -139,9 +123,23 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
+    feet_force_angle_penalty = RewTerm(
+        func=mdp.feet_contact_angle_penalty,
+        weight=1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+            "angle_limit_deg": 60.0
+        },
+    )
+
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
@@ -155,7 +153,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hip_pitch = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.4,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
@@ -163,7 +161,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hip_roll = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.8,
+        weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll"])},
@@ -171,7 +169,7 @@ class KurokoRewards(RewardsCfg):
     
     joint_torque_ankle_roll = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.4,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_roll",
                 "ankle_r_roll"])},
@@ -179,16 +177,16 @@ class KurokoRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.1,
+        weight=0.01,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
-                "margin": 0.2},
+                "margin": 0.1},
     )
 
     cmd_yaw_joint_penalty = RewTerm(
         func=mdp.joint_deviation_axis_scaled_penalty,
-        weight=0.01,
+        weight=0.001,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=[
@@ -360,7 +358,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -10.0
+        self.rewards.flat_orientation_l2.weight = -100.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

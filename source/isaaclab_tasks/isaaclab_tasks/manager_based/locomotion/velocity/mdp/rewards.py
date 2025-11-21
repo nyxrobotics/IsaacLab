@@ -76,7 +76,7 @@ def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = Scen
     """
     # Penalize feet sliding
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0e-3
     asset = env.scene[asset_cfg.name]
 
     body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
@@ -601,117 +601,13 @@ def step_reflex_penalty(
     )
 
     # --------------------------------------------------------
-    # 9) Penalty: swing foot velocity opposite desired dir (world xy)
-    # --------------------------------------------------------
-    cmd_xy_vec = cmd[:, :2]                                  # (N,2)
-    cmd_xy_norm = torch.norm(cmd_xy_vec, dim=1, keepdim=True)
-
-    root_vel_xy = asset.data.root_lin_vel_w[:, :2]           # (N,2)
-    root_vel_norm = torch.norm(root_vel_xy, dim=1, keepdim=True)
-
-    cmd_dir = cmd_xy_vec / (cmd_xy_norm + eps)
-    fall_dir = root_vel_xy / (root_vel_norm + eps)
-
-    use_cmd = cmd_xy_norm > 1.0e-3
-    use_fall = (~use_cmd) & (root_vel_norm > 1.0e-3)
-
-    dir_world_xy = torch.where(
-        use_cmd,
-        cmd_dir,
-        torch.where(use_fall, fall_dir, torch.zeros_like(cmd_dir)),
-    )  # (N,2)
-
-    has_dir = torch.norm(dir_world_xy, dim=1) > 0.0
-
-    swing_vel_w = torch.where(
-        left_swing.unsqueeze(-1),
-        vel_w[:, left_id],
-        vel_w[:, right_id],
-    )  # (N,3)
-
-    swing_vel_xy = swing_vel_w[:, :2]
-
-    v_par_world = torch.sum(swing_vel_xy * dir_world_xy, dim=1)
-    opp_world = torch.relu(-v_par_world)
-    vel_world_penalty = torch.where(
-        reflex_single & has_dir,
-        -opp_world,
-        torch.zeros_like(opp_world),
-    )
-
-    # --------------------------------------------------------
-    # 10) Penalty: swing foot velocity opposite desired dir (local xy)
-    # --------------------------------------------------------
-    dir_world_3d = torch.stack(
-        [
-            dir_world_xy[:, 0],
-            dir_world_xy[:, 1],
-            torch.zeros_like(dir_world_xy[:, 0]),
-        ],
-        dim=1,
-    )  # (N,3)
-    dir_local_3d = quat_rotate_inverse(torso_quat, dir_world_3d)
-    swing_vel_local = quat_rotate_inverse(torso_quat, swing_vel_w)
-
-    dir_local_xy = dir_local_3d[:, :2]
-    swing_vel_local_xy = swing_vel_local[:, :2]
-
-    v_par_local = torch.sum(swing_vel_local_xy * dir_local_xy, dim=1)
-    opp_local = torch.relu(-v_par_local)
-    vel_local_penalty = torch.where(
-        reflex_single & has_dir,
-        -opp_local,
-        torch.zeros_like(opp_local),
-    )
-
-    # --------------------------------------------------------
-    # 11) Penalty: swing foot yaw velocity opposite yaw command (world)
-    # --------------------------------------------------------
-    yaw_cmd = cmd[:, 2]
-    has_yaw_cmd = torch.abs(yaw_cmd) > 1.0e-4
-
-    swing_ang_vel_w = torch.where(
-        left_swing.unsqueeze(-1),
-        ang_vel_w[:, left_id],
-        ang_vel_w[:, right_id],
-    )  # (N,3)
-
-    swing_yaw_vel = swing_ang_vel_w[:, 2]
-
-    v_par_yaw = yaw_cmd * swing_yaw_vel
-    opp_yaw = torch.relu(-v_par_yaw)
-    yaw_penalty = torch.where(
-        reflex_single & has_yaw_cmd,
-        -opp_yaw,
-        torch.zeros_like(opp_yaw),
-    )
-
-    # --------------------------------------------------------
-    # 12) Penalty: swing foot yaw velocity opposite yaw command (local)
-    # --------------------------------------------------------
-    swing_ang_vel_local = quat_rotate_inverse(torso_quat, swing_ang_vel_w)
-    swing_yaw_vel_local = swing_ang_vel_local[:, 2]
-
-    v_par_yaw_local = yaw_cmd * swing_yaw_vel_local
-    opp_yaw_local = torch.relu(-v_par_yaw_local)
-    yaw_local_penalty = torch.where(
-        reflex_single & has_yaw_cmd,
-        -opp_yaw_local,
-        torch.zeros_like(opp_yaw_local),
-    )
-
-    # --------------------------------------------------------
-    # 13) Total penalty
+    # 9) Total penalty
     # --------------------------------------------------------
     total_penalty = (
         stance_penalty
         + air_penalty
         + height_penalty
         + local_height_penalty
-        + vel_world_penalty
-        + vel_local_penalty
-        + yaw_penalty
-        + yaw_local_penalty
     )
     total_penalty = torch.where(
         need_to_step,
@@ -720,3 +616,62 @@ def step_reflex_penalty(
     )
 
     return total_penalty
+
+def feet_contact_angle_penalty(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    angle_limit_deg: float,
+) -> torch.Tensor:
+    """
+    Penalize feet applying ground reaction forces at a large angle from gravity.
+    Uses both sensor_cfg (force data) and asset_cfg (which foot links to include).
+    """
+
+    eps = 1e-6
+    angle_limit_rad = angle_limit_deg * (3.14159265 / 180.0)
+
+    # --------------------------------------------------------
+    # 1) Contact forces from sensor
+    # --------------------------------------------------------
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    # forces_w_history: (N, history, sensor_bodies, 3)
+    forces_w = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # latest frame
+
+    # sensor_cfg.body_ids → force array index (usually 0 or 1 for two feet)
+    sensor_ids = sensor_cfg.body_ids
+
+    # asset_cfg.body_ids → which robot foot links are evaluated
+    asset_ids = asset_cfg.body_ids
+
+    # センサーの foot index と asset_cfg の foot index が一致している前提で取り出す
+    # もし一致していない場合は mapping 処理が必要（その場合は教えてください）
+    forces_w = forces_w[:, sensor_ids, :]        # (N, num_feet, 3)
+
+    force_norm = torch.norm(forces_w, dim=-1) + eps
+    Fz = forces_w[..., 2]
+
+    # detect contact
+    in_contact = force_norm > 1e-3
+
+    # --------------------------------------------------------
+    # 2) Angle with gravity
+    # --------------------------------------------------------
+    cos_theta = (-Fz) / force_norm
+    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+    theta = torch.acos(cos_theta)
+
+    # --------------------------------------------------------
+    # 3) penalty
+    # --------------------------------------------------------
+    theta_excess = torch.relu(theta - angle_limit_rad)
+    penalty_per_foot = -theta_excess
+
+    # only apply when foot is in contact
+    penalty_per_foot = torch.where(in_contact, penalty_per_foot, torch.zeros_like(penalty_per_foot))
+
+    # sum over asset_cfg feet
+    penalty = torch.sum(penalty_per_foot, dim=-1)
+
+    return penalty

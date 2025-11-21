@@ -55,7 +55,7 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=100.0,
+        weight=20.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -243,7 +243,7 @@ class KurokoRewards(RewardsCfg):
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
-                "margin": 0.1},
+                "margin": 0},
     )
 
     cmd_yaw_joint_penalty = RewTerm(

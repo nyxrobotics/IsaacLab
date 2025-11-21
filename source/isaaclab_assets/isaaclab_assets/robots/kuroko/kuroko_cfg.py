@@ -15,9 +15,9 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             rigid_body_enabled=True,
-            max_linear_velocity=10.0,
+            max_linear_velocity=40.0,
             max_angular_velocity=10000.0,
-            max_depenetration_velocity=10.0,
+            max_depenetration_velocity=40.0,
             enable_gyroscopic_forces=True,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(

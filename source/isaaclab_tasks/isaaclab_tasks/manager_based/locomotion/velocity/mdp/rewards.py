@@ -988,10 +988,10 @@ def drive_forward_foot_penalty(
     )
 
     # swing active 条件：片足接地 or 両足浮き / 両足接地では無効
-    active_swing = left_only | right_only | both_in_air
+    active_swing = left_only | right_only
 
     swing_penalty = torch.where(
-        active_swing,
+        active_swing | both_in_air,
         -swing_missing,
         torch.zeros_like(swing_missing),
     )

@@ -400,3 +400,69 @@ def joint_deviation_axis_scaled_penalty(
     penalty = -base_penalty * scale
 
     return penalty
+
+
+def feet_lateral_separation_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    min_lateral_distance: float,
+    k: float = 1.0,
+) -> torch.Tensor:
+    """
+    Penalize when the lateral separation (y-axis in root frame) between left and right foot
+    is smaller than min_lateral_distance.
+
+    - penalty <= 0 (0 = ideal)
+    - For sep_y >= min_lateral_distance → penalty = 0
+    - For sep_y <  min_lateral_distance:
+          penalty = - ( (min_dist - sep_y) / min_dist ) ^ k
+      (k controls the sharpness)
+    - When k = 0, the penalty becomes binary:
+          penalty = 0 if sep_y >= min_dist else -1
+    """
+
+    eps = 1e-6
+
+    # robot articulation
+    asset = env.scene[asset_cfg.name]
+
+    # world positions
+    pos_w = asset.data.body_pos_w
+
+    # root coordinates (torso frame)
+    root_pos_w = asset.data.root_pos_w
+    root_quat_w = asset.data.root_quat_w
+
+    # foot link indices
+    left_id, right_id = asset_cfg.body_ids
+
+    # world positions of feet
+    left_w = pos_w[:, left_id]
+    right_w = pos_w[:, right_id]
+
+    # convert to root-local frame
+    left_local = quat_rotate_inverse(root_quat_w, left_w - root_pos_w)
+    right_local = quat_rotate_inverse(root_quat_w, right_w - root_pos_w)
+
+    # lateral separation in y
+    sep_y = torch.abs(left_local[:, 1] - right_local[:, 1])
+
+    # missing separation
+    missing = torch.relu(min_lateral_distance - sep_y)  # (N,)
+
+    # k=0 → binary
+    if k == 0:
+        penalty = torch.where(
+            sep_y >= min_lateral_distance,
+            torch.zeros_like(sep_y),
+            -torch.ones_like(sep_y),
+        )
+        return penalty
+
+    # normalized missing ratio in [0,1]
+    ratio = missing / (min_lateral_distance + eps)
+
+    # continuous penalty shaped by k
+    penalty = - (ratio ** k)
+
+    return penalty

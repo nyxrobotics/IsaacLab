@@ -197,6 +197,19 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
+    feet_lateral_separation = RewTerm(
+        func=mdp.feet_lateral_separation_penalty,
+        weight=1000.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "min_lateral_distance": 0.15,
+            "k": 1000.0,
+        },
+    )
+
 # ---------------------------------------------------------------------
 # Main environment config
 # ---------------------------------------------------------------------
@@ -275,14 +288,11 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        # self.terminations.base_contact = None
-        self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "chest_link",
-            "body_link",
-            "hip_r_pitch_link",
-            "hip_l_pitch_link",
-            "shoulder_r_roll_link",
-            "shoulder_l_roll_link"]
+        self.terminations.base_contact = None
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = [
+        #     "chest_link",
+        #     "hip_r_pitch_link",
+        #     "hip_l_pitch_link"]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)

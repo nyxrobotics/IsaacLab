@@ -68,7 +68,7 @@ class KurokoRewards(RewardsCfg):
     )
 
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_linear_penalty,
+        func=mdp.track_lin_vel_xy_compensated_penalty,
         weight=40.0,
         params={
             "command_name": "base_velocity",
@@ -123,6 +123,27 @@ class KurokoRewards(RewardsCfg):
             "max_stance_time": 0.2,
             "min_air_height": 0.01,
             "accel_margin": 1.0,
+        },
+    )
+
+    feet_forward_drive = RewTerm(
+        func=mdp.drive_forward_foot_penalty,
+        weight=10.0,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "vel_thresh": 0.001,
+            "fall_gain": 1.0,
+            "stance_speed_gain": 1.0,
+            "swing_speed_gain": 1.0,
+            "comp_gain": 0.5,
         },
     )
 

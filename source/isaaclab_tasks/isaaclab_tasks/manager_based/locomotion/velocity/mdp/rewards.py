@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_rotate_inverse, yaw_quat
+from isaaclab.utils.math import quat_rotate, quat_rotate_inverse, yaw_quat
 from isaaclab.envs import ManagerBasedRLEnv
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -685,7 +685,7 @@ def feet_contact_angle_penalty(
     return penalty
 
 
-def track_lin_vel_xy_yaw_frame_linear_penalty(
+def track_lin_vel_xy_compensated_penalty(
     env: ManagerBasedRLEnv,
     command_name: str,
     asset_cfg: SceneEntityCfg,
@@ -784,3 +784,284 @@ def track_lin_vel_xy_yaw_frame_linear_penalty(
     lin_vel_error = torch.linalg.norm(error_vec, ord=1, dim=1)
 
     return -lin_vel_error
+
+def drive_forward_foot_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    vel_thresh: float = 0.05,
+    fall_gain: float = 1.0,
+    stance_speed_gain: float = 1.0,
+    swing_speed_gain: float = 1.0,
+    comp_gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    Forward-drive penalty.
+
+    0 is best, more negative is worse.
+
+    前提:
+      - command_name で与えられる XY コマンドは torso(body_link) ローカル座標系
+      - asset_cfg.body_ids = [torso_id, left_foot_id, right_foot_id]
+      - sensor_cfg.body_ids = [body_link, ankle_l, ankle_r]
+
+    仕様(概要):
+      - 目標並進速度 v_des_local = cmd_local + fall_gain * v_fall_local
+      - torso の実速度が v_des_local に足りないときだけペナルティ発動
+      - 接地足:
+          * 片足接地: その足の前向き地面反力が不足していればペナルティ
+          * 両足接地: 両足の合計前向き地面反力が不足していればペナルティ
+      - 浮足:
+          * 片足接地時のみ swing として扱い、
+            command 速度 + speed_missing * swing_speed_gain 以上の前進速度を要求
+      - 補償(位置):
+          * stance foot が torso ローカルで「進行方向の反対側」にあるとき、
+            swing foot は stance_local を進行方向に対して 180 度反転した位置
+            (前方向成分で -stance_proj * comp_gain) より前に出すよう位置ペナルティ。
+          * 両足接地中は補償も行わない。
+    """
+
+    eps = 1e-6
+    asset = env.scene[asset_cfg.name]
+
+    # -------------------------------------------------------
+    # body IDs: [torso, left_foot, right_foot]
+    # -------------------------------------------------------
+    torso_id, left_id, right_id = asset_cfg.body_ids
+
+    body_pos = asset.data.body_pos_w          # (N, B, 3)
+    body_vel = asset.data.body_lin_vel_w      # (N, B, 3)
+    body_angvel = asset.data.body_ang_vel_w   # (N, B, 3)
+    body_quat = asset.data.body_quat_w        # (N, B, 4)
+
+    N = body_pos.shape[0]
+    device = body_pos.device
+    idx = torch.arange(N, device=device)
+
+    # torso state (world)
+    torso_pos = body_pos[:, torso_id]         # (N,3)
+    torso_vel_w = body_vel[:, torso_id]       # (N,3)
+    torso_ang_w = body_angvel[:, torso_id]    # (N,3)
+    torso_quat = body_quat[:, torso_id]       # (N,4)
+
+    # torso vel in local frame (XY)
+    torso_vel_local = quat_rotate_inverse(torso_quat, torso_vel_w)[:, :2]  # (N,2)
+
+    # feet positions (world)
+    left_pos = body_pos[:, left_id]           # (N,3)
+    right_pos = body_pos[:, right_id]         # (N,3)
+    left_z = left_pos[:, 2]
+    right_z = right_pos[:, 2]
+
+    # -------------------------------------------------------
+    # 0) Command (torso local) and fall-induced velocity
+    # -------------------------------------------------------
+    cmd_full = env.command_manager.get_command(command_name)  # (N,3) [vx_local, vy_local, yaw]
+    cmd_local = cmd_full[:, :2]                               # (N,2) torso local
+
+    cmd_speed = torch.norm(cmd_local, dim=1)                  # (N,)
+
+    # stance foot = lower z (world)
+    stance_is_left = left_z <= right_z
+    stance_pos_w = torch.where(
+        stance_is_left.unsqueeze(-1),
+        left_pos,
+        right_pos,
+    )  # (N,3)
+
+    # fall-induced velocity in world: v_fall = ω × r
+    r_w = torso_pos - stance_pos_w                # (N,3)
+    v_fall_w = torch.cross(torso_ang_w, r_w, dim=1)   # (N,3)
+
+    # fall-induced velocity in torso local
+    v_fall_local = quat_rotate_inverse(
+        torso_quat,
+        v_fall_w
+    )[:, :2]  # (N,2)
+
+    # desired velocity in local frame
+    v_des_local = cmd_local + fall_gain * v_fall_local       # (N,2)
+    des_speed_local = torch.norm(v_des_local, dim=1)         # (N,)
+
+    des_dir_local = torch.zeros_like(v_des_local)            # (N,2)
+    valid_des = des_speed_local > 1e-4
+    des_dir_local[valid_des] = v_des_local[valid_des] / (
+        des_speed_local[valid_des].unsqueeze(-1) + eps
+    )
+
+    # -------------------------------------------------------
+    # 1) torso speed deficiency along desired direction
+    # -------------------------------------------------------
+    torso_forward_local = torch.sum(torso_vel_local * des_dir_local, dim=1)  # (N,)
+    speed_missing = torch.relu(des_speed_local - torso_forward_local)        # (N,)
+
+    # drive が必要なときだけペナルティ有効
+    need_drive = (des_speed_local > vel_thresh) & (speed_missing > 0.0)
+
+    # -------------------------------------------------------
+    # 2) Contact forces
+    # -------------------------------------------------------
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # sensor_cfg.body_ids = [body_link, ankle_l, ankle_r] を想定
+    forces_all = sensor.data.net_forces_w_history[
+        :, -1, sensor_cfg.body_ids, :
+    ]  # (N, 3, 3)
+
+    F_body = forces_all[:, 0]   # (N,3) - 今は未使用
+    F_left = forces_all[:, 1]   # (N,3)
+    F_right = forces_all[:, 2]  # (N,3)
+
+    left_contact = torch.norm(F_left, dim=1) > 1e-2
+    right_contact = torch.norm(F_right, dim=1) > 1e-2
+
+    both_contact = left_contact & right_contact
+    left_only = left_contact & (~right_contact)
+    right_only = right_contact & (~left_contact)
+
+    # -------------------------
+    # stance / swing index
+    # -------------------------
+    # stance index in sensor frame (1 = left, 2 = right)
+    stance_sensor_idx = torch.where(
+        stance_is_left,
+        torch.full_like(idx, 1),
+        torch.full_like(idx, 2),
+    )  # (N,)
+    swing_sensor_idx = 3 - stance_sensor_idx
+
+    # stance forces (world)
+    F_stance = forces_all[idx, stance_sensor_idx]       # (N,3)
+    F_stance_xy = F_stance[:, :2]                       # (N,2)
+
+    # total foot force (for double stance)
+    F_total_xy = F_left[:, :2] + F_right[:, :2]         # (N,2)
+
+    # -------------------------------------------------------
+    # 2a) desired direction in world for force projection
+    # -------------------------------------------------------
+    # des_dir_local → world (yawの回転だけ使いたければ yaw_quat を使ってもいい)
+    des_dir_local_3 = torch.zeros((N, 3), device=device)
+    des_dir_local_3[:, :2] = des_dir_local
+
+    # full torso orientationでも良いが、必要なら yaw_quat(torso_quat) に変更可
+    des_dir_world_3 = quat_rotate(torso_quat, des_dir_local_3)  # (N,3)
+    des_dir_world_xy = des_dir_world_3[:, :2]                    # (N,2)
+    des_dir_world_norm = torch.norm(des_dir_world_xy, dim=1)
+
+    des_dir_world = torch.zeros_like(des_dir_world_xy)
+    valid_world_dir = des_dir_world_norm > 1e-4
+    des_dir_world[valid_world_dir] = des_dir_world_xy[valid_world_dir] / (
+        des_dir_world_norm[valid_world_dir].unsqueeze(-1) + eps
+    )
+
+    # -------------------------------------------------------
+    # 3) stance force penalty (single vs double stance)
+    # -------------------------------------------------------
+    required_forward = stance_speed_gain * speed_missing    # (N,)
+
+    F_stance_forward = torch.sum(F_stance_xy * des_dir_world, dim=1)  # (N,)
+    F_total_forward = torch.sum(F_total_xy * des_dir_world, dim=1)    # (N,)
+
+    stance_force_missing_single = torch.relu(required_forward - F_stance_forward)
+    stance_force_missing_both = torch.relu(required_forward - F_total_forward)
+
+    stance_penalty = torch.zeros_like(speed_missing)
+    # 片足接地
+    stance_penalty = torch.where(
+        left_only | right_only,
+        -stance_force_missing_single,
+        stance_penalty,
+    )
+    # 両足接地
+    stance_penalty = torch.where(
+        both_contact,
+        -stance_force_missing_both,
+        stance_penalty,
+    )
+
+    # -------------------------------------------------------
+    # 4) swing foot forward-motion penalty (速度)
+    #     両足接地中は swing 処理を行わない
+    # -------------------------------------------------------
+    swing_penalty = torch.zeros_like(speed_missing)
+
+    # 「どちらか片方だけ接地」のときだけ swing 有効
+    active_swing = (~both_contact) & (left_contact | right_contact)
+
+    swing_is_left = ~stance_is_left
+    swing_body_id = torch.where(
+        swing_is_left,
+        torch.full_like(idx, left_id),
+        torch.full_like(idx, right_id),
+    )
+
+    # swing velocity in local frame
+    swing_vel_w = body_vel[idx, swing_body_id]                        # (N,3)
+    swing_vel_local = quat_rotate_inverse(torso_quat, swing_vel_w)    # (N,3)
+    swing_vel_local_xy = swing_vel_local[:, :2]                       # (N,2)
+
+    swing_forward_local = torch.sum(swing_vel_local_xy * des_dir_local, dim=1)
+
+    # command 速度 + 不足速度 * ゲイン が最小目標
+    required_swing_forward = cmd_speed + swing_speed_gain * speed_missing
+    swing_missing = torch.relu(required_swing_forward - swing_forward_local)
+
+    swing_penalty = torch.where(
+        active_swing,
+        -swing_missing,
+        swing_penalty,
+    )
+
+    # -------------------------------------------------------
+    # 5) compensatory penalty (位置ベース)
+    #    stance foot が torso ローカルで進行方向の反対側にある場合、
+    #    swing foot は stance_local を進行方向に対して 180 度反転した位置
+    #    (前方向成分で -stance_proj * comp_gain) より前に出す。
+    # -------------------------------------------------------
+    compensatory_penalty = torch.zeros_like(speed_missing)
+
+    # world → torso local position
+    stance_world = torch.where(
+        stance_is_left.unsqueeze(-1),
+        left_pos,
+        right_pos,
+    )
+    swing_world = torch.where(
+        swing_is_left.unsqueeze(-1),
+        left_pos,
+        right_pos,
+    )
+
+    stance_local = quat_rotate_inverse(torso_quat, stance_world - torso_pos)  # (N,3)
+    swing_local = quat_rotate_inverse(torso_quat, swing_world - torso_pos)    # (N,3)
+
+    # 進行方向（des_dir_local）での射影
+    stance_proj = torch.sum(stance_local[:, :2] * des_dir_local, dim=1)  # (N,)
+    swing_proj = torch.sum(swing_local[:, :2] * des_dir_local, dim=1)    # (N,)
+
+    # stance が進行方向の反対側にあるか？
+    stance_on_opposite_side = stance_proj < 0.0
+
+    # 180度回転 → 前方向成分としては -stance_proj
+    required_swing_proj = -stance_proj * comp_gain
+
+    swing_proj_missing = torch.relu(required_swing_proj - swing_proj)
+
+    compensatory_penalty = torch.where(
+        active_swing & stance_on_opposite_side & valid_des,
+        -swing_proj_missing,
+        compensatory_penalty,
+    )
+
+    # -------------------------------------------------------
+    # 6) 合成
+    # -------------------------------------------------------
+    total = (
+        0.4 * stance_penalty
+        + 0.3 * swing_penalty
+        + 0.3 * compensatory_penalty
+    )
+
+    total = torch.where(need_drive, total, torch.zeros_like(total))
+    return total

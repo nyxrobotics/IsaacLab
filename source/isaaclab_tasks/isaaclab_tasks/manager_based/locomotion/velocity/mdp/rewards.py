@@ -108,36 +108,48 @@ def track_ang_vel_z_world_exp(
 def torso_height_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
-    min_height: float,
+    target_height: float,
+    upward_scale: float = 0.1,
 ) -> torch.Tensor:
-    """Penalty version:
-    - Returns 0 if torso height is sufficient.
-    - Returns negative value proportional to height deficiency (meters).
+    """
+    Height-maintenance penalty with asymmetric weight:
+
+    - Exact height → penalty = 0
+    - Too low     → strong penalty
+    - Too high    → weaker penalty controlled by upward_scale
+
+    upward_scale < 1.0  → upward penalty weaker
+    upward_scale = 1.0  → symmetric
+    upward_scale > 1.0  → upward penalty stronger
     """
 
-    # robot articulation
     asset = env.scene[asset_cfg.name]
-
-    # world positions of all bodies: (num_envs, num_bodies, 3)
     body_pos_w = asset.data.body_pos_w
 
     chest_id = asset_cfg.body_ids[0]
     ankle_ids = asset_cfg.body_ids[1:]
 
-    chest_z = body_pos_w[:, chest_id, 2]               # (num_envs,)
-    ankles_z = body_pos_w[:, ankle_ids, 2]             # (num_envs,2)
-    min_ankle_z = ankles_z.min(dim=-1).values          # (num_envs,)
+    # Heights
+    chest_z = body_pos_w[:, chest_id, 2]
+    ankles_z = body_pos_w[:, ankle_ids, 2]
+    min_ankle_z = ankles_z.min(dim=-1).values
 
-    # torso height above lowest ankle
-    rel_height = chest_z - min_ankle_z                 # (num_envs,)
+    # actual torso height above lowest ankle
+    rel_height = chest_z - min_ankle_z
 
-    # height deficiency (meters)
-    height_missing = torch.relu(min_height - rel_height)
+    # deviation
+    diff = rel_height - target_height
 
-    # negative penalty
-    penalty = -height_missing
+    # too low (negative diff)
+    too_low = torch.relu(-diff)       # strong penalty (scale=1)
+
+    # too high (positive diff)
+    too_high = torch.relu(diff) * upward_scale
+
+    penalty = -(too_low + too_high)
 
     return penalty
+
 
 
 def feet_air_time_height_penalty(
@@ -435,7 +447,9 @@ def step_reflex_penalty(
     max_stance_time: float,
     min_air_height: float,
     accel_margin: float,
+    body_offset_forward: float = 0.0,   # ← NEW
 ) -> torch.Tensor:
+
     """
     Step-reflex penalty.
 
@@ -502,6 +516,58 @@ def step_reflex_penalty(
     near_level = tilt_l2 <= tilt_margin
     
     need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
+    # --------------------------------------------------------
+    # (NEW) 2') Foot-plane tilt (torso + feet plane)
+    # --------------------------------------------------------
+
+    # base torso coord (world)
+    p_t = torso_pos        # (N,3)
+
+    # apply forward offset if enabled
+    if body_offset_forward != 0.0:
+        # offset in torso local frame
+        offset_local = torch.tensor(
+            [body_offset_forward, 0.0, 0.0],
+            device=torso_pos.device,
+            dtype=torso_pos.dtype,
+        ).view(1, 3).expand_as(p_t)
+
+        # rotate to world frame
+        offset_world = quat_rotate(torso_quat, offset_local)
+        p_t = p_t + offset_world
+
+    # feet positions
+    p_l = body_pos[:, left_id]    # (N,3)
+    p_r = body_pos[:, right_id]
+
+    # 2 edges of triangle
+    v1 = p_l - p_t
+    v2 = p_r - p_t
+
+    # plane normal
+    plane_n = torch.cross(v1, v2, dim=1)
+    plane_n_unit = plane_n / (torch.norm(plane_n, dim=1, keepdim=True) + 1e-6)
+
+    # world vertical
+    z_world = torch.tensor(
+        [0., 0., 1.],
+        device=torso_pos.device,
+        dtype=torso_pos.dtype,
+    ).view(1, 3)
+
+    # tilt = 1 - |dot(n, z_world)|
+    cos_theta = torch.sum(plane_n_unit * z_world, dim=1).clamp(-1.0, 1.0)
+    plane_tilt = 1.0 - cos_theta.abs()
+
+    # tilt threshold triggers stepping
+    need_to_step = need_to_step | (plane_tilt > tilt_margin)
+
+    # shrink stance time using max of torso-tilt & plane-tilt
+    plane_tilt_norm = torch.clamp(plane_tilt / (tilt_margin + 1e-6), 0.0, 1.0)
+    combined_tilt_norm = torch.max(tilt_norm, plane_tilt_norm)
+
+    effective_max_stance_time = max_stance_time * (1.0 - combined_tilt_norm)
+
 
     # --------------------------------------------------------
     # 2b) forward acceleration-based stance shrink (torso-based)
@@ -1043,3 +1109,103 @@ def drive_forward_foot_penalty(
 
     total = torch.where(need_drive, total, torch.zeros_like(total))
     return total
+
+def support_plane_tilt_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    tilt_margin: float,
+    k: float = 1.0,
+    body_offset_forward: float = 0.0,
+) -> torch.Tensor:
+    """
+    Penalize when the support plane (torso + left foot + right foot)
+    is tilted too much with respect to the world vertical axis.
+
+    - asset_cfg.body_ids = [torso_id, left_foot_id, right_foot_id]
+
+    The torso point used for the plane can be shifted along the torso's
+    local forward (x) axis by `body_offset_forward` (meters).
+
+    Behavior:
+      - If tilt <= tilt_margin → penalty = 0
+      - If tilt >  tilt_margin:
+          excess = tilt - tilt_margin
+          k = 0 → binary: penalty = -1
+          k > 0 → penalty = - (excess ^ k)
+    """
+
+    eps = 1e-6
+    asset = env.scene[asset_cfg.name]
+
+    # world positions and orientations of all bodies
+    body_pos = asset.data.body_pos_w    # (N, B, 3)
+    body_quat = asset.data.body_quat_w  # (N, B, 4)
+
+    # body IDs: [torso, left_foot, right_foot]
+    torso_id, left_id, right_id = asset_cfg.body_ids
+
+    # batch info
+    N = body_pos.shape[0]
+    device = body_pos.device
+    dtype = body_pos.dtype
+
+    # base torso position and orientation
+    torso_pos = body_pos[:, torso_id]      # (N,3)
+    torso_quat = body_quat[:, torso_id]    # (N,4)
+
+    # optionally shift torso point along local +x (forward) axis
+    if body_offset_forward != 0.0:
+        # local offset [dx, 0, 0]
+        offset_local = torch.tensor(
+            [body_offset_forward, 0.0, 0.0],
+            device=device,
+            dtype=dtype,
+        ).view(1, 3).expand(N, 3)  # (N,3)
+
+        offset_world = quat_rotate(torso_quat, offset_local)  # (N,3)
+        p_t = torso_pos + offset_world
+    else:
+        p_t = torso_pos
+
+    # feet positions (world)
+    p_l = body_pos[:, left_id]    # (N,3)
+    p_r = body_pos[:, right_id]   # (N,3)
+
+    # two edges of the triangle (torso→left, torso→right)
+    v1 = p_l - p_t                # (N,3)
+    v2 = p_r - p_t                # (N,3)
+
+    # plane normal
+    n = torch.cross(v1, v2, dim=1)                 # (N,3)
+    n_norm = torch.norm(n, dim=1, keepdim=True)    # (N,1)
+    n_unit = n / (n_norm + eps)                    # (N,3)
+
+    # world vertical
+    z_world = torch.tensor(
+        [0.0, 0.0, 1.0],
+        device=device,
+        dtype=dtype,
+    ).view(1, 3)
+
+    # cos(theta) between plane normal and world vertical
+    cos_theta = torch.sum(n_unit * z_world, dim=1)          # (N,)
+    cos_theta = torch.clamp(cos_theta.abs(), 0.0, 1.0)
+
+    # tilt measure: 0 (aligned) -> 1 (90deg)
+    tilt = 1.0 - cos_theta                                 # (N,)
+
+    # amount exceeding margin
+    tilt_excess = torch.relu(tilt - tilt_margin)           # (N,)
+
+    # k = 0 → binary penalty
+    if k == 0.0:
+        penalty = torch.where(
+            tilt_excess > 0.0,
+            -torch.ones_like(tilt_excess),
+            torch.zeros_like(tilt_excess),
+        )
+        return penalty
+
+    # continuous penalty shaped by k
+    penalty = - (tilt_excess ** k)
+    return penalty

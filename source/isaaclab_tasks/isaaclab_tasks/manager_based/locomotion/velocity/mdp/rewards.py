@@ -18,7 +18,6 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 from isaaclab.utils.math import quat_rotate_inverse, yaw_quat
 from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.assets import RigidObject
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -360,47 +359,70 @@ def alive_bonus_torso(
     asset_cfg: SceneEntityCfg,
     min_height: float,
     max_tilt: float,
+    height_decay_k: float = 1.0,
+    tilt_decay_k: float = 1.0,
 ) -> torch.Tensor:
-    """Alive bonus based on torso height and base tilt.
+    """
+    Continuous alive bonus in [0,1].
 
-    - Returns 1.0 if:
-        torso height above ankles >= min_height  AND
-        base tilt (projected gravity xy L2) <= max_tilt
-    - Returns 0.0 otherwise.
+    Alive bonus is:
+        alive = (height_term^height_decay_k) * (tilt_term^tilt_decay_k)
+
+    - height_term : linear ratio rel_height / min_height (clamped 0→1)
+    - tilt_term   : linear ratio 1 - tilt_l2 / max_tilt (clamped 0→1)
+
+    Decay tuning:
+        k = 1   → linear
+        k > 1   → slower decay (more tolerant)
+        k < 1   → sharper decay (stricter)
     """
 
-    asset: RigidObject = env.scene[asset_cfg.name]
+    asset = env.scene[asset_cfg.name]
 
     # ---------------------------
     # 1) torso height above ankles
     # ---------------------------
-    body_pos_w = asset.data.body_pos_w  # (N, num_bodies, 3)
+    body_pos_w = asset.data.body_pos_w
 
     chest_id = asset_cfg.body_ids[0]
     ankle_ids = asset_cfg.body_ids[1:]
 
-    chest_z = body_pos_w[:, chest_id, 2]          # (N,)
-    ankles_z = body_pos_w[:, ankle_ids, 2]        # (N, 2)
-    min_ankle_z = ankles_z.min(dim=-1).values     # (N,)
+    chest_z = body_pos_w[:, chest_id, 2]
+    ankles_z = body_pos_w[:, ankle_ids, 2]
+    min_ankle_z = ankles_z.min(dim=-1).values
 
-    rel_height = chest_z - min_ankle_z            # (N,)
-    height_ok = rel_height >= min_height          # (N,)
+    rel_height = chest_z - min_ankle_z
+
+    # height term (0～1)
+    height_term = torch.clamp(rel_height / (min_height + 1e-6), 0.0, 1.0)
+
+    # decay OR binary
+    if height_decay_k == 0:
+        height_bonus = (rel_height >= min_height).float()
+    else:
+        height_bonus = height_term ** height_decay_k
 
     # ---------------------------
-    # 2) base tilt using projected gravity
+    # 2) base tilt
     # ---------------------------
-    # projected_gravity_b : gravity expressed in base frame
-    # ideally [0, 0, -1], so xy components measure tilt
-    g_b = asset.data.projected_gravity_b          # (N, 3)
-    tilt_l2 = torch.sum(g_b[:, :2] * g_b[:, :2], dim=1)  # (N,)
-    tilt_ok = tilt_l2 <= max_tilt
+    g_b = asset.data.projected_gravity_b
+    tilt_l2 = torch.sum(g_b[:, :2] * g_b[:, :2], dim=1)
+
+    # tilt term (0～1)
+    tilt_term = torch.clamp(1.0 - tilt_l2 / (max_tilt + 1e-6), 0.0, 1.0)
+
+    # decay OR binary
+    if tilt_decay_k == 0:
+        tilt_bonus = (tilt_l2 <= max_tilt).float()
+    else:
+        tilt_bonus = tilt_term ** tilt_decay_k
 
     # ---------------------------
-    # 3) Alive mask & bonus
+    # 3) final alive bonus
     # ---------------------------
-    alive = (height_ok & tilt_ok).float()         # 1.0 if alive, 0.0 otherwise
-
+    alive = height_bonus * tilt_bonus
     return alive
+
 
 
 def step_reflex_penalty(

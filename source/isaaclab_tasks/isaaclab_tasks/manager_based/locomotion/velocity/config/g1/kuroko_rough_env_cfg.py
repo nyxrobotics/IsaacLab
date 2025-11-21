@@ -55,7 +55,7 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=80.0,
+        weight=100.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -128,7 +128,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_forward_drive = RewTerm(
         func=mdp.drive_forward_foot_penalty,
-        weight=1.0,
+        weight=0.1,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -142,7 +142,7 @@ class KurokoRewards(RewardsCfg):
             "vel_thresh": 0.0001,
             "fall_gain": 1.0,
             "stance_speed_gain": 0.1,
-            "swing_speed_gain": 0.1,
+            "swing_speed_gain": 0.2,
             "comp_gain": 0.3,
         },
     )

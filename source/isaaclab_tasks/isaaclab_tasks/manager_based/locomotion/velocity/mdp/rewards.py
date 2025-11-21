@@ -521,7 +521,7 @@ def step_reflex_penalty(
     else:
         acc_scale = torch.ones_like(a_forward_pos)
 
-    accelerating_forward = (a_forward_pos > 1.0e-4) & (v_norm > 1.0e-4)
+    accelerating_forward = (a_forward_pos > 1.0e-2) & (v_norm > 1.0e-3)
 
     accel_scale_factor = torch.where(
         accelerating_forward, acc_scale, torch.ones_like(acc_scale)
@@ -683,3 +683,104 @@ def feet_contact_angle_penalty(
     penalty = torch.sum(penalty_per_foot, dim=-1)
 
     return penalty
+
+
+def track_lin_vel_xy_yaw_frame_linear_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """
+    Linear penalty for tracking commanded XY linear velocity,
+    corrected by subtracting the torso's fall-induced translational velocity
+    around the lower foot (stance foot).
+
+    - stance foot = ankle with lower Z
+    - fall-induced velocity: v_fall = ω × r
+        ω = chest angular velocity
+        r = chest_position - stance_foot_position
+
+    - subtract v_fall **only** when fall direction is within 90° of command direction
+
+    - both actual velocity and fall velocity are rotated into yaw frame
+    """
+
+    asset = env.scene[asset_cfg.name]
+
+    body_pos = asset.data.body_pos_w         # (N, B, 3)
+    body_quat = asset.data.body_quat_w       # (N, B, 4)
+    body_vel = asset.data.body_lin_vel_w     # (N, B, 3)
+    body_angvel = asset.data.body_ang_vel_w  # (N, B, 3)
+
+    # body_ids = [chest_link, left_ankle, right_ankle]
+    torso_id, left_id, right_id = asset_cfg.body_ids
+
+    # torso state
+    torso_pos = body_pos[:, torso_id]
+    torso_angvel = body_angvel[:, torso_id]
+
+    # ankle states
+    left_pos = body_pos[:, left_id]
+    right_pos = body_pos[:, right_id]
+
+    left_z = left_pos[:, 2]
+    right_z = right_pos[:, 2]
+
+    # stance = lower foot
+    left_lower = left_z < right_z
+    stance_pos = torch.where(left_lower.unsqueeze(-1), left_pos, right_pos)
+
+    # --------------------------------------------------------
+    # 1) compute fall-induced velocity v_fall = ω × r
+    # --------------------------------------------------------
+    r = torso_pos - stance_pos                       # (N, 3)
+    v_fall = torch.cross(torso_angvel, r, dim=1)     # (N, 3)
+    v_fall_xy = v_fall[:, :2]                        # XY components
+
+    # --------------------------------------------------------
+    # 2) compute actual base linear velocity (root-free, from chest)
+    # --------------------------------------------------------
+    # "base velocity" = torso/chest velocity
+    v_base_w = body_vel[:, torso_id]                 # (N,3)
+    # rotate into yaw-aligned frame
+    yaw_q = yaw_quat(body_quat[:, torso_id])         # use chest yaw only
+    v_base_yaw = quat_rotate_inverse(yaw_q, v_base_w)[:, :2]   # (N,2)
+
+    # --------------------------------------------------------
+    # 3) rotate fall velocity into yaw frame
+    # --------------------------------------------------------
+    v_fall_yaw = quat_rotate_inverse(yaw_q, torch.cat(
+        [v_fall_xy, torch.zeros_like(v_fall_xy[:, :1])], dim=1
+    ))[:, :2]
+
+    # --------------------------------------------------------
+    # 4) angle test: subtract fall velocity only if within 90° of command direction
+    # --------------------------------------------------------
+    cmd_xy = env.command_manager.get_command(command_name)[:, :2]   # (N,2)
+
+    cmd_norm = torch.norm(cmd_xy, dim=1)
+    cmd_dir = cmd_xy / (cmd_norm.unsqueeze(-1) + 1e-6)
+
+    dot_cmd_fall = torch.sum(cmd_dir * v_fall_xy, dim=1)    # world XY basis
+
+    # mask: fall is aiding or aligned with movement direction
+    use_fall = dot_cmd_fall >= 0.0
+
+    v_fall_yaw_used = torch.where(
+        use_fall.unsqueeze(-1),
+        v_fall_yaw,
+        torch.zeros_like(v_fall_yaw),
+    )
+
+    # --------------------------------------------------------
+    # 5) corrected velocity = actual − fall-induced
+    # --------------------------------------------------------
+    v_corrected = v_base_yaw - v_fall_yaw_used       # (N,2)
+
+    # --------------------------------------------------------
+    # 6) penalty: linear L1 or L2 mismatch
+    # --------------------------------------------------------
+    error_vec = cmd_xy - v_corrected
+    lin_vel_error = torch.linalg.norm(error_vec, ord=1, dim=1)
+
+    return -lin_vel_error

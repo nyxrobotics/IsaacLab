@@ -63,13 +63,24 @@ class KurokoRewards(RewardsCfg):
             ),
             "min_height": 0.32,
             "max_tilt": 0.3,
+            "height_decay_k": 10.0,
         },
     )
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_linear_penalty,
         weight=40.0,
-        params={"command_name": "base_velocity"},
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=[
+                    "chest_link",
+                    "ankle_l_yaw_link",
+                    "ankle_r_yaw_link",
+                ],
+            ),
+        },
     )
 
     track_ang_vel_z_exp = RewTerm(
@@ -86,7 +97,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-10.0,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", 
             joint_names=[
                 "chest"
@@ -119,8 +130,12 @@ class KurokoRewards(RewardsCfg):
         func=mdp.feet_slide,
         weight=-0.01,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=[]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link"]),
         },
     )
 
@@ -367,7 +382,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -100.0
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

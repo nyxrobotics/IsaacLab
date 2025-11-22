@@ -1131,81 +1131,64 @@ def support_plane_tilt_penalty(
 
     - asset_cfg.body_ids = [torso_id, left_foot_id, right_foot_id]
 
-    The torso point used for the plane can be shifted along the torso's
-    local forward (x) axis by `body_offset_forward` (meters).
-
-    Behavior:
-      - If tilt <= tilt_margin → penalty = 0
-      - If tilt >  tilt_margin:
-          excess = tilt - tilt_margin
-          k = 0 → binary: penalty = -1
-          k > 0 → penalty = - (excess ^ k)
+    We use the normal vector of the plane (roughly robot forward axis).
+    When this normal is orthogonal to world Z (upright), tilt ≈ 0.
+    When it gains a vertical component, tilt increases.
     """
 
     eps = 1e-6
     asset = env.scene[asset_cfg.name]
 
-    # world positions and orientations of all bodies
-    body_pos = asset.data.body_pos_w    # (N, B, 3)
-    body_quat = asset.data.body_quat_w  # (N, B, 4)
+    body_pos = asset.data.body_pos_w
+    body_quat = asset.data.body_quat_w
 
-    # body IDs: [torso, left_foot, right_foot]
     torso_id, left_id, right_id = asset_cfg.body_ids
 
-    # batch info
     N = body_pos.shape[0]
     device = body_pos.device
     dtype = body_pos.dtype
 
-    # base torso position and orientation
-    torso_pos = body_pos[:, torso_id]      # (N,3)
-    torso_quat = body_quat[:, torso_id]    # (N,4)
+    torso_pos = body_pos[:, torso_id]
+    torso_quat = body_quat[:, torso_id]
 
-    # optionally shift torso point along local +x (forward) axis
+    # torso point with optional forward offset
     if body_offset_forward != 0.0:
-        # local offset [dx, 0, 0]
         offset_local = torch.tensor(
             [body_offset_forward, 0.0, 0.0],
             device=device,
             dtype=dtype,
-        ).view(1, 3).expand(N, 3)  # (N,3)
-
-        offset_world = quat_rotate(torso_quat, offset_local)  # (N,3)
+        ).view(1, 3).expand(N, 3)
+        offset_world = quat_rotate(torso_quat, offset_local)
         p_t = torso_pos + offset_world
     else:
         p_t = torso_pos
 
-    # feet positions (world)
-    p_l = body_pos[:, left_id]    # (N,3)
-    p_r = body_pos[:, right_id]   # (N,3)
+    p_l = body_pos[:, left_id]
+    p_r = body_pos[:, right_id]
 
-    # two edges of the triangle (torso→left, torso→right)
-    v1 = p_l - p_t                # (N,3)
-    v2 = p_r - p_t                # (N,3)
+    v1 = p_l - p_t
+    v2 = p_r - p_t
 
-    # plane normal
-    n = torch.cross(v1, v2, dim=1)                 # (N,3)
-    n_norm = torch.norm(n, dim=1, keepdim=True)    # (N,1)
-    n_unit = n / (n_norm + eps)                    # (N,3)
+    n = torch.cross(v1, v2, dim=1)
+    n_norm = torch.norm(n, dim=1, keepdim=True)
+    n_unit = n / (n_norm + eps)
 
-    # world vertical
     z_world = torch.tensor(
         [0.0, 0.0, 1.0],
         device=device,
         dtype=dtype,
     ).view(1, 3)
 
-    # cos(theta) between plane normal and world vertical
-    cos_theta = torch.sum(n_unit * z_world, dim=1)          # (N,)
-    cos_theta = torch.clamp(cos_theta.abs(), 0.0, 1.0)
+    # 前後軸（n）が Z に対してどれだけ「立ち上がっているか」
+    cos_theta = torch.sum(n_unit * z_world, dim=1)  # (N,)
+    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
 
-    # tilt measure: 0 (aligned) -> 1 (90deg)
-    tilt = 1.0 - cos_theta                                 # (N,)
+    # tilt: 直立 = 0, 前後軸にZ成分が出るほど大きくなる
+    tilt = torch.abs(cos_theta)                     # (N,)
 
-    # amount exceeding margin
-    tilt_excess = torch.relu(tilt - tilt_margin)           # (N,)
+    # 許容範囲を超えた分だけペナルティ
+    tilt_excess = torch.relu(tilt - tilt_margin)
 
-    # k = 0 → binary penalty
     if k == 0.0:
         penalty = torch.where(
             tilt_excess > 0.0,
@@ -1214,6 +1197,5 @@ def support_plane_tilt_penalty(
         )
         return penalty
 
-    # continuous penalty shaped by k
     penalty = - (tilt_excess ** k)
     return penalty

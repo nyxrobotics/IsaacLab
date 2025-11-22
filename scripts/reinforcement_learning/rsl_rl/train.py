@@ -139,50 +139,56 @@ PPO.update = _safe_ppo_update
 # SAFETY PATCH 2: Guard ActorCritic.act so that invalid std doesn't crash
 # =====================================================================
 from rsl_rl.modules.actor_critic import ActorCritic
+from torch.distributions import Normal
 
 _original_act = ActorCritic.act
 
 def _safe_act(self, *args, **kwargs):
     try:
-        # まず元の act をそのまま呼ぶ
+        # 通常ケース: 元の act をそのまま実行
         return _original_act(self, *args, **kwargs)
     except RuntimeError as e:
-        # std が負/NaN で normal() がコケたケースだけを捕まえる
         msg = str(e)
         if "normal expects all elements of std" not in msg:
-            # それ以外のエラーはそのまま投げる
+            # std 以外の理由ならそのまま投げる
             raise
 
-        print("[WARNING] ActorCritic.act: invalid std detected. Trying to repair policy.log_std and retry...")
+        print("[WARNING] ActorCritic.act: invalid std detected. Trying to repair action_std and retry...")
 
         with torch.no_grad():
-            if hasattr(self, "log_std"):
-                log_std = self.log_std.data
+            # RSL-RL の ActorCritic は action_mean / action_std を持っている想定
+            if not (hasattr(self, "action_std") and hasattr(self, "action_mean")):
+                print("          - WARNING: policy has no action_std / action_mean. Cannot repair.")
+                raise
 
-                # NaN / Inf を 0.0 に置き換え
-                invalid = ~torch.isfinite(log_std)
-                if invalid.any():
-                    print("          - Found NaN/Inf in log_std. Resetting those entries to 0.0.")
-                    log_std[invalid] = 0.0
+            std = self.action_std
 
-                # 範囲外（-20, 2の外）を検出
-                too_low = log_std < -20.0
-                too_high = log_std > 2.0
-                if too_low.any() or too_high.any():
-                    print("          - Found log_std outside [-20, 2]. Clamping into this range.")
+            # NaN / Inf / 非正 (<=0) を検出
+            invalid = (~torch.isfinite(std)) | (std <= 0.0)
+            if invalid.any():
+                print("          - Found invalid or non-positive std entries. Fixing them.")
 
-                # クランプ
-                log_std.clamp_(min=-20.0, max=2.0)
-                self.log_std.data.copy_(log_std)
-            else:
-                print("          - WARNING: policy has no log_std attribute. Cannot repair.")
+                # 変な値は、とりあえず 0.1 にリセット（お好みで調整可）
+                std = torch.where(invalid, torch.full_like(std, 0.1), std)
 
-        # 1回だけリトライしてみる
-        return _original_act(self, *args, **kwargs)
+            # 範囲を制限（ここもお好みで調整可）
+            std = torch.clamp(std, min=1e-6, max=10.0)
+
+            # 修正を反映
+            self.action_std = std
+            # distribution を作り直す
+            self.distribution = Normal(self.action_mean, self.action_std)
+            # entropy も再計算しておく（PPO.update で使われる）
+            self.entropy = self.distribution.entropy()
+
+        # もう一度 sample を試す
+        action = self.distribution.sample()
+        return action
 
 # ActorCritic.act を差し替え
 ActorCritic.act = _safe_act
 # =====================================================================
+
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path

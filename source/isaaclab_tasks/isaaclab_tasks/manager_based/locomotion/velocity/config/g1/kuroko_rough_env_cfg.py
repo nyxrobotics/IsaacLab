@@ -55,7 +55,7 @@ class KurokoRewards(RewardsCfg):
 
     alive_bonus = RewTerm(
         func=mdp.alive_bonus_torso,
-        weight=20.0,
+        weight=10.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -139,7 +139,7 @@ class KurokoRewards(RewardsCfg):
 
     support_plane_tilt = RewTerm(
         func=mdp.support_plane_tilt_penalty,
-        weight=1.0,
+        weight=10.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -215,7 +215,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hip_pitch = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.02,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
@@ -223,7 +223,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hip_roll = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.04,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll"])},
@@ -231,7 +231,7 @@ class KurokoRewards(RewardsCfg):
     
     joint_torque_ankle_roll = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.02,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_roll",
                 "ankle_r_roll"])},
@@ -293,7 +293,7 @@ class KurokoRewards(RewardsCfg):
                 "robot",
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
-            "min_lateral_distance": 0.12,
+            "min_lateral_distance": 0.1,
             "inner_gain": 100.0,
             "outer_gain": 0,
         },
@@ -307,7 +307,7 @@ class KurokoRewards(RewardsCfg):
                 "robot",
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
-            "min_lateral_distance": 0.2,
+            "min_lateral_distance": 0.16,
             "inner_gain": 1.0,
             "outer_gain": 1.0,
         },

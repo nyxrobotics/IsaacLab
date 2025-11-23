@@ -66,21 +66,43 @@ def feet_air_time_positive_biped(env, command_name: str, threshold: float, senso
     return reward
 
 
-def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize feet sliding.
-
-    This function penalizes the agent for sliding its feet on the ground. The reward is computed as the
-    norm of the linear velocity of the feet multiplied by a binary contact sensor. This ensures that the
-    agent is penalized only when the feet are in contact with the ground.
+def feet_slide(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    margin: float = 0.0,
+    gain: float = 1.0,
+) -> torch.Tensor:
     """
-    # Penalize feet sliding
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0e-3
-    asset = env.scene[asset_cfg.name]
+    Penalize sliding feet during ground contact with a margin.
 
-    body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
-    reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
-    return reward
+    - If foot speed <= margin → penalty = 0
+    - If foot speed > margin → penalty = -gain * (speed - margin)
+    """
+
+    # Contact detection
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contacts = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+        .norm(dim=-1)
+        .max(dim=1)[0] > 1.0e-3
+    )  # (N, K) contact mask
+
+    # Foot velocities (XY only)
+    asset = env.scene[asset_cfg.name]
+    foot_vel_xy = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]   # (N, K, 2)
+    foot_speed = foot_vel_xy.norm(dim=-1)                                # (N, K)
+
+    # Margin-based excess velocity
+    excess = torch.relu(foot_speed - margin)                             # (N, K)
+
+    # Apply only when in contact
+    penalty_per_foot = excess * contacts                                 # (N, K)
+
+    # Sum across feet, apply gain, negative penalty
+    penalty = -gain * torch.sum(penalty_per_foot, dim=1)                 # (N,)
+
+    return -penalty
 
 
 def track_lin_vel_xy_yaw_frame_exp(
@@ -109,18 +131,24 @@ def torso_height_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
     target_height: float,
-    upward_scale: float = 1.0,
+    margin: float,
+    gain: float = 1.0,
 ) -> torch.Tensor:
     """
-    Height-maintenance penalty with asymmetric weight:
+    Torso height penalty with margin.
 
-    - Exact height → penalty = 0
-    - Too low     → strong penalty
-    - Too high    → weaker penalty controlled by upward_scale
+    - rel_height = chest_z - min_ankle_z
+    - If |rel_height - target_height| <= margin → penalty = 0
+    - If above margin → penalty = -gain * (excess amount)
 
-    upward_scale < 1.0  → upward penalty weaker
-    upward_scale = 1.0  → symmetric
-    upward_scale > 1.0  → upward penalty stronger
+    Parameters
+    ----------
+    target_height : float
+        Desired torso height above lowest ankle.
+    margin : float
+        Allowed deviation without penalty.
+    gain : float
+        Penalty gain applied to the amount exceeding the margin.
     """
 
     asset = env.scene[asset_cfg.name]
@@ -134,118 +162,16 @@ def torso_height_penalty(
     ankles_z = body_pos_w[:, ankle_ids, 2]
     min_ankle_z = ankles_z.min(dim=-1).values
 
-    # actual torso height above lowest ankle
+    # Torso height above lowest ankle
     rel_height = chest_z - min_ankle_z
 
     # deviation
     diff = rel_height - target_height
 
-    # too low (negative diff)
-    too_low = torch.relu(-diff)       # strong penalty (scale=1)
+    # margin excess (positive if outside ±margin)
+    excess = torch.relu(torch.abs(diff) - margin)
 
-    # too high (positive diff)
-    too_high = torch.relu(diff) * upward_scale
-
-    penalty = -(too_low + too_high)
-
-    return penalty
-
-
-
-def feet_air_time_height_penalty(
-    env,
-    command_name: str,
-    sensor_cfg: SceneEntityCfg,
-    asset_cfg: SceneEntityCfg,
-    desired_lift_time: float,
-    desired_lift_height: float,
-) -> torch.Tensor:
-    """Penalty version:
-    0 when the foot lifts sufficiently.
-    Negative when lift height or lift time is insufficient.
-
-    両足接地中（single_stance=False）は常にペナルティ0。
-    """
-
-    # --------------------------------------------------------
-    # 0) commanded motion check (vx, vy, yaw)
-    # --------------------------------------------------------
-    cmd = env.command_manager.get_command(command_name)
-    xy_speed = torch.norm(cmd[:, :2], dim=1)
-    yaw_speed = torch.abs(cmd[:, 2])
-    no_step_required = (xy_speed <= 0.001) & (yaw_speed <= 0.001)
-
-    penalty = torch.zeros_like(xy_speed)
-
-    if desired_lift_time < 1.0e-6:
-        return penalty
-
-    # --------------------------------------------------------
-    # 1) air-time part
-    # --------------------------------------------------------
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]          # (N, 2)
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]  # (N, 2)
-
-    in_contact = contact_time > 0.0                                                 # (N, 2)
-    in_mode_time = torch.where(in_contact, contact_time, air_time)                 # (N, 2)
-
-    # ちょうど片足だけ接地しているステップを single_stance とする
-    single_stance = torch.sum(in_contact.int(), dim=1) == 1                        # (N,)
-
-    # single_stance のときだけ実際の時間を使う。それ以外は desired_lift_time とみなして time_missing=0 にする
-    actual_time_raw = torch.min(in_mode_time, dim=1)[0]                             # (N,)
-    actual_time = torch.where(
-        single_stance,
-        actual_time_raw,
-        torch.full_like(actual_time_raw, desired_lift_time),
-    )
-
-    # desired_lift_time に対する不足量（single_stance 以外は0になる）
-    time_missing = torch.relu(desired_lift_time - actual_time)                      # (N,)
-    time_missing = torch.where(single_stance, time_missing, torch.zeros_like(time_missing))
-    time_penalty = -(time_missing / (desired_lift_time + 1e-6))                     # (N,)
-
-    # --------------------------------------------------------
-    # 2) Time-varying target foot lift height
-    # --------------------------------------------------------
-    progress = torch.clamp(in_mode_time / desired_lift_time, max=1.0)               # (N, 2)
-    height_limit_scale = 1.0 - (2.0 * progress - 1.0) ** 2
-    height_limit_scale = torch.clamp(height_limit_scale, min=0.0)
-    required_height = desired_lift_height * height_limit_scale                      # (N, 2)
-
-    # --------------------------------------------------------
-    # 3) Actual foot height
-    # --------------------------------------------------------
-    robot = env.scene[asset_cfg.name]
-    body_pos_w = robot.data.body_pos_w
-
-    left_id, right_id = asset_cfg.body_ids
-    left_z = body_pos_w[:, left_id, 2]
-    right_z = body_pos_w[:, right_id, 2]
-    foot_lift = torch.abs(left_z - right_z)                                         # (N,)
-    foot_lift_exp = foot_lift.unsqueeze(-1).expand_as(required_height)              # (N, 2)
-
-    eps = 1e-6
-    active = (required_height > eps) & single_stance.unsqueeze(-1)                  # (N, 2)
-
-    height_missing = torch.relu(required_height - foot_lift_exp)                    # (N, 2)
-    height_penalty_foot = -(height_missing / (desired_lift_height + eps))           # (N, 2)
-
-    # swing foot のときだけ高さペナルティを有効にする
-    height_penalty_foot = torch.where(active, height_penalty_foot, torch.zeros_like(height_penalty_foot))
-
-    # 両足のうち「より悪い方」を採用（必要なら max に変更）
-    height_penalty = torch.min(height_penalty_foot, dim=1)[0]                       # (N,)
-
-    # --------------------------------------------------------
-    # 4) total penalty (more negative = worse)
-    # --------------------------------------------------------
-    penalty = time_penalty + height_penalty
-
-    # no-step → no penalty
-    penalty = torch.where(no_step_required, torch.zeros_like(penalty), penalty)
-
+    penalty = -gain * excess
     return penalty
 
 
@@ -310,30 +236,30 @@ def command_ratio_alignment_penalty(
     env,
     command_name: str,
     asset_cfg=SceneEntityCfg("robot"),
-    speed_scale: float = 1.0,
+    speed_scale: float = 0.0,
+    margin: float = 0.0,   # radians
+    gain: float = 1.0,
 ) -> torch.Tensor:
     """
-    Penalize mismatch between the ratio (direction) of command velocity
-    and actual velocity: x, y, yaw components considered as one 3D vector.
+    Penalize mismatch in direction between command velocity and actual velocity.
 
-    Perfect ratio match (same direction) → 0
-    Larger mismatch → negative penalty
+    - If angle <= margin → penalty = 0
+    - If angle > margin:
+        * speed_scale > 0 → penalty = -gain * (angle - margin) * |v| * speed_scale
+        * speed_scale = 0 → penalty = -gain * (angle - margin)
     """
 
     # -----------------------------
     # 1) Command vector c = [vx, vy, yaw]
     # -----------------------------
     cmd = env.command_manager.get_command(command_name)
-    c = cmd[:, :3]   # (N, 3): vx, vy, yaw_cmd
+    c = cmd[:, :3]
 
     # -----------------------------
-    # 2) Actual velocity vector v
-    #     - linear vel xy in yaw frame
-    #     - yaw rate in world frame
+    # 2) Actual vector v
     # -----------------------------
     asset = env.scene[asset_cfg.name]
 
-    # convert linear vel to yaw-aligned frame
     vel_yaw = quat_rotate_inverse(
         yaw_quat(asset.data.root_quat_w),
         asset.data.root_lin_vel_w[:, :3]
@@ -352,27 +278,27 @@ def command_ratio_alignment_penalty(
     c_norm = torch.norm(c, dim=1) + eps
     v_norm = torch.norm(v, dim=1) + eps
 
-    cos_sim = torch.sum(c * v, dim=1) / (c_norm * v_norm)  # (N,)
-
-    # clamp to avoid numerical issues
+    cos_sim = torch.sum(c * v, dim=1) / (c_norm * v_norm)
     cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
 
-    # -----------------------------
-    # 4) Penalty = negative mismatch
-    # -----------------------------
-    penalty = cos_sim - 1.0
-    # cos_sim = 1 → penalty = 0
-    # cos_sim = 0 → penalty = -1
-    # cos_sim = -1 → penalty = -2
+    # angle
+    angle = torch.acos(cos_sim)
 
+    # margin handling
+    excess = torch.relu(angle - margin)
 
     # -----------------------------
-    # 5) Scale mismatch by speed
+    # speed_scale による条件分岐
     # -----------------------------
-    v_mag = torch.norm(v, dim=1)   # (N,)
-    penalty = penalty * v_mag * speed_scale
+    if speed_scale == 0.0:
+        # 速度を使わない：角度超過のみでペナルティ
+        penalty = -gain * excess
+    else:
+        # 従来通り：速度と掛ける
+        penalty = -gain * excess * v_norm * speed_scale
 
     return penalty
+
 
 def alive_bonus_torso(
     env: ManagerBasedRLEnv,

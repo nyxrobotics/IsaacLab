@@ -87,8 +87,10 @@ class KurokoRewards(RewardsCfg):
 
     track_trajectory_penalty = RewTerm(
         func=mdp.command_ratio_alignment_penalty,
-        weight=0.1,
-        params={"command_name": "base_velocity"},
+        weight=1.0,
+        params={"command_name": "base_velocity",
+            "margin": 0.8,
+            "gain": 1000.0},
     )
 
     joint_deviation_torso = RewTerm(
@@ -102,7 +104,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.step_reflex_penalty,
-        weight=1000.0,
+        weight=1000000.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -114,10 +116,10 @@ class KurokoRewards(RewardsCfg):
                 body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "vel_thresh": 0.0001,
-            "tilt_margin": 0.2,
+            "tilt_margin": 0.1,
             "min_air_time": 0.2,
             "max_stance_time": 0.2,
-            "min_air_height": 0.01,
+            "min_air_height": 0.015,
             "accel_margin": 0.1,
             "body_offset_forward": 0.0,
         },
@@ -125,14 +127,14 @@ class KurokoRewards(RewardsCfg):
 
     support_plane_tilt = RewTerm(
         func=mdp.support_plane_tilt_penalty,
-        weight=1000.0,
+        weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
-            "tilt_margin": 0.0,
-            "k": 0,
+            "tilt_margin": 0.1,
+            "k": 1000.0,
             "body_offset_forward": 0.0,
         },
     )
@@ -160,7 +162,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
@@ -168,6 +170,8 @@ class KurokoRewards(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link"]),
+                "margin": 0.01,
+                "gain": 1000.0,
         },
     )
 
@@ -201,30 +205,41 @@ class KurokoRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=1000.0,
+        weight=1.0,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
-                "margin": 0},
+                "margin": 0.1,
+                "gain": 1000.0,},
+    )
+
+    flat_body_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+                "chest_link",
+                "body_link"]),
+                "margin": 0.1,
+                "gain": 1000.0,},
     )
 
     feet_lateral_separation = RewTerm(
         func=mdp.feet_lateral_separation_penalty,
-        weight=1000.0,
+        weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "min_lateral_distance": 0.1,
-            "inner_gain": 1.0,
+            "inner_gain": 1000.0,
             "outer_gain": 0,
         },
     )
 
     keep_torso_height = RewTerm(
         func=mdp.torso_height_penalty,
-        weight= 100000.0,
+        weight= 1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -235,6 +250,8 @@ class KurokoRewards(RewardsCfg):
                 ],
             ),
             "target_height": 0.32,
+            "margin": 0.01,
+            "gain": 1000.0,
         },
     )
 
@@ -395,7 +412,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -1000.0
+        self.rewards.flat_orientation_l2 = None
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

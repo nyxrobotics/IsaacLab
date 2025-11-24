@@ -55,13 +55,13 @@ class KurokoRewards(RewardsCfg):
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=10.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=2.0,
+        weight=20.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -91,7 +91,7 @@ class KurokoRewards(RewardsCfg):
         func=mdp.command_ratio_alignment_penalty,
         weight=1.0,
         params={"command_name": "base_velocity",
-            "margin": 0.8,
+            "margin": 1.5,
             "gain": 1000.0},
     )
 
@@ -106,7 +106,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.step_reflex_penalty,
-        weight=100.0,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg(
@@ -118,35 +118,35 @@ class KurokoRewards(RewardsCfg):
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "vel_thresh": 0.0001,
-            "min_air_time": 0.2,
+            "min_air_time": 0.1,
             "max_stance_time": 0.2,
             "min_air_height": 0.015,
-            "tilt_margin": 0.1,
+            "tilt_margin": 0.2,
             "tilt_vel_scale": 1.0,
             "tilt_stance_time_scale": 3.0,
-            "accel_margin": 0.1,
+            "accel_margin": 20.0,
             "accel_vel_scale": 1.0,
-            "accel_stance_time_scale": 3.0,
-            "time_penalty_scale": 1000.0,
-            "vel_penalty_scale": 1000.0,
-            "height_penalty_scale": 1000.0,
+            "accel_stance_time_scale": 0.03,
+            "time_penalty_scale": 10000.0,
+            "vel_penalty_scale": 100000.0,
+            "height_penalty_scale": 1000000.0,
             "body_offset_forward": 0.0,
         },
     )
 
-    support_plane_tilt = RewTerm(
-        func=mdp.support_plane_tilt_penalty,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "tilt_margin": 0.3,
-            "k": 1000.0,
-            "body_offset_forward": 0.0,
-        },
-    )
+    # support_plane_tilt = RewTerm(
+    #     func=mdp.support_plane_tilt_penalty,
+    #     weight=1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
+    #         ),
+    #         "tilt_margin": 0.3,
+    #         "k": 1000.0,
+    #         "body_offset_forward": 0.0,
+    #     },
+    # )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -201,15 +201,15 @@ class KurokoRewards(RewardsCfg):
                 "gain": 1000.0,},
     )
 
-    flat_body_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-                "chest_link",
-                "body_link"]),
-                "margin": 0.1,
-                "gain": 1000.0,},
-    )
+    # flat_body_penalty = RewTerm(
+    #     func=mdp.flat_orientation_links_l2,
+    #     weight=1.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+    #             "chest_link",
+    #             "body_link"]),
+    #             "margin": 0.1,
+    #             "gain": 1000.0,},
+    # )
 
     feet_lateral_separation = RewTerm(
         func=mdp.feet_lateral_separation_penalty,
@@ -400,7 +400,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2 = None
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

@@ -160,6 +160,13 @@ class ContactSensor(SensorBase):
             self._data.last_air_time[env_ids] = 0.0
             self._data.current_contact_time[env_ids] = 0.0
             self._data.last_contact_time[env_ids] = 0.0
+        # reset height metrics
+        if self.cfg.track_air_time and self.cfg.track_pose:
+            self._data.air_start_z_w[env_ids] = 0.0
+            self._data.air_max_z_w[env_ids] = 0.0
+            self._data.contact_start_z_w[env_ids] = 0.0
+            self._data.contact_min_z_w[env_ids] = 0.0
+
 
     def find_bodies(self, name_keys: str | Sequence[str], preserve_order: bool = False) -> tuple[list[int], list[str]]:
         """Find bodies in the articulation based on the name keys.
@@ -310,6 +317,13 @@ class ContactSensor(SensorBase):
             self._data.current_air_time = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
             self._data.last_contact_time = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
             self._data.current_contact_time = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
+        # -- height metrics for air/contact phases
+        #    shape: (num_envs, num_bodies)
+        if self.cfg.track_air_time and self.cfg.track_pose:
+            self._data.air_start_z_w = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
+            self._data.air_max_z_w = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
+            self._data.contact_start_z_w = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
+            self._data.contact_min_z_w = torch.zeros(self._num_envs, self._num_bodies, device=self._device)
         # force matrix: (num_envs, num_bodies, num_filter_shapes, 3)
         if len(self.cfg.filter_prim_paths_expr) != 0:
             num_filters = self.contact_physx_view.filter_count
@@ -357,7 +371,7 @@ class ContactSensor(SensorBase):
             is_contact = torch.norm(self._data.net_forces_w[env_ids, :, :], dim=-1) > self.cfg.force_threshold
             is_first_contact = (self._data.current_air_time[env_ids] > 0) * is_contact
             is_first_detached = (self._data.current_contact_time[env_ids] > 0) * ~is_contact
-            # -- update the last contact time if body has just become in contact
+            # -- update the last air time if body has just become in contact
             self._data.last_air_time[env_ids] = torch.where(
                 is_first_contact,
                 self._data.current_air_time[env_ids] + elapsed_time.unsqueeze(-1),
@@ -377,6 +391,62 @@ class ContactSensor(SensorBase):
             self._data.current_contact_time[env_ids] = torch.where(
                 is_contact, self._data.current_contact_time[env_ids] + elapsed_time.unsqueeze(-1), 0.0
             )
+
+            # ------------------------------------------------------------
+            # Track z height metrics (requires pose tracking)
+            #   air_start_z_w     : z at first detach of this air phase
+            #   air_max_z_w       : max z during current air phase
+            #   contact_start_z_w : z at first contact of this contact phase
+            #   contact_min_z_w   : min z during current contact phase
+            # ------------------------------------------------------------
+            if self.cfg.track_pose:
+                # current z position in world frame
+                z_w = self._data.pos_w[env_ids, :, 2]
+
+                # ----- Air phase -----
+                # Set air_start_z_w at first detach
+                self._data.air_start_z_w[env_ids] = torch.where(
+                    is_first_detached,
+                    z_w,
+                    self._data.air_start_z_w[env_ids],
+                )
+                # Initialize / update air_max_z_w:
+                #   - on first detach: set to current z
+                #   - while in air: keep maximum of previous and current z
+                prev_air_max = self._data.air_max_z_w[env_ids]
+                air_max_candidate = torch.where(
+                    is_first_detached,
+                    z_w,
+                    torch.where(
+                        ~is_contact,
+                        torch.maximum(prev_air_max, z_w),
+                        prev_air_max,
+                    ),
+                )
+                self._data.air_max_z_w[env_ids] = air_max_candidate
+
+                # ----- Contact phase -----
+                # Set contact_start_z_w at first contact
+                self._data.contact_start_z_w[env_ids] = torch.where(
+                    is_first_contact,
+                    z_w,
+                    self._data.contact_start_z_w[env_ids],
+                )
+                # Initialize / update contact_min_z_w:
+                #   - on first contact: set to current z
+                #   - while in contact: keep minimum of previous and current z
+                prev_contact_min = self._data.contact_min_z_w[env_ids]
+                contact_min_candidate = torch.where(
+                    is_first_contact,
+                    z_w,
+                    torch.where(
+                        is_contact,
+                        torch.minimum(prev_contact_min, z_w),
+                        prev_contact_min,
+                    ),
+                )
+                self._data.contact_min_z_w[env_ids] = contact_min_candidate
+
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # set visibility of markers

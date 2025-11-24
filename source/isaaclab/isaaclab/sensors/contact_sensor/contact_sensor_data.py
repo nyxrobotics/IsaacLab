@@ -100,3 +100,8 @@ class ContactSensorData:
     Note:
         If the :attr:`ContactSensorCfg.track_air_time` is False, then this quantity is None.
     """
+
+    air_start_z_w: torch.Tensor | None = None
+    air_max_z_w: torch.Tensor | None = None
+    contact_start_z_w: torch.Tensor | None = None
+    contact_min_z_w: torch.Tensor | None = None

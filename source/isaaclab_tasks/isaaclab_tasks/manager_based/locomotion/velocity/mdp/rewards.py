@@ -376,14 +376,20 @@ def step_reflex_penalty(
     sensor_cfg: SceneEntityCfg,
     asset_cfg: SceneEntityCfg,
     vel_thresh: float,
-    tilt_margin: float,
     min_air_time: float,
     max_stance_time: float,
     min_air_height: float,
+    tilt_margin: float,
+    tilt_vel_scale: float,
+    tilt_stance_time_scale: float,
     accel_margin: float,
-    body_offset_forward: float = 0.0,   # ← NEW
+    accel_vel_scale: float,
+    accel_stance_time_scale: float,
+    time_penalty_scale: float = 0.0,
+    vel_penalty_scale: float = 0.0,
+    height_penalty_scale: float = 0.0,
+    body_offset_forward: float = 0.0,
 ) -> torch.Tensor:
-
     """
     Step-reflex penalty.
 
@@ -391,238 +397,473 @@ def step_reflex_penalty(
 
     When the robot is commanded to move or becomes tilted, this term:
       - penalizes double-stance that is too long
-        (allowed time shrinks linearly with tilt)
+        (allowed stance time shrinks with tilt and forward acceleration)
       - penalizes swing air-time that is too short
-      - penalizes swing height that is too low (world frame)
-      - penalizes swing height that is too low (root-local frame)
-      - penalizes swing foot velocity opposite to desired direction (world & root-local)
-      - penalizes swing foot yaw velocity opposite to yaw command
+      - penalizes swing height that is too low (world frame, relative to take-off)
 
     Assumptions:
-      - asset_cfg.body_ids: [left_foot_id, right_foot_id]
-      - torso frame: articulation root pose (root_pos_w, root_quat_w)
+      - asset_cfg.body_ids: [torso_id, left_foot_id, right_foot_id]
+      - ContactSensor at env.scene[sensor_cfg.name] with feet order: [left_foot, right_foot]
+      - torso frame: articulation root pose (torso_pos, torso_quat)
     """
 
     eps = 1e-6
+    min_foot_up_speed = min_air_height / (min_air_time * 0.5)
 
     # -------------------------------------------------------
     # body IDs: [torso, left_foot, right_foot]
     # -------------------------------------------------------
     torso_id, left_id, right_id = asset_cfg.body_ids
-
     asset = env.scene[asset_cfg.name]
-
-    # full body states
     body_pos = asset.data.body_pos_w          # (N, B, 3)
     body_quat = asset.data.body_quat_w        # (N, B, 4)
     body_vel = asset.data.body_lin_vel_w      # (N, B, 3)
     body_acc = asset.data.body_lin_acc_w      # (N, B, 3)
 
-    # torso state
     torso_pos = body_pos[:, torso_id]
     torso_quat = body_quat[:, torso_id]
     torso_vel = body_vel[:, torso_id]
     torso_acc = body_acc[:, torso_id]
 
-    # feet z
-    left_z = body_pos[:, left_id, 2]
-    right_z = body_pos[:, right_id, 2]
+    left_foot_pos = body_pos[:, left_id]
+    left_foot_quat = body_quat[:, left_id]
+    left_foot_vel = body_vel[:, left_id]
+    left_foot_acc = body_acc[:, left_id]
+
+    right_foot_pos = body_pos[:, right_id]
+    right_foot_quat = body_quat[:, right_id]
+    right_foot_vel = body_vel[:, right_id]
+    right_foot_acc = body_acc[:, right_id]
+
+    # -------------------------------------------------------
+    # Contact sensor data (feet: left, right)
+    # -------------------------------------------------------
+    sensor = env.scene[sensor_cfg.name]
+    sdata = sensor.data
+    left_idx, right_idx = sensor_cfg.body_ids
+
+    left_is_air = sdata.current_air_time[:, left_idx] > 0.0
+    left_air_time = sdata.current_air_time[:, left_idx]
+    left_contact_time = sdata.current_contact_time[:, left_idx]
+    left_air_start_z = sdata.air_start_z_w[:, left_idx]
+    left_air_max_z = sdata.air_max_z_w[:, left_idx]
+    left_contact_start_z = sdata.contact_start_z_w[:, left_idx]
+    left_contact_min_z = sdata.contact_min_z_w[:, left_idx]
+
+    right_is_air = sdata.current_air_time[:, right_idx] > 0.0
+    right_air_time = sdata.current_air_time[:, right_idx]
+    right_contact_time = sdata.current_contact_time[:, right_idx]
+    right_air_start_z = sdata.air_start_z_w[:, right_idx]
+    right_air_max_z = sdata.air_max_z_w[:, right_idx]
+    right_contact_start_z = sdata.contact_start_z_w[:, right_idx]
+    right_contact_min_z = sdata.contact_min_z_w[:, right_idx]
 
     # -------------------------------------------------------
     # 1) Command magnitude
     # -------------------------------------------------------
-    cmd = env.command_manager.get_command(command_name)  # (N,3)
+    cmd = env.command_manager.get_command(command_name)
     cmd_xy = torch.norm(cmd[:, :2], dim=1)
     cmd_yaw = torch.abs(cmd[:, 2])
     cmd_speed = torch.sqrt(cmd_xy * cmd_xy + cmd_yaw * cmd_yaw)
-    # --------------------------------------------------------
-    # 2) Torso tilt (torso(body_link) frame)
-    # --------------------------------------------------------
-    asset = env.scene[asset_cfg.name]
-    torso_g_b = asset.data.projected_gravity_b
-    tilt_l2 = torch.sum(torso_g_b[:, :2] * torso_g_b[:, :2], dim=1)
+    need_to_step = (cmd_speed > vel_thresh)
 
-
-    # tilt-dependent allowed double-stance time:
-    tilt_norm = torch.clamp(tilt_l2 / (tilt_margin + eps), 0.0, 1.0)
-    effective_max_stance_time = max_stance_time * (1.0 - tilt_norm)
-    # near-level region: encourage alternating steps
-    near_level = tilt_l2 <= tilt_margin
-    
-    need_to_step = (cmd_speed > vel_thresh) | (tilt_l2 > tilt_margin)
     # --------------------------------------------------------
-    # (NEW) 2') Foot-plane tilt (torso + feet plane)
+    # 2-1) Torso tilt (torso frame)
+    #   projected_gravity_b ~ unit gravity in torso frame
+    #   upright: g_b ≈ (0, 0, -1) → gx,gy ≈ 0 → tilt_torso ≈ 0
+    #   tilted : gx,gy ≠ 0 → tilt_torso > 0
     # --------------------------------------------------------
+    # gravity in torso frame: g_b = (gx, gy, gz), |g_b| ≈ 1
+    torso_g_b = asset.data.projected_gravity_b           # (N, 3)
+    # xy part in torso frame = "tilt direction & magnitude" before normalization
+    g_xy = torso_g_b[:, :2]                              # (N, 2)
+    # tilt magnitude = length of xy component = sin(tilt_angle)
+    tilt_amount = torch.norm(g_xy, dim=1)                # (N,) in [0,1] if g_b is unit
+    # unit direction of tilt in torso xy (胴体から見た傾き方向)
+    #   upright → g_xy ≈ 0 → ベクトルは 0 にしておく
+    tilt_dir_xy = torch.where(
+        tilt_amount.unsqueeze(-1) > 0.0,
+        g_xy / tilt_amount.unsqueeze(-1),
+        torch.zeros_like(g_xy),
+    )                                                     # (N, 2)                                                 # (N, 3)
+    tilt_angle_rad = torch.asin(tilt_amount.clamp(0.0, 1.0))   # (N,)
 
-    # base torso coord (world)
-    p_t = torso_pos        # (N,3)
+    # --------------------------------------------------------
+    # 2-2) Foot-plane tilt (torso + feet plane)
+    #
+    #  - v1 = torso→left, v2 = torso→right
+    #  - n = v1 × v2  : foot plane normal (world)
+    #  - z_world      : world up direction
+    #
+    #  upright (plane horizontal):
+    #    n ⟂ z_world → |dot| = 0 → plane_tilt_angle_rad = 0
+    #
+    #  sideways (plane vertical):
+    #    n || z_world → |dot| = 1 → plane_tilt_angle_rad = π/2
+    #
+    #  Outputs:
+    #    plane_tilt_angle_rad : amount of tilt [rad]
+    #    plane_tilt_dir_xy    : direction of tilt in torso XY (unit vector)
+    # --------------------------------------------------------
+    p_t = torso_pos  # (N,3)
 
-    # apply forward offset if enabled
     if body_offset_forward != 0.0:
-        # offset in torso local frame
         offset_local = torch.tensor(
             [body_offset_forward, 0.0, 0.0],
             device=torso_pos.device,
             dtype=torso_pos.dtype,
         ).view(1, 3).expand_as(p_t)
-
-        # rotate to world frame
         offset_world = quat_rotate(torso_quat, offset_local)
         p_t = p_t + offset_world
 
     # feet positions
-    p_l = body_pos[:, left_id]    # (N,3)
-    p_r = body_pos[:, right_id]
+    p_l = body_pos[:, left_id]   # (N,3)
+    p_r = body_pos[:, right_id]  # (N,3)
 
-    # 2 edges of triangle
+    # two edges on the foot plane
     v1 = p_l - p_t
     v2 = p_r - p_t
 
-    # plane normal
-    plane_n = torch.cross(v1, v2, dim=1)
-    plane_n_unit = plane_n / (torch.norm(plane_n, dim=1, keepdim=True) + 1e-6)
+    # plane normal in world frame
+    plane_n = torch.cross(v1, v2, dim=1)                        # (N,3)
+    plane_n_unit = plane_n / (torch.norm(plane_n, dim=1, keepdim=True) + 1e-9)
 
-    # world vertical
+    # world up
     z_world = torch.tensor(
-        [0., 0., 1.],
+        [0.0, 0.0, 1.0],
         device=torso_pos.device,
         dtype=torso_pos.dtype,
     ).view(1, 3)
 
-    # tilt = 1 - |dot(n, z_world)|
-    cos_theta = torch.sum(plane_n_unit * z_world, dim=1).clamp(-1.0, 1.0)
-    plane_tilt = 1.0 - cos_theta.abs()
-
-    # tilt threshold triggers stepping
-    need_to_step = need_to_step | (plane_tilt > tilt_margin)
-
-    # shrink stance time using max of torso-tilt & plane-tilt
-    plane_tilt_norm = torch.clamp(plane_tilt / (tilt_margin + 1e-6), 0.0, 1.0)
-    combined_tilt_norm = torch.max(tilt_norm, plane_tilt_norm)
-
-    effective_max_stance_time = max_stance_time * (1.0 - combined_tilt_norm)
-
+    # --------------------------------------------------------
+    # 傾き量: 足平面の法線と world z の「ずれ角」 [0, π/2]
+    #  upright:  dot = 0  → angle = 0
+    #  sideways: |dot|=1 → angle = π/2
+    # --------------------------------------------------------
+    dot_nz = torch.sum(plane_n_unit * z_world, dim=1).clamp(-1.0, 1.0)   # (N,)
+    plane_tilt_angle_rad = torch.asin(torch.abs(dot_nz))                 # (N,)
 
     # --------------------------------------------------------
-    # 2b) forward acceleration-based stance shrink (torso-based)
+    # 傾き方向: 足平面が「どの横軸まわりに傾いているか」
+    #
+    # world で:
+    #   tilt_axis_world = z_world × n   (回転軸は水平)
+    #
+    # torso から見た方向がほしいので:
+    #   tilt_axis_torso = R(torso)^T * tilt_axis_world
+    #   → その XY 成分を正規化
     # --------------------------------------------------------
-    v_xy = torso_vel[:, :2]
-    a_xy = torso_acc[:, :2]
+    z_world_vec = z_world.expand_as(plane_n_unit)          # (N,3)
+    tilt_axis_world = torch.cross(z_world_vec, plane_n_unit, dim=1)  # (N,3)
 
-    v_norm = torch.norm(v_xy, dim=1)
-    v_unit = v_xy / (v_norm.unsqueeze(-1) + 1e-6)
+    # 軸ベクトルを torso frame へ
+    tilt_axis_torso = quat_rotate_inverse(torso_quat, tilt_axis_world)    # (N,3)
+    axis_xy = tilt_axis_torso[:, :2]                                      # (N,2)
+    axis_xy_norm = torch.norm(axis_xy, dim=1)                             # (N,)
 
-    a_forward = torch.sum(v_unit * a_xy, dim=1)
-    a_forward_pos = torch.relu(a_forward)
+    # unit direction in torso XY (傾いている向き)
+    plane_tilt_dir_xy = torch.where(
+        axis_xy_norm.unsqueeze(-1) > 0.0,
+        axis_xy / axis_xy_norm.unsqueeze(-1),
+        torch.zeros_like(axis_xy),
+    )  # (N,2)
 
-    if accel_margin > 0:
-        acc_ratio = torch.clamp(a_forward_pos / (accel_margin + eps), 0.0, 1.0)
-        acc_scale = 1.0 - acc_ratio
-    else:
-        acc_scale = torch.ones_like(a_forward_pos)
+    # --------------------------------------------------------
+    # 2-3) Combine tilts and decide when tilt matters
+    # --------------------------------------------------------
+    torso_tilt_xy = tilt_angle_rad.unsqueeze(-1) * tilt_dir_xy
+    plane_tilt_xy = plane_tilt_angle_rad.unsqueeze(-1) * plane_tilt_dir_xy
+    combined_tilt_x = torch.where(
+        torch.abs(torso_tilt_xy[:, 0]) >= torch.abs(plane_tilt_xy[:, 0]),
+        torso_tilt_xy[:, 0],
+        plane_tilt_xy[:, 0],
+    )
+    combined_tilt_y = torch.where(
+        torch.abs(torso_tilt_xy[:, 1]) >= torch.abs(plane_tilt_xy[:, 1]),
+        torso_tilt_xy[:, 1],
+        plane_tilt_xy[:, 1],
+    )
+    combined_tilt_xy = torch.stack([combined_tilt_x, combined_tilt_y], dim=1)
+    combined_tilt_norm = torch.norm(combined_tilt_xy, dim=1)
+    tilt_scaled_vel = tilt_vel_scale * combined_tilt_xy
 
-    accelerating_forward = (a_forward_pos > 1.0e-2) & (v_norm > 1.0e-3)
+    # 傾きに応じて stance time を縮める
+    excess_tilt = torch.clamp(combined_tilt_norm - tilt_margin, min=0.0)
 
-    accel_scale_factor = torch.where(
-        accelerating_forward, acc_scale, torch.ones_like(acc_scale)
+    #   combined_tilt = tilt_margin → scale = 1
+    #   combined_tilt 増えるほど scale ↓ （tilt_stance_softness で調整）
+    tilt_scale_factor = 1.0 - tilt_stance_time_scale * excess_tilt
+    tilt_scale_factor = torch.clamp(tilt_scale_factor, 0.0, 1.0)
+
+    # 一定以上傾いたら「ステップすべき」
+    need_to_step = need_to_step | (combined_tilt_norm > tilt_margin)
+
+    # --------------------------------------------------------
+    # 3) Acceleration-based stance shrink (torso-local)
+    #
+    # accel_margin:            許容したい前向き加速度 [m/s^2] のしきい値
+    # accel_vel_scale:         加速度に応じた速度補正ベクトルのスケール
+    # accel_stance_time_scale: 加速度超過に応じて stance time をどれだけ縮めるかの係数
+    #
+    # 出力:
+    #   accel_amount        : 前向き加速度の大きさ (>=0)
+    #   accel_dir_xy        : 前向き方向（torso xy, unit）
+    #   accel_scaled_vel    : 速度補正ベクトル (N,2)
+    #   accel_scale_factor  : stance time のスケール (0〜1)
+    #   need_to_step        : 強い前向き加速時はステップが必要
+    # --------------------------------------------------------
+    # world → torso local
+    torso_vel_local = quat_rotate_inverse(torso_quat, torso_vel)  # (N,3)
+    torso_acc_local = quat_rotate_inverse(torso_quat, torso_acc)  # (N,3)
+
+    v_xy = torso_vel_local[:, :2]   # (N,2) torso frame
+    a_xy = torso_acc_local[:, :2]   # (N,2) torso frame
+
+    v_norm = torch.norm(v_xy, dim=1)            # (N,)
+    has_vel = v_norm > 1.0e-6
+
+    # forward direction in torso XY (unit)
+    v_dir_xy = torch.where(
+        has_vel.unsqueeze(-1),
+        v_xy / v_norm.unsqueeze(-1),
+        torch.zeros_like(v_xy),
+    )                                           # (N,2)
+
+    # forward acceleration component (along torso forward direction)
+    a_forward = torch.sum(v_dir_xy * a_xy, dim=1)   # (N,)
+    accel_amount = torch.clamp(a_forward, min=0.0)  # forward accel only (>=0)
+
+    # direction of acceleration effect = torso forward direction
+    accel_dir_xy = v_dir_xy                         # (N,2)
+
+    # velocity-scale vector based on acceleration
+    accel_scaled_vel = accel_vel_scale * accel_amount.unsqueeze(-1) * accel_dir_xy  # (N,2)
+
+    # stance time allowed shrinks when forward acceleration exceeds accel_margin
+    excess_accel = torch.clamp(accel_amount - accel_margin, min=0.0)  # (N,)
+
+    # accel_amount <= accel_margin  → accel_scale_factor = 1
+    # accel_amount  > accel_margin  → 1 - accel_stance_time_scale * (超過分)
+    accel_scale_factor = 1.0 - accel_stance_time_scale * excess_accel
+    accel_scale_factor = torch.clamp(accel_scale_factor, 0.0, 1.0)    # (N,)
+
+    # 強く前向きに加速しているときは「ステップすべき」とみなす
+    need_to_step = need_to_step | (accel_amount > accel_margin)
+
+    # --------------------------------------------------------
+    # tilt + acceleration で stance time を決定
+    # --------------------------------------------------------
+    stance_scale = torch.minimum(tilt_scale_factor, accel_scale_factor)   # (N,)
+    effective_max_stance_time = max_stance_time * stance_scale            # (N,)
+
+    # -------------------------------------------------------
+    # 4) Stance-time penalty
+    # -------------------------------------------------------
+    double_is_contact = ~left_is_air & ~right_is_air
+    double_contact_time = torch.where(
+        double_is_contact,
+        torch.minimum(left_contact_time, right_contact_time),
+        torch.zeros_like(left_contact_time),
+    )  # (N,)
+    stance_time_excess = torch.clamp(double_contact_time - effective_max_stance_time, min=0.0)
+    stance_time_penalty = -stance_time_excess * time_penalty_scale
+
+    # -------------------------------------------------------
+    # 5) Swing time penalty
+    #
+    # swing_air_time < min_air_time * 0.5 のとき：
+    #   浮いている足は
+    #     - torso ローカル z 方向
+    #     - world z 方向
+    #   の両方で min_foot_up_speed 以上で上昇していなければならない。
+    # min_air_time * 0.5 < swing_air_time のとき：
+    #   浮いている足が(air_max_z - air_start_z) < min_air_heightのとき
+    #     - torso ローカル z 方向
+    #     - world z 方向
+    #   の両方で min_foot_up_speed 以上で上昇していなければならない
+    #
+    # 両足浮きの場合：
+    #   torso ローカル z が高い方の足のみを対象にする。
+    #
+    # 不足速度（local/world のうち大きい方）に対して
+    # vel_penalty_scale をかけてペナルティとする。
+    # -------------------------------------------------------
+
+    half_air_time = min_air_time * 0.5
+
+    # torso-local foot velocities
+    left_foot_vel_local  = quat_rotate_inverse(torso_quat, left_foot_vel)   # (N,3)
+    right_foot_vel_local = quat_rotate_inverse(torso_quat, right_foot_vel)
+
+    left_up_speed_local  = left_foot_vel_local[:, 2]
+    right_up_speed_local = right_foot_vel_local[:, 2]
+
+    # world-frame z velocities
+    left_up_speed_world  = left_foot_vel[:, 2]
+    right_up_speed_world = right_foot_vel[:, 2]
+
+    left_short_air  = left_air_time  < half_air_time
+    right_short_air = right_air_time < half_air_time
+
+    # both feet air? → choose higher foot (in torso frame)
+    both_air = left_is_air & right_is_air
+
+    # torso-local foot heights (for selecting higher one)
+    left_height_local  = quat_rotate_inverse(torso_quat, left_foot_pos - torso_pos)[:, 2]
+    right_height_local = quat_rotate_inverse(torso_quat, right_foot_pos - torso_pos)[:, 2]
+
+    left_higher = left_height_local >= right_height_local
+
+    # initialize penalty container
+    swing_penalty = torch.zeros_like(left_air_time)
+
+    # --- LEFT FOOT ONLY AIR ---
+    left_only_air = left_is_air & (~right_is_air)
+    left_need_speed = left_only_air & left_short_air
+
+    left_def_local  = torch.clamp(min_foot_up_speed - left_up_speed_local,  min=0.0)
+    left_def_world  = torch.clamp(min_foot_up_speed - left_up_speed_world,  min=0.0)
+    left_speed_deficit = torch.maximum(left_def_local, left_def_world)
+
+    swing_penalty = swing_penalty + left_need_speed * left_speed_deficit * (-vel_penalty_scale)
+
+    # --- RIGHT FOOT ONLY AIR ---
+    right_only_air = right_is_air & (~left_is_air)
+    right_need_speed = right_only_air & right_short_air
+
+    right_def_local  = torch.clamp(min_foot_up_speed - right_up_speed_local,  min=0.0)
+    right_def_world  = torch.clamp(min_foot_up_speed - right_up_speed_world,  min=0.0)
+    right_speed_deficit = torch.maximum(right_def_local, right_def_world)
+
+    swing_penalty = swing_penalty + right_need_speed * right_speed_deficit * (-vel_penalty_scale)
+
+    # --- BOTH FEET AIR → only penalize the higher foot ---
+    both_need_speed = both_air & (
+        (left_air_time < half_air_time) | (right_air_time < half_air_time)
     )
 
-    effective_max_stance_time = effective_max_stance_time * accel_scale_factor
+    # left higher foot
+    left_higher_mask = both_need_speed & left_higher
+    left_def_local_both  = torch.clamp(min_foot_up_speed - left_up_speed_local,  min=0.0)
+    left_def_world_both  = torch.clamp(min_foot_up_speed - left_up_speed_world,  min=0.0)
+    left_speed_deficit_both = torch.maximum(left_def_local_both, left_def_world_both)
 
-    need_to_step = need_to_step | accelerating_forward
+    swing_penalty = swing_penalty + left_higher_mask * left_speed_deficit_both * (-vel_penalty_scale)
+
+    # right higher foot
+    right_higher_mask = both_need_speed & (~left_higher)
+    right_def_local_both  = torch.clamp(min_foot_up_speed - right_up_speed_local,  min=0.0)
+    right_def_world_both  = torch.clamp(min_foot_up_speed - right_up_speed_world,  min=0.0)
+    right_speed_deficit_both = torch.maximum(right_def_local_both, right_def_world_both)
+
+    swing_penalty = swing_penalty + right_higher_mask * right_speed_deficit_both * (-vel_penalty_scale)
+
+    # final penalty from swing time / lift speed
+    air_time_penalty = swing_penalty * (~double_is_contact)
 
     # -------------------------------------------------------
-    # 3) Contact info
+    # 6) Swing height penalty
+    # swing_air_time < min_air_time * 0.5 のとき：
+    #   浮いている足は
+    #     - torso ローカル z 方向
+    #     - world z 方向
+    #   の両方で min_air_height * (swing_air_time / (min_air_time * 0.5)) 以上の高さを維持しなければならない。
+    # min_air_time * 0.5 < swing_air_time < min_air_timeのとき：
+    #   浮いている足は
+    #     - torso ローカル z 方向
+    #     - world z 方向
+    #   の両方で min_air_height * ((min_air_time - swing_air_time) / (min_air_time * 0.5)) 以上の高さを維持しなければならない。
+    #
+    # 両足浮きの場合：
+    #   torso ローカル z が高い方の足のみを対象にする。
+    #
+    # 不足高度（local/world のうち大きい方）に対して
+    # height_penalty_scale をかけてペナルティとする。
     # -------------------------------------------------------
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids[1:]]      # left,right
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids[1:]]
 
-    in_contact = contact_time > 0
-    left_contact = in_contact[:, 0]
-    right_contact = in_contact[:, 1]
-    double_stance_time = torch.min(contact_time, dim=1)[0]
+    # world-frame absolute heights
+    hL_w = left_foot_pos[:, 2]
+    hR_w = right_foot_pos[:, 2]
 
-    # -------------------------------------------------------
-    # 4) Swing foot detection
-    # -------------------------------------------------------
-    left_higher = left_z > right_z
-    right_higher = right_z > left_z
+    # torso-local absolute heights
+    left_local_pos  = quat_rotate_inverse(torso_quat, left_foot_pos - torso_pos)
+    right_local_pos = quat_rotate_inverse(torso_quat, right_foot_pos - torso_pos)
+    hL_l = left_local_pos[:, 2]
+    hR_l = right_local_pos[:, 2]
 
-    left_stance_time = contact_time[:, 0]
-    right_stance_time = contact_time[:, 1]
+    # foot lift height = high - low
+    world_lift_height = torch.abs(hL_w - hR_w)
+    local_lift_height = torch.abs(hL_l - hR_l)
 
-    right_stance_ok = torch.where(
-        near_level,
-        right_stance_time >= min_air_time,
-        torch.ones_like(right_stance_time, dtype=torch.bool),
+    # actual lift height = smaller of world/local
+    lift_height = torch.minimum(world_lift_height, local_lift_height)  # (N,)
+
+    # same lift height is used for whichever foot is considered “swing”
+    left_rel_height  = lift_height
+    right_rel_height = lift_height
+
+    # required height profile (triangle 0 → min → 0)
+    left_required_height  = torch.zeros_like(left_air_time)
+    right_required_height = torch.zeros_like(right_air_time)
+
+    left_phase0  = (left_air_time  > 0.0) & (left_air_time  < half_air_time)
+    left_phase1  = (left_air_time  >= half_air_time) & (left_air_time  < min_air_time)
+
+    right_phase0 = (right_air_time > 0.0) & (right_air_time < half_air_time)
+    right_phase1 = (right_air_time >= half_air_time) & (right_air_time < min_air_time)
+
+    # rising
+    left_required_height[left_phase0] = (
+        min_air_height * (left_air_time[left_phase0] / half_air_time)
     )
-    left_stance_ok = torch.where(
-        near_level,
-        left_stance_time >= min_air_time,
-        torch.ones_like(left_stance_time, dtype=torch.bool),
+    right_required_height[right_phase0] = (
+        min_air_height * (right_air_time[right_phase0] / half_air_time)
     )
 
-    left_swing = (
-        left_higher & (~left_contact) & right_contact & right_stance_ok
-    ) | ((~left_contact) & (~right_contact) & left_higher)
+    # falling
+    left_required_height[left_phase1] = (
+        min_air_height * ((min_air_time - left_air_time[left_phase1]) / half_air_time)
+    )
+    right_required_height[right_phase1] = (
+        min_air_height * ((min_air_time - right_air_time[right_phase1]) / half_air_time)
+    )
 
-    right_swing = (
-        right_higher & (~right_contact) & left_contact & left_stance_ok
-    ) | ((~left_contact) & (~right_contact) & right_higher)
+    # deficits
+    left_height_deficit  = torch.clamp(left_required_height  - left_rel_height,  min=0.0)
+    right_height_deficit = torch.clamp(right_required_height - right_rel_height, min=0.0)
 
-    is_swing = left_swing | right_swing
-    reflex_single = need_to_step & is_swing
-    reflex_double = need_to_step & (~is_swing)
+    height_penalty = torch.zeros_like(left_air_time)
 
-    swing_air_time = torch.where(left_swing, air_time[:, 0], air_time[:, 1])
-    swing_air_time = torch.where(is_swing, swing_air_time, torch.zeros_like(swing_air_time))
+    # 片足だけ浮いている場合
+    # left_only_air, right_only_air は 5) で定義済み
+    left_need_height  = left_only_air  & (left_required_height  > 0.0)
+    right_need_height = right_only_air & (right_required_height > 0.0)
 
-    swing_height = torch.abs(left_z - right_z)
+    height_penalty = height_penalty + left_need_height  * left_height_deficit  * (-height_penalty_scale)
+    height_penalty = height_penalty + right_need_height * right_height_deficit * (-height_penalty_scale)
 
+    # 両足浮き → 5で決めた「高い方の足」だけを見る
+    both_need_height = both_air & (
+        (left_required_height > 0.0) | (right_required_height > 0.0)
+    )
+
+    left_higher_mask  = both_need_height & left_higher
+    right_higher_mask = both_need_height & (~left_higher)
+
+    height_penalty = height_penalty + left_higher_mask  * left_height_deficit  * (-height_penalty_scale)
+    height_penalty = height_penalty + right_higher_mask * right_height_deficit * (-height_penalty_scale)
+
+    air_height_penalty = height_penalty * (~double_is_contact)
     # -------------------------------------------------------
-    # 5) Stance-time penalty
-    # -------------------------------------------------------
-    stance_missing = torch.relu(double_stance_time - effective_max_stance_time) / (max_stance_time + eps)
-    stance_penalty = torch.where(reflex_double, -stance_missing, torch.zeros_like(stance_missing))
-
-    # -------------------------------------------------------
-    # 6) Swing time penalty
-    # -------------------------------------------------------
-    air_missing = torch.relu(min_air_time - swing_air_time) / (min_air_time + eps)
-    air_penalty = torch.where(reflex_single, -air_missing, torch.zeros_like(air_missing))
-
-    # -------------------------------------------------------
-    # 7) Swing height penalty (world)
-    # -------------------------------------------------------
-    height_missing = torch.relu(min_air_height - swing_height) / (min_air_height + eps)
-    height_penalty = torch.where(reflex_single, -height_missing, torch.zeros_like(height_missing))
-
-    # -------------------------------------------------------
-    # 8) Swing height penalty (local torso frame)
-    # -------------------------------------------------------
-    swing_pos = torch.where(left_swing.unsqueeze(-1), body_pos[:, left_id], body_pos[:, right_id])
-    stance_pos = torch.where(left_higher.unsqueeze(-1), body_pos[:, right_id], body_pos[:, left_id])
-
-    swing_local = quat_rotate_inverse(torso_quat, swing_pos - torso_pos)
-    stance_local = quat_rotate_inverse(torso_quat, stance_pos - torso_pos)
-
-    local_height_diff = swing_local[:, 2] - stance_local[:, 2]
-    local_height_missing = torch.relu(min_air_height - local_height_diff) / (min_air_height + eps)
-    local_height_penalty = torch.where(reflex_single, -local_height_missing, torch.zeros_like(local_height_missing))
-
-    # -------------------------------------------------------
-    # 9) Total
+    # 7) Total
     # -------------------------------------------------------
     total_penalty = (
-        stance_penalty
-        + air_penalty
-        + height_penalty
-        + local_height_penalty
-    )
+        stance_time_penalty
+        + air_time_penalty
+        + air_height_penalty
+    )  # (N,)
 
     return torch.where(need_to_step, total_penalty, torch.zeros_like(total_penalty))
-
 
 
 def feet_contact_angle_penalty(

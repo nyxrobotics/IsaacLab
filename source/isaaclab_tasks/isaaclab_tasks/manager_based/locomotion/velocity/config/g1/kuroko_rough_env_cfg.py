@@ -104,23 +104,30 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.step_reflex_penalty,
-        weight=1000000.0,
+        weight=100.0,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
             "vel_thresh": 0.0001,
-            "tilt_margin": 0.1,
             "min_air_time": 0.2,
             "max_stance_time": 0.2,
             "min_air_height": 0.015,
+            "tilt_margin": 0.1,
+            "tilt_vel_scale": 1.0,
+            "tilt_stance_time_scale": 3.0,
             "accel_margin": 0.1,
+            "accel_vel_scale": 1.0,
+            "accel_stance_time_scale": 3.0,
+            "time_penalty_scale": 1000.0,
+            "vel_penalty_scale": 1000.0,
+            "height_penalty_scale": 1000.0,
             "body_offset_forward": 0.0,
         },
     )

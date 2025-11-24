@@ -667,6 +667,134 @@ def step_reflex_penalty(
     )  # (N,)
     stance_time_excess = torch.clamp(double_contact_time - effective_max_stance_time, min=0.0)
     stance_time_penalty = -stance_time_excess * time_penalty_scale
+    # --------------------------------------------------------
+    # 4b) Alternating-step penalty (improved)
+    #
+    # A) double_contact_time > effective_max_stance_time:
+    #    → 強制的にステップ開始。接地時間が長い足の
+    #       v_longer_z >= min_foot_up_speed を要求。
+    #
+    # B) double_contact_time <= effective_max_stance_time:
+    #    → 交互ステップ誘導モード。
+    #       v_longer_z - v_shorter_z > 0 を緩やかに要求。
+    #
+    # C) 両足接地かつ左右の接地時間差が max_stance_time*2 を超えるとき:
+    #    → 長時間接地している足を min_foot_up_speed 以上で上げさせる
+    #       （左右バランス崩れ防止の強いバイアス）。
+    # --------------------------------------------------------
+    is_stable_mask = (combined_tilt_norm <= tilt_margin)
+    alternating_penalty = torch.zeros_like(left_air_time)
+
+    # どちらが「長く接地している足」か
+    left_longer = left_contact_time >= right_contact_time
+    right_longer = ~left_longer
+
+    vLz = left_foot_vel[:, 2]
+    vRz = right_foot_vel[:, 2]
+
+    # A) すでにステップすべき状態（許容スタンス時間を超えている）
+    force_step = double_is_contact & (double_contact_time > effective_max_stance_time)
+
+    # 左の接地が長い → 左足を強制アップ
+    left_force_mask = force_step & left_longer
+    left_force_def = torch.clamp(min_foot_up_speed - vLz, min=0.0)
+    alternating_penalty += -vel_penalty_scale * left_force_mask * left_force_def
+
+    # 右の接地が長い → 右足を強制アップ
+    right_force_mask = force_step & right_longer
+    right_force_def = torch.clamp(min_foot_up_speed - vRz, min=0.0)
+    alternating_penalty += -vel_penalty_scale * right_force_mask * right_force_def
+
+    # B) まだ許容範囲のスタンス → 軽い交互ステップ誘導
+    encourage_step = double_is_contact & (double_contact_time <= effective_max_stance_time)
+
+    # 接地時間が長い足の z速度 - 短い足の z速度
+    diff_left_longer  = vLz - vRz   # left_longer のとき見たい差
+    diff_right_longer = vRz - vLz   # right_longer のとき見たい差
+
+    # 目標は diff > 0（長く接地してる足の方が少し上がり気味）
+    def_left  = torch.clamp(0.0 - diff_left_longer,  min=0.0)
+    def_right = torch.clamp(0.0 - diff_right_longer, min=0.0)
+
+    alternating_penalty += -0.5 * vel_penalty_scale * (encourage_step & left_longer)  * def_left
+    alternating_penalty += -0.5 * vel_penalty_scale * (encourage_step & right_longer) * def_right
+
+    # C) 左右の接地時間差が大きすぎるとき → 長時間接地している足を強くアップ
+    contact_time_diff = torch.abs(left_contact_time - right_contact_time)
+    huge_imbalance = double_is_contact & (contact_time_diff > (max_stance_time * 2.0))
+
+    left_huge_mask = huge_imbalance & left_longer
+    right_huge_mask = huge_imbalance & right_longer
+
+    left_huge_def = torch.clamp(min_foot_up_speed - vLz, min=0.0, max=1.0)
+    right_huge_def = torch.clamp(min_foot_up_speed - vRz, min=0.0, max=1.0)
+
+    alternating_penalty += -vel_penalty_scale * left_huge_mask * left_huge_def
+    alternating_penalty += -vel_penalty_scale * right_huge_mask * right_huge_def
+    alternating_penalty = torch.where(
+        (~is_stable_mask),
+        -vel_penalty_scale * torch.ones_like(alternating_penalty),
+        alternating_penalty,
+    )
+
+    # -------------------------------------------------------
+    # 4c) Weight-shift penalty (torso velocity toward shorter-contact foot)
+    #
+    # 両足接地中:
+    #   left_contact_time < right_contact_time → 胴体速度は左足方向へ
+    #   right_contact_time < left_contact_time → 胴体速度は右足方向へ
+    #
+    # 胴体水平速度の向きが「短時間接地側の足」から外向きの場合にペナルティ。
+    # （速度だけを見る。tilt_angle_rad などは使わない）
+    # -------------------------------------------------------
+    weight_shift_penalty = torch.zeros_like(left_air_time)
+
+    # only when both feet are on the ground
+    # torso → foot vectors (world, horizontal)
+    vec_L = left_foot_pos[:, :2] - torso_pos[:, :2]   # (N,2)
+    vec_R = right_foot_pos[:, :2] - torso_pos[:, :2]  # (N,2)
+
+    len_L = torch.norm(vec_L, dim=1)
+    len_R = torch.norm(vec_R, dim=1)
+
+    dir_L = torch.where(
+        len_L.unsqueeze(-1) > eps,
+        vec_L / (len_L.unsqueeze(-1) + eps),
+        torch.zeros_like(vec_L),
+    )  # (N,2)
+    dir_R = torch.where(
+        len_R.unsqueeze(-1) > eps,
+        vec_R / (len_R.unsqueeze(-1) + eps),
+        torch.zeros_like(vec_R),
+    )  # (N,2)
+
+    # shorter contact foot (candidate swing side)
+    left_shorter = left_contact_time <= right_contact_time
+    right_shorter = ~left_shorter
+
+    desired_dir_xy = torch.zeros_like(dir_L)
+    desired_dir_xy[left_shorter] = dir_L[left_shorter]
+    desired_dir_xy[right_shorter] = dir_R[right_shorter]
+
+    # torso horizontal velocity direction (world)
+    torso_vel_xy = torso_vel[:, :2]
+    torso_speed_xy = torch.norm(torso_vel_xy, dim=1)
+    torso_dir_xy = torch.where(
+        torso_speed_xy.unsqueeze(-1) > eps,
+        torso_vel_xy / (torso_speed_xy.unsqueeze(-1) + eps),
+        torch.zeros_like(torso_vel_xy),
+    )
+
+    # if dot < 0 → moving away from the shorter-contact foot (bad)
+    dot_vel = torch.sum(torso_dir_xy * desired_dir_xy, dim=1)
+
+    misalign = torch.clamp(-dot_vel, min=0.0)  # only negative (wrong-way) part
+    weight_shift_penalty = -vel_penalty_scale * misalign * double_is_contact
+    weight_shift_penalty = torch.where(
+        (~is_stable_mask),
+        -vel_penalty_scale * torch.ones_like(weight_shift_penalty),
+        weight_shift_penalty,
+    )
 
     # -------------------------------------------------------
     # 5) Swing time penalty
@@ -872,8 +1000,10 @@ def step_reflex_penalty(
     # -------------------------------------------------------
     total_penalty = (
         stance_time_penalty
+        + alternating_penalty
         + air_time_penalty
         + air_height_penalty
+        + weight_shift_penalty
     )  # (N,)
 
     return torch.where(need_to_step, total_penalty, torch.zeros_like(total_penalty))

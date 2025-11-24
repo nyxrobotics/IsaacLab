@@ -60,7 +60,9 @@ class KurokoRewards(RewardsCfg):
     )
 
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=2.0, params={"command_name": "base_velocity", "std": 0.5}
+        func=mdp.track_ang_vel_z_world_exp,
+        weight=2.0,
+        params={"command_name": "base_velocity", "std": 0.5}
     )
 
     # track_lin_vel_xy_exp = RewTerm(
@@ -140,30 +142,9 @@ class KurokoRewards(RewardsCfg):
                 "robot",
                 body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
-            "tilt_margin": 0.1,
+            "tilt_margin": 0.3,
             "k": 1000.0,
             "body_offset_forward": 0.0,
-        },
-    )
-
-    feet_forward_drive = RewTerm(
-        func=mdp.drive_forward_foot_penalty,
-        weight=1000.0,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "vel_thresh": 0.0001,
-            "fall_gain": 1.0,
-            "stance_speed_gain": 0.1,
-            "swing_speed_gain": 0.2,
-            "comp_gain": 0.3,
         },
     )
 
@@ -192,7 +173,7 @@ class KurokoRewards(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
-            "angle_limit_deg": 75.0
+            "angle_limit_deg": 80.0
         },
     )
 

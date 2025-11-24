@@ -702,24 +702,36 @@ def step_reflex_penalty(
     left_up_speed_world  = left_foot_vel[:, 2]
     right_up_speed_world = right_foot_vel[:, 2]
 
+    # air-time conditions
     left_short_air  = left_air_time  < half_air_time
     right_short_air = right_air_time < half_air_time
 
-    # both feet air? → choose higher foot (in torso frame)
+    # total lift since take-off (world)
+    left_lift_total  = left_air_max_z  - left_air_start_z
+    right_lift_total = right_air_max_z - right_air_start_z
+
+    # long-air but still insufficient lift
+    left_long_need  = (left_air_time  >= half_air_time) & (left_lift_total  < min_air_height)
+    right_long_need = (right_air_time >= half_air_time) & (right_lift_total < min_air_height)
+
+    # air-state flags
+    # （上で left_is_air, right_is_air は定義済み）
+    left_only_air  = left_is_air  & (~right_is_air)
+    right_only_air = right_is_air & (~left_is_air)
     both_air = left_is_air & right_is_air
 
-    # torso-local foot heights (for selecting higher one)
+    # torso-local foot heights (for selecting higher one in both-air)
     left_height_local  = quat_rotate_inverse(torso_quat, left_foot_pos - torso_pos)[:, 2]
     right_height_local = quat_rotate_inverse(torso_quat, right_foot_pos - torso_pos)[:, 2]
-
     left_higher = left_height_local >= right_height_local
 
     # initialize penalty container
     swing_penalty = torch.zeros_like(left_air_time)
 
-    # --- LEFT FOOT ONLY AIR ---
-    left_only_air = left_is_air & (~right_is_air)
-    left_need_speed = left_only_air & left_short_air
+    # ---------------------------------------------------
+    # 左足のみ浮いている場合
+    # ---------------------------------------------------
+    left_need_speed = left_only_air & (left_short_air | left_long_need)
 
     left_def_local  = torch.clamp(min_foot_up_speed - left_up_speed_local,  min=0.0)
     left_def_world  = torch.clamp(min_foot_up_speed - left_up_speed_world,  min=0.0)
@@ -727,9 +739,10 @@ def step_reflex_penalty(
 
     swing_penalty = swing_penalty + left_need_speed * left_speed_deficit * (-vel_penalty_scale)
 
-    # --- RIGHT FOOT ONLY AIR ---
-    right_only_air = right_is_air & (~left_is_air)
-    right_need_speed = right_only_air & right_short_air
+    # ---------------------------------------------------
+    # 右足のみ浮いている場合
+    # ---------------------------------------------------
+    right_need_speed = right_only_air & (right_short_air | right_long_need)
 
     right_def_local  = torch.clamp(min_foot_up_speed - right_up_speed_local,  min=0.0)
     right_def_world  = torch.clamp(min_foot_up_speed - right_up_speed_world,  min=0.0)
@@ -737,28 +750,28 @@ def step_reflex_penalty(
 
     swing_penalty = swing_penalty + right_need_speed * right_speed_deficit * (-vel_penalty_scale)
 
-    # --- BOTH FEET AIR → only penalize the higher foot ---
+    # ---------------------------------------------------
+    # 両足浮いている場合 → torso ローカル z が高い方のみ
+    # ---------------------------------------------------
     both_need_speed = both_air & (
-        (left_air_time < half_air_time) | (right_air_time < half_air_time)
+        (left_short_air | left_long_need) | (right_short_air | right_long_need)
     )
 
-    # left higher foot
-    left_higher_mask = both_need_speed & left_higher
+    # 左足が高い & 左条件が true
+    left_higher_mask = both_need_speed & left_higher & (left_short_air | left_long_need)
     left_def_local_both  = torch.clamp(min_foot_up_speed - left_up_speed_local,  min=0.0)
     left_def_world_both  = torch.clamp(min_foot_up_speed - left_up_speed_world,  min=0.0)
     left_speed_deficit_both = torch.maximum(left_def_local_both, left_def_world_both)
-
     swing_penalty = swing_penalty + left_higher_mask * left_speed_deficit_both * (-vel_penalty_scale)
 
-    # right higher foot
-    right_higher_mask = both_need_speed & (~left_higher)
+    # 右足が高い & 右条件が true
+    right_higher_mask = both_need_speed & (~left_higher) & (right_short_air | right_long_need)
     right_def_local_both  = torch.clamp(min_foot_up_speed - right_up_speed_local,  min=0.0)
     right_def_world_both  = torch.clamp(min_foot_up_speed - right_up_speed_world,  min=0.0)
     right_speed_deficit_both = torch.maximum(right_def_local_both, right_def_world_both)
-
     swing_penalty = swing_penalty + right_higher_mask * right_speed_deficit_both * (-vel_penalty_scale)
 
-    # final penalty from swing time / lift speed
+    # 両足接地中は swing penalty を 0 にする
     air_time_penalty = swing_penalty * (~double_is_contact)
 
     # -------------------------------------------------------
@@ -1293,32 +1306,33 @@ def support_plane_tilt_penalty(
     body_offset_forward: float = 0.0,
 ) -> torch.Tensor:
     """
-    Penalize when the support plane (torso + left foot + right foot)
-    is tilted too much with respect to the world vertical axis.
+    Penalize the tilt of the support plane (torso + both feet) in radians.
 
     - asset_cfg.body_ids = [torso_id, left_foot_id, right_foot_id]
-
-    We use the normal vector of the plane (roughly robot forward axis).
-    When this normal is orthogonal to world Z (upright), tilt ≈ 0.
-    When it gains a vertical component, tilt increases.
+    - tilt_margin : allowable tilt angle [rad]
+        (tilt_angle_rad <= tilt_margin → penalty = 0)
+    - k           : proportional scale of penalty (k > 0).
+        * k == 0 のときだけ、threshold を超えたら -1、超えなければ 0 の二値ペナルティ。
     """
 
     eps = 1e-6
     asset = env.scene[asset_cfg.name]
 
-    body_pos = asset.data.body_pos_w
+    body_pos  = asset.data.body_pos_w
     body_quat = asset.data.body_quat_w
 
     torso_id, left_id, right_id = asset_cfg.body_ids
 
-    N = body_pos.shape[0]
+    N      = body_pos.shape[0]
     device = body_pos.device
-    dtype = body_pos.dtype
+    dtype  = body_pos.dtype
 
-    torso_pos = body_pos[:, torso_id]
+    torso_pos  = body_pos[:, torso_id]
     torso_quat = body_quat[:, torso_id]
 
+    # --------------------------------------------------------
     # torso point with optional forward offset
+    # --------------------------------------------------------
     if body_offset_forward != 0.0:
         offset_local = torch.tensor(
             [body_offset_forward, 0.0, 0.0],
@@ -1333,36 +1347,45 @@ def support_plane_tilt_penalty(
     p_l = body_pos[:, left_id]
     p_r = body_pos[:, right_id]
 
+    # --------------------------------------------------------
+    # n: support plane 内の「前後軸」ベクトル
+    #  upright: n はほぼ水平で Z と直交
+    #  sideways: n が Z 方向に近づく
+    # --------------------------------------------------------
     v1 = p_l - p_t
     v2 = p_r - p_t
-
     n = torch.cross(v1, v2, dim=1)
-    n_norm = torch.norm(n, dim=1, keepdim=True)
-    n_unit = n / (n_norm + eps)
+    n_unit = n / (torch.norm(n, dim=1, keepdim=True) + eps)
 
-    z_world = torch.tensor(
-        [0.0, 0.0, 1.0],
-        device=device,
-        dtype=dtype,
-    ).view(1, 3)
+    # world Z
+    z_world = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype).view(1, 3)
 
-    # 前後軸（n）が Z に対してどれだけ「立ち上がっているか」
-    cos_theta = torch.sum(n_unit * z_world, dim=1)  # (N,)
-    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+    # --------------------------------------------------------
+    # tilt angle [rad]
+    #
+    #  cos_theta = dot(n_unit, z_world)
+    #  upright:   n は水平 → cos ≈ 0      → angle ≈ 0
+    #  sideways: |cos|→1     → angle→π/2
+    #
+    #  tilt_angle_rad = asin(|cos_theta|)
+    # --------------------------------------------------------
+    cos_theta = torch.sum(n_unit * z_world, dim=1).clamp(-1.0, 1.0)
+    tilt_angle_rad = torch.asin(torch.abs(cos_theta))  # (N,) in [0, π/2]
 
-    # tilt: 直立 = 0, 前後軸にZ成分が出るほど大きくなる
-    tilt = torch.abs(cos_theta)                     # (N,)
-
-    # 許容範囲を超えた分だけペナルティ
-    tilt_excess = torch.relu(tilt - tilt_margin)
+    # --------------------------------------------------------
+    # tilt_margin 以内はペナルティ 0
+    # tilt_excess = max(tilt_angle_rad - tilt_margin, 0)
+    # --------------------------------------------------------
+    tilt_excess = torch.clamp(tilt_angle_rad - tilt_margin, min=0.0)
 
     if k == 0.0:
-        penalty = torch.where(
+        # 二値ペナルティ: 超えたら -1, それ以外 0
+        return torch.where(
             tilt_excess > 0.0,
             -torch.ones_like(tilt_excess),
             torch.zeros_like(tilt_excess),
         )
-        return penalty
 
-    penalty = - (tilt_excess ** k)
+    # 比例ペナルティ: -k * (角度超過)
+    penalty = -k * tilt_excess
     return penalty

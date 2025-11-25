@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import math
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -101,8 +100,11 @@ class KurokoRewards(RewardsCfg):
         weight=0.75,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.01,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
+            "threshold": 0.02,
         },
     )
 
@@ -156,8 +158,14 @@ class KurokoRewards(RewardsCfg):
         func=mdp.feet_slide,
         weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
         },
     )
 
@@ -222,57 +230,47 @@ class KurokoRewards(RewardsCfg):
             ])},
     )
 
-    flat_toe_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-                "margin": 0.0,
-                "gain": 1.0,},
-    )
-
-    # flat_body_penalty = RewTerm(
+    # flat_toe_penalty = RewTerm(
     #     func=mdp.flat_orientation_links_l2,
     #     weight=1.0,
     #     params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-    #             "chest_link",
-    #             "body_link"]),
-    #             "margin": 0.1,
-    #             "gain": 1000.0,},
+    #             "ankle_r_yaw_link",
+    #             "ankle_l_yaw_link"]),
+    #             "margin": 0.0,
+    #             "gain": 1.0,},
     # )
 
-    feet_lateral_separation = RewTerm(
-        func=mdp.feet_lateral_separation_penalty,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "min_lateral_distance": 0.1,
-            "inner_gain": 1000.0,
-            "outer_gain": 0,
-        },
-    )
+    # feet_lateral_separation = RewTerm(
+    #     func=mdp.feet_lateral_separation_penalty,
+    #     weight=1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+    #         ),
+    #         "min_lateral_distance": 0.1,
+    #         "inner_gain": 1000.0,
+    #         "outer_gain": 0,
+    #     },
+    # )
 
-    keep_torso_height = RewTerm(
-        func=mdp.torso_height_penalty,
-        weight= 1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[
-                    "body_link",
-                    "ankle_l_yaw_link",
-                    "ankle_r_yaw_link",
-                ],
-            ),
-            "target_height": 0.32,
-            "margin": 0.01,
-            "gain": 10000.0,
-        },
-    )
+    # keep_torso_height = RewTerm(
+    #     func=mdp.torso_height_penalty,
+    #     weight= 1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=[
+    #                 "body_link",
+    #                 "ankle_l_yaw_link",
+    #                 "ankle_r_yaw_link",
+    #             ],
+    #         ),
+    #         "target_height": 0.32,
+    #         "margin": 0.01,
+    #         "gain": 10000.0,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------
@@ -411,8 +409,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Randomize initial joint angles
         self.events.push_robot = None
         self.events.add_base_mass = None
-        self.events.reset_robot_joints.params["position_range"] = (-0.25 * math.pi, 0.25 * math.pi)
-        self.events.reset_robot_joints.params["velocity_range"] = (-0.25 * math.pi, 0.25 * math.pi)
+        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
         self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
@@ -429,10 +426,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -1.0
         self.rewards.action_rate_l2.weight = -0.005
-
         self.rewards.dof_acc_l2.weight = -1.0e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
@@ -518,9 +513,9 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.4, 0.4)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},

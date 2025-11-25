@@ -50,7 +50,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-1000000.0,
+        weight=-200.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -61,7 +61,7 @@ class KurokoRewards(RewardsCfg):
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=2.0,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -87,26 +87,18 @@ class KurokoRewards(RewardsCfg):
     #     params={"command_name": "base_velocity"},
     # )
 
-    track_trajectory_penalty = RewTerm(
-        func=mdp.command_ratio_alignment_penalty,
-        weight=1.0,
-        params={"command_name": "base_velocity",
-            "margin": 1.5,
-            "gain": 1000.0},
-    )
+    # track_trajectory_penalty = RewTerm(
+    #     func=mdp.command_ratio_alignment_penalty,
+    #     weight=1.0,
+    #     params={"command_name": "base_velocity",
+    #         "margin": 1.5,
+    #         "gain": 1000.0},
+    # )
 
-    joint_deviation_torso = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", 
-            joint_names=[
-                "chest"
-            ])},
-    )
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.25,
+        weight=0.75,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
@@ -146,52 +138,62 @@ class KurokoRewards(RewardsCfg):
     #     },
     # )
 
-    support_plane_tilt = RewTerm(
-        func=mdp.support_plane_tilt_penalty,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "tilt_margin": 0.3,
-            "k": 1000.0,
-            "body_offset_forward": 0.0,
-        },
-    )
+    # support_plane_tilt = RewTerm(
+    #     func=mdp.support_plane_tilt_penalty,
+    #     weight=1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
+    #         ),
+    #         "tilt_margin": 0.3,
+    #         "k": 1000.0,
+    #         "body_offset_forward": 0.0,
+    #     },
+    # )
 
     feet_slide = RewTerm(
-        func=mdp.feet_slide_margin_penalty,
-        weight=-1.0,
+        func=mdp.feet_slide,
+        weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "ankle_l_yaw_link",
-                "ankle_r_yaw_link"]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=[
-                "ankle_l_yaw_link",
-                "ankle_r_yaw_link"]),
-                "margin": 0.01,
-                "gain": 100.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )
 
-    feet_force_angle_penalty = RewTerm(
-        func=mdp.feet_contact_angle_penalty,
-        weight=100.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-            "angle_limit_deg": 80.0
-        },
-    )
+    # feet_slide = RewTerm(
+    #     func=mdp.feet_slide_margin_penalty,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link"]),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link"]),
+    #             "margin": 0.01,
+    #             "gain": 100.0,
+    #     },
+    # )
+
+    # feet_force_angle_penalty = RewTerm(
+    #     func=mdp.feet_contact_angle_penalty,
+    #     weight=100.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_r_yaw_link",
+    #             "ankle_l_yaw_link"]),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[
+    #             "ankle_r_yaw_link",
+    #             "ankle_l_yaw_link"]),
+    #         "angle_limit_deg": 80.0
+    #     },
+    # )
+
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
@@ -203,14 +205,31 @@ class KurokoRewards(RewardsCfg):
                 "elbow_r_rear",])},
     )
 
+    joint_deviation_ankle_yaw = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.001,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "ankle_l_yaw",
+                "ankle_r_yaw"])},
+    )
+
+    joint_deviation_torso_yaw = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", 
+            joint_names=[
+                "chest"
+            ])},
+    )
+
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
         weight=1.0,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
-                "margin": 0.1,
-                "gain": 1000.0,},
+                "margin": 0.0,
+                "gain": 1.0,},
     )
 
     # flat_body_penalty = RewTerm(
@@ -407,74 +426,51 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2 = None
-        self.rewards.lin_acc_z_l2 = None
+        self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -1000.0
-        self.rewards.action_rate_l2.weight = -0.0001
+        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.action_rate_l2.weight = -0.005
 
-        self.rewards.dof_acc_l2.weight = -1.25e-7
+        self.rewards.dof_acc_l2.weight = -1.0e-7
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
                 "shin_l_active",
                 "shin_r_active",
-                "shoulder_l_roll",
-                "shoulder_r_roll",
                 "thigh_l_active",
                 "thigh_r_active",
                 "ankle_l_roll",
-                "ankle_l_yaw",
                 "ankle_r_roll",
-                "ankle_r_yaw",
-                "chest",
-                "elbow_l_front",
-                "elbow_l_rear",
-                "elbow_r_front",
-                "elbow_r_rear",
                 "hip_l_pitch",
                 "hip_l_roll",
                 "hip_r_pitch",
                 "hip_r_roll",
-                "shoulder_l_pitch",
-                "shoulder_r_pitch",
             ],
         )
 
-        self.rewards.dof_torques_l2.weight = -1.5e-7
+        self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
                 "shin_l_active",
                 "shin_r_active",
-                "shoulder_l_roll",
-                "shoulder_r_roll",
                 "thigh_l_active",
                 "thigh_r_active",
                 "ankle_l_roll",
-                "ankle_l_yaw",
                 "ankle_r_roll",
-                "ankle_r_yaw",
-                "chest",
-                "elbow_l_front",
-                "elbow_l_rear",
-                "elbow_r_front",
-                "elbow_r_rear",
                 "hip_l_pitch",
                 "hip_l_roll",
                 "hip_r_pitch",
                 "hip_r_roll",
-                "shoulder_l_pitch",
-                "shoulder_r_pitch",
             ],
         )
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
-        # self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.3)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消

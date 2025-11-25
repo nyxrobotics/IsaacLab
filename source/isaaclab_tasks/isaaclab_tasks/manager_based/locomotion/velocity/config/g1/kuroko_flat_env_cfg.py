@@ -71,8 +71,8 @@ class KurokoFlatEnvCfg_PLAY(KurokoFlatEnvCfg):
             self.observations.policy.enable_corruption = False
 
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},

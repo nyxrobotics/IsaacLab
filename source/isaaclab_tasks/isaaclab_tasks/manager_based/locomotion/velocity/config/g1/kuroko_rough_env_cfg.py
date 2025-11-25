@@ -55,13 +55,13 @@ class KurokoRewards(RewardsCfg):
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=10.0,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=20.0,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -120,33 +120,35 @@ class KurokoRewards(RewardsCfg):
             "vel_thresh": 0.0001,
             "min_air_time": 0.1,
             "max_stance_time": 0.2,
-            "min_air_height": 0.015,
+            "min_air_height": 0.01,
             "tilt_margin": 0.2,
             "tilt_vel_scale": 1.0,
             "tilt_stance_time_scale": 3.0,
-            "accel_margin": 20.0,
+            "accel_margin": 6.0,
             "accel_vel_scale": 1.0,
-            "accel_stance_time_scale": 0.03,
-            "time_penalty_scale": 10000.0,
-            "vel_penalty_scale": 100000.0,
-            "height_penalty_scale": 1000000.0,
+            "accel_stance_time_scale": 0.2,
+            "time_penalty_scale": 1000.0,
+            "vel_penalty_scale": 10000.0,
+            "height_penalty_scale": 100000.0,
+            "weight_shift_penalty_scale": 100000.0,
             "body_offset_forward": 0.0,
+            "weight_shift_angle_margin": 1.5,
         },
     )
 
-    # support_plane_tilt = RewTerm(
-    #     func=mdp.support_plane_tilt_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "tilt_margin": 0.3,
-    #         "k": 1000.0,
-    #         "body_offset_forward": 0.0,
-    #     },
-    # )
+    support_plane_tilt = RewTerm(
+        func=mdp.support_plane_tilt_penalty,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "tilt_margin": 0.3,
+            "k": 1000.0,
+            "body_offset_forward": 0.0,
+        },
+    )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -159,13 +161,13 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link"]),
                 "margin": 0.01,
-                "gain": 1000.0,
+                "gain": 100.0,
         },
     )
 
     feet_force_angle_penalty = RewTerm(
         func=mdp.feet_contact_angle_penalty,
-        weight=1000.0,
+        weight=100.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_r_yaw_link",
@@ -239,7 +241,7 @@ class KurokoRewards(RewardsCfg):
             ),
             "target_height": 0.32,
             "margin": 0.01,
-            "gain": 1000.0,
+            "gain": 10000.0,
         },
     )
 
@@ -400,7 +402,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -10.0
+        self.rewards.flat_orientation_l2.weight = -1000.0
         self.rewards.action_rate_l2.weight = -0.0001
 
         self.rewards.dof_acc_l2.weight = -1.25e-7

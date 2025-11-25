@@ -49,18 +49,18 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-200.0,
+        weight=-100.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=3.3,
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=1.0,
+        weight=3.3,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -97,14 +97,14 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.75,
+        weight=2.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link",
             ]),
-            "threshold": 0.02,
+            "threshold": 0.1,
         },
     )
 
@@ -267,8 +267,8 @@ class KurokoRewards(RewardsCfg):
     #             ],
     #         ),
     #         "target_height": 0.32,
-    #         "margin": 0.01,
-    #         "gain": 10000.0,
+    #         "margin": 0.0,
+    #         "gain": 10.0,
     #     },
     # )
 

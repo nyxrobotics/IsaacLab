@@ -368,24 +368,21 @@ def feet_lateral_separation_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
     min_lateral_distance: float,
+    margin: float = 0.0,        # ★ 初期値 0 の margin を追加
     inner_gain: float = 1.0,
     outer_gain: float = 0.2,
 ) -> torch.Tensor:
     """
-    Penalize deviation of lateral separation (y-axis in root frame) between
-    left and right feet from a desired minimum distance.
+    Penalize deviation of lateral separation between left and right feet,
+    with a dead-zone margin around the target distance.
 
-    - sep_y == min_lateral_distance → penalty = 0 (ideal)
-    - sep_y <  min_lateral_distance → "inner" side (feet too close)
-        penalty = - inner_gain * (min_lateral_distance - sep_y)  [m]
-    - sep_y >  min_lateral_distance → "outer" side (feet too far apart)
-        penalty = - outer_gain * (sep_y - min_lateral_distance)  [m]
-
-    inner_gain: weight for being too narrow
-    outer_gain: weight for being too wide (typically smaller than inner_gain)
+    - If sep_y within [min_dist - margin, min_dist + margin] → penalty = 0
+    - sep_y <  min_dist - margin → too narrow
+        penalty = -inner_gain * ((min_dist - margin) - sep_y)
+    - sep_y >  min_dist + margin → too wide
+        penalty = -outer_gain * (sep_y - (min_dist + margin))
     """
 
-    # robot articulation
     asset = env.scene[asset_cfg.name]
 
     # world positions
@@ -395,10 +392,10 @@ def feet_lateral_separation_penalty(
     root_pos_w = asset.data.root_pos_w
     root_quat_w = asset.data.root_quat_w
 
-    # foot link indices: [left, right]
+    # foot indices
     left_id, right_id = asset_cfg.body_ids
 
-    # world positions of feet
+    # foot positions world
     left_w = pos_w[:, left_id]
     right_w = pos_w[:, right_id]
 
@@ -406,19 +403,21 @@ def feet_lateral_separation_penalty(
     left_local = quat_rotate_inverse(root_quat_w, left_w - root_pos_w)
     right_local = quat_rotate_inverse(root_quat_w, right_w - root_pos_w)
 
-    # lateral separation in y (absolute distance)
+    # lateral separation |y_L - y_R|
     sep_y = torch.abs(left_local[:, 1] - right_local[:, 1])  # (N,)
 
-    # deviation from desired minimum distance
-    diff = sep_y - min_lateral_distance   # (N,)
+    # -----------------------------------------------------
+    # margin-deadzone logic
+    # -----------------------------------------------------
+    lower = min_lateral_distance - margin
+    upper = min_lateral_distance + margin
 
-    # too close (negative diff): min_dist - sep_y > 0
-    inner_error = torch.relu(-diff)       # (N,)
+    # too narrow
+    inner_error = torch.relu(lower - sep_y)
 
-    # too wide (positive diff): sep_y - min_dist > 0
-    outer_error = torch.relu(diff)        # (N,)
+    # too wide
+    outer_error = torch.relu(sep_y - upper)
 
-    # linear penalties in meters with separate gains
     penalty = -(inner_gain * inner_error + outer_gain * outer_error)
 
     return penalty

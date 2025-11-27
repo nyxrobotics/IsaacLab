@@ -49,7 +49,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-200.0,
+        weight=-100.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -156,7 +156,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
@@ -195,18 +195,18 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    feet_force_similarity_penalty = RewTerm(
-        func=mdp.feet_force_similarity_penalty,
-        weight=1.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-            "weight_dir": 0.1,
-            "weight_mag": 0.1,
+    # feet_force_similarity_penalty = RewTerm(
+    #     func=mdp.feet_force_similarity_penalty,
+    #     weight=1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_r_yaw_link",
+    #             "ankle_l_yaw_link"]),
+    #         "weight_dir": 0.1,
+    #         "weight_mag": 0.1,
 
-        },
-    )
+    #     },
+    # )
 
 
     joint_deviation_arms = RewTerm(
@@ -251,22 +251,22 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_torso_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", 
             joint_names=[
                 "chest"
             ])},
     )
 
-    # flat_toe_penalty = RewTerm(
-    #     func=mdp.flat_orientation_links_l2,
-    #     weight=1.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-    #             "ankle_r_yaw_link",
-    #             "ankle_l_yaw_link"]),
-    #             "margin": 0.0,
-    #             "gain": 1.0,},
-    # )
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+                "margin": 0.0,
+                "gain": 1.0,},
+    )
 
     feet_separation_hard = RewTerm(
         func=mdp.feet_lateral_separation_penalty,
@@ -283,19 +283,20 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    # feet_separation_soft = RewTerm(
-    #     func=mdp.feet_lateral_separation_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "min_lateral_distance": 0.16,
-    #         "inner_gain": 0.2,
-    #         "outer_gain": 0.2,
-    #     },
-    # )
+    feet_separation_soft = RewTerm(
+        func=mdp.feet_lateral_separation_penalty,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+            ),
+            "min_lateral_distance": 0.16,
+            "margin": 0.0,
+            "inner_gain": 0.2,
+            "outer_gain": 0.2,
+        },
+    )
 
 
     torso_height_hard = RewTerm(
@@ -316,23 +317,23 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    # torso_height_soft = RewTerm(
-    #     func=mdp.torso_height_penalty,
-    #     weight= 1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=[
-    #                 "body_link",
-    #                 "ankle_l_yaw_link",
-    #                 "ankle_r_yaw_link",
-    #             ],
-    #         ),
-    #         "target_height": 0.32,
-    #         "margin": 0.0,
-    #         "gain": 0.1,
-    #     },
-    # )
+    torso_height_soft = RewTerm(
+        func=mdp.torso_height_penalty,
+        weight= 1.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=[
+                    "body_link",
+                    "ankle_l_yaw_link",
+                    "ankle_r_yaw_link",
+                ],
+            ),
+            "target_height": 0.32,
+            "margin": 0.0,
+            "gain": 0.1,
+        },
+    )
 
 
 # ---------------------------------------------------------------------

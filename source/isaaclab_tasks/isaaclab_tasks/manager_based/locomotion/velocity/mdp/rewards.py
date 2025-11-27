@@ -975,61 +975,142 @@ def step_reflex_penalty(
 def feet_contact_angle_penalty(
     env,
     sensor_cfg: SceneEntityCfg,
-    asset_cfg: SceneEntityCfg,
     angle_limit_deg: float,
+    eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     Penalize feet applying ground reaction forces at a large angle from gravity.
-    Uses both sensor_cfg (force data) and asset_cfg (which foot links to include).
+    接地判定:
+        - current_air_time < 1e-6
+        - force_norm > 1e-6
     """
 
-    eps = 1e-6
     angle_limit_rad = angle_limit_deg * (3.14159265 / 180.0)
 
     # --------------------------------------------------------
-    # 1) Contact forces from sensor
+    # 1) Contact forces
     # --------------------------------------------------------
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
 
-    # forces_w_history: (N, history, sensor_bodies, 3)
+    # (N, history, S, 3)
     forces_w = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # latest frame
 
-    # sensor_cfg.body_ids → force array index (usually 0 or 1 for two feet)
-    sensor_ids = sensor_cfg.body_ids
+    left_id, right_id = sensor_cfg.body_ids
+    forces_w = forces_w[:, [left_id, right_id], :]   # (N, 2, 3)
 
-    # asset_cfg.body_ids → which robot foot links are evaluated
-    asset_ids = asset_cfg.body_ids
+    # force magnitude
+    force_norm = torch.norm(forces_w, dim=-1)  # (N,2)
 
-    # センサーの foot index と asset_cfg の foot index が一致している前提で取り出す
-    # もし一致していない場合は mapping 処理が必要（その場合は教えてください）
-    forces_w = forces_w[:, sensor_ids, :]        # (N, num_feet, 3)
+    # --------------------------------------------------------
+    # 2) Contact state from air-time
+    # --------------------------------------------------------
+    # (N, S) ただし sensor_ids と揃っている前提
+    air_time = contact_sensor.data.current_air_time[:, [left_id, right_id]]
 
-    force_norm = torch.norm(forces_w, dim=-1) + eps
+    # 空中でない（地面にいる）判定
+    grounded_by_air = air_time < 1e-6
+
+    # 力がある
+    grounded_by_force = force_norm > 1e-6
+
+    # 両条件を満たした場合のみ接地
+    in_contact = grounded_by_air & grounded_by_force   # (N,2)
+
+    # --------------------------------------------------------
+    # 3) Angle from vertical
+    # --------------------------------------------------------
     Fz = forces_w[..., 2]
 
-    # detect contact
-    in_contact = force_norm > 1e-3
+    # 重力方向は (0,0,-1)。vertical axis は「|Fz|」を使う。
+    cos_theta = torch.abs(Fz) / (force_norm + eps)
+    cos_theta = torch.clamp(cos_theta, 0.0, 1.0)
 
-    # --------------------------------------------------------
-    # 2) Angle with gravity
-    # --------------------------------------------------------
-    cos_theta = (-Fz) / force_norm
-    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+    # 角度 0 = 完全に vertical、π/2 = 完全に水平
     theta = torch.acos(cos_theta)
 
     # --------------------------------------------------------
-    # 3) penalty
+    # 4) penalty
     # --------------------------------------------------------
     theta_excess = torch.relu(theta - angle_limit_rad)
+
     penalty_per_foot = -theta_excess
 
-    # only apply when foot is in contact
-    penalty_per_foot = torch.where(in_contact, penalty_per_foot, torch.zeros_like(penalty_per_foot))
+    # 非接地ならペナルティなし
+    penalty_per_foot = torch.where(
+        in_contact,
+        penalty_per_foot,
+        torch.zeros_like(penalty_per_foot),
+    )
 
-    # sum over asset_cfg feet
+    # 両足ぶん合計
     penalty = torch.sum(penalty_per_foot, dim=-1)
 
     return penalty
+
+
+
+def feet_force_similarity_penalty(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    weight_dir: float = 1.0,     # 方向差の重み
+    weight_mag: float = 1.0,     # 大きさ差の重み
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Penalize differences between left and right foot ground reaction forces.
+    - 左右の力ベクトルが似ている（向き・大きさが近い）ほど 0 に近づくペナルティ。
+    - 接地判定は:
+        current_air_time < 1e-6 かつ force_norm > 1e-6
+    """
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    # (N, history, S, 3)
+    forces_w_all = contact_sensor.data.net_forces_w_history[:, -1, :, :]
+
+    # 想定: sensor_cfg.body_ids = [left_idx, right_idx]
+    left_id, right_id = sensor_cfg.body_ids
+
+    F_L = forces_w_all[:, left_id, :]   # (N,3)
+    F_R = forces_w_all[:, right_id, :]  # (N,3)
+
+    # 力のノルム（接地判定用：eps はまだ足さない）
+    norm_L_raw = torch.norm(F_L, dim=-1)  # (N,)
+    norm_R_raw = torch.norm(F_R, dim=-1)  # (N,)
+
+    # air-time から接地判定
+    air_time = contact_sensor.data.current_air_time[:, [left_id, right_id]]  # (N,2)
+    air_L = air_time[:, 0]
+    air_R = air_time[:, 1]
+
+    L_contact = (air_L < 1e-6) & (norm_L_raw > 1e-6)
+    R_contact = (air_R < 1e-6) & (norm_R_raw > 1e-6)
+
+    both_contact = L_contact & R_contact  # (N,)
+
+    # ここからは方向・大きさ差を計算（数値安定のため eps 追加）
+    norm_L = norm_L_raw + eps
+    norm_R = norm_R_raw + eps
+
+    # 方向差 (cosine)
+    cos_sim = torch.sum(F_L * F_R, dim=-1) / (norm_L * norm_R)
+    cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
+
+    # 同方向: 0, 逆方向: 2 に近づく差指標
+    direction_diff = torch.relu(1.0 - cos_sim)  # (N,)
+
+    # 大きさ差（正規化して 0〜1 程度に）
+    mag_diff = torch.abs(norm_L - norm_R)
+    mag_diff_norm = mag_diff / (norm_L + norm_R + eps)  # 0〜1
+
+    raw_penalty = weight_dir * direction_diff + weight_mag * mag_diff_norm  # (N,)
+
+    # 両足接地しているときのみペナルティを適用
+    penalty = torch.where(both_contact, raw_penalty, torch.zeros_like(raw_penalty))
+
+    # 報酬系に合わせて負で返す
+    return -penalty
+
 
 
 def track_lin_vel_xy_compensated_penalty(

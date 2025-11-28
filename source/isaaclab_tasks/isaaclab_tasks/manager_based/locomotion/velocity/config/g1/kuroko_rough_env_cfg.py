@@ -60,7 +60,7 @@ class KurokoRewards(RewardsCfg):
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=10.0,
+        weight=20.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -97,14 +97,14 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=100.0,
+        weight=1000.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link",
             ]),
-            "threshold": 0.1,
+            "threshold": 0.01,
         },
     )
 
@@ -155,7 +155,7 @@ class KurokoRewards(RewardsCfg):
     # )
 
     feet_slide = RewTerm(
-        func=mdp.feet_slide,
+        func=mdp.feet_slide_with_yaw,
         weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -277,8 +277,8 @@ class KurokoRewards(RewardsCfg):
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "min_lateral_distance": 0.16,
-            "inner_gain": 460.0,
-            "outer_gain": 460.0,
+            "inner_gain": 4600.0,
+            "outer_gain": 4600.0,
             "margin": 0.06,
         },
     )
@@ -313,7 +313,7 @@ class KurokoRewards(RewardsCfg):
             ),
             "target_height": 0.32,
             "margin": 0.01,
-            "gain": 100.0,
+            "gain": 1000.0,
         },
     )
 
@@ -491,7 +491,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
-        self.rewards.flat_orientation_l2.weight = -10.0
+        self.rewards.flat_orientation_l2.weight = -100.0
         self.rewards.action_rate_l2.weight = -0.001
         self.rewards.dof_acc_l2.weight = -1.0e-8
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(

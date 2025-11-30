@@ -145,45 +145,37 @@ _original_act = ActorCritic.act
 
 def _safe_act(self, *args, **kwargs):
     try:
-        # 通常ケース: 元の act をそのまま実行
         return _original_act(self, *args, **kwargs)
     except RuntimeError as e:
         msg = str(e)
         if "normal expects all elements of std" not in msg:
-            # std 以外の理由ならそのまま投げる
             raise
 
-        print("[WARNING] ActorCritic.act: invalid std detected. Trying to repair action_std and retry...")
+        print("[WARNING] Invalid std detected. Reconstructing distribution with clamped std...")
 
         with torch.no_grad():
-            # RSL-RL の ActorCritic は action_mean / action_std を持っている想定
+            # ActorCritic が保持する mean / std を使用
             if not (hasattr(self, "action_std") and hasattr(self, "action_mean")):
-                print("          - WARNING: policy has no action_std / action_mean. Cannot repair.")
+                print("  - policy has no action_std or action_mean")
                 raise
 
             std = self.action_std
 
-            # NaN / Inf / 非正 (<=0) を検出
+            # NaN / Inf / 非正値を修正
             invalid = (~torch.isfinite(std)) | (std <= 0.0)
-            if invalid.any():
-                print("          - Found invalid or non-positive std entries. Fixing them.")
+            std = torch.where(invalid, torch.full_like(std, 0.1), std)
 
-                # 変な値は、とりあえず 0.1 にリセット（お好みで調整可）
-                std = torch.where(invalid, torch.full_like(std, 0.1), std)
-
-            # 範囲を制限（ここもお好みで調整可）
+            # 最終 clamping
             std = torch.clamp(std, min=1e-6, max=10.0)
 
-            # 修正を反映
-            self.action_std = std
-            # distribution を作り直す
-            self.distribution = Normal(self.action_mean, self.action_std)
-            # entropy も再計算しておく（PPO.update で使われる）
-            self.entropy = self.distribution.entropy()
+            # ★ NOTE: self.action_std に書き込んではいけない！
+            # distribution を作り直すだけでOK
+            safe_dist = Normal(self.action_mean, std)
+            self.distribution = safe_dist
+            self.entropy = safe_dist.entropy()
 
-        # もう一度 sample を試す
-        action = self.distribution.sample()
-        return action
+        return self.distribution.sample()
+
 
 # ActorCritic.act を差し替え
 ActorCritic.act = _safe_act

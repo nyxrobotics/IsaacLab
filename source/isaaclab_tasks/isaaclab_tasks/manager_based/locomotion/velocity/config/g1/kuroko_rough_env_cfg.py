@@ -230,6 +230,15 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},
     )
+    joint_deviation_hip_roll = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.01,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "hip_l_roll",
+                "hip_r_roll",
+                "ankle_l_roll",
+                "ankle_r_roll"])},
+    )
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -277,26 +286,26 @@ class KurokoRewards(RewardsCfg):
                 body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
             ),
             "min_lateral_distance": 0.16,
-            "inner_gain": 4600.0,
-            "outer_gain": 4600.0,
-            "margin": 0.06,
+            "inner_gain": 460.0,
+            "outer_gain": 460.0,
+            "margin": 0.0,
         },
     )
 
-    feet_separation_soft = RewTerm(
-        func=mdp.feet_lateral_separation_penalty,
-        weight=1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-            ),
-            "min_lateral_distance": 0.16,
-            "margin": 0.0,
-            "inner_gain": 0.2,
-            "outer_gain": 0.2,
-        },
-    )
+    # feet_separation_soft = RewTerm(
+    #     func=mdp.feet_lateral_separation_penalty,
+    #     weight=1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
+    #         ),
+    #         "min_lateral_distance": 0.16,
+    #         "margin": 0.0,
+    #         "inner_gain": 0.2,
+    #         "outer_gain": 0.2,
+    #     },
+    # )
 
 
     torso_height_hard = RewTerm(
@@ -312,28 +321,28 @@ class KurokoRewards(RewardsCfg):
                 ],
             ),
             "target_height": 0.32,
-            "margin": 0.01,
-            "gain": 1000.0,
+            "margin": 0.0,
+            "gain": 100.0,
         },
     )
 
-    torso_height_soft = RewTerm(
-        func=mdp.torso_height_penalty,
-        weight= 1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[
-                    "body_link",
-                    "ankle_l_yaw_link",
-                    "ankle_r_yaw_link",
-                ],
-            ),
-            "target_height": 0.32,
-            "margin": 0.0,
-            "gain": 0.1,
-        },
-    )
+    # torso_height_soft = RewTerm(
+    #     func=mdp.torso_height_penalty,
+    #     weight= 1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=[
+    #                 "body_link",
+    #                 "ankle_l_yaw_link",
+    #                 "ankle_r_yaw_link",
+    #             ],
+    #         ),
+    #         "target_height": 0.32,
+    #         "margin": 0.0,
+    #         "gain": 0.1,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------
@@ -526,12 +535,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 # "hip_r_roll",
             ],
         )
-
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------
@@ -554,6 +557,10 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 # body_names は .* に強制上書き（最も安全）
                 self.physics_material.asset_cfg.body_names = [".*"]
 
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_y = (0, 0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
 # ---------------------------------------------------------------------
 # PLAY config
@@ -581,7 +588,6 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (0.4, 0.4)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
             "velocity_range": {

@@ -207,18 +207,24 @@ class KurokoRewards(RewardsCfg):
     #     },
     # )
 
-    joint_deviation_arms = RewTerm(
+    joint_deviation_shoulders = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
                 "shoulder_r_pitch",
-                "shoulder_r_roll",
+                "shoulder_r_roll"])},
+    )
+
+    joint_deviation_elbows = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-10.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "elbow_l_front",
                 "elbow_l_rear",
                 "elbow_r_front",
-                "elbow_r_rear",])},
+                "elbow_r_rear"])},
     )
 
     joint_deviation_ankle_yaw = RewTerm(

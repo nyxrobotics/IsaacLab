@@ -209,7 +209,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_l_roll",
@@ -561,9 +561,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 # body_names は .* に強制上書き（最も安全）
                 self.physics_material.asset_cfg.body_names = [".*"]
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
 # ---------------------------------------------------------------------
@@ -589,9 +589,9 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
 
-        self.commands.base_velocity.ranges.lin_vel_x = (0.4, 0.4)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
+        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
             "velocity_range": {

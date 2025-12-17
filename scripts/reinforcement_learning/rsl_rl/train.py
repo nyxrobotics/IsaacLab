@@ -155,38 +155,39 @@ _original_act = ActorCritic.act
 def _safe_act(self, *args, **kwargs):
     try:
         return _original_act(self, *args, **kwargs)
+
     except RuntimeError as e:
         msg = str(e)
         if "normal expects all elements of std" not in msg:
             raise
 
-        print("[WARNING] Invalid std detected. Reconstructing distribution with clamped std...")
+        print("[WARNING] Invalid std detected in ActorCritic.act -> sampling with sanitized std", flush=True)
 
         with torch.no_grad():
-            # ActorCritic が保持する mean / std を使用
-            if not (hasattr(self, "action_std") and hasattr(self, "action_mean")):
-                print("  - policy has no action_std or action_mean")
+            # We need mean/std tensors. rsl_rl keeps action_mean/action_std in the module.
+            if not (hasattr(self, "action_mean") and hasattr(self, "action_std")):
+                print("[WARNING] ActorCritic has no action_mean/action_std; re-raising.", flush=True)
                 raise
 
+            mean = self.action_mean
             std = self.action_std
 
-            # NaN / Inf / 非正値を修正
-            invalid = (~torch.isfinite(std)) | (std <= 0.0)
-            std = torch.where(invalid, torch.full_like(std, 0.1), std)
-
-            # 最終 clamping
+            # Make std finite and strictly positive
+            std = torch.nan_to_num(std, nan=0.1, posinf=0.1, neginf=0.1)
             std = torch.clamp(std, min=1e-6, max=10.0)
 
-            # ★ NOTE: self.action_std に書き込んではいけない！
-            # distribution を作り直すだけでOK
-            safe_dist = Normal(self.action_mean, std)
-            self.distribution = safe_dist
-            self.entropy = safe_dist.entropy()
+            # Also sanitize mean just in case (avoids propagating NaN to env)
+            mean = torch.nan_to_num(mean, nan=0.0, posinf=0.0, neginf=0.0)
 
-        return self.distribution.sample()
+            # Build a safe distribution WITHOUT touching self.entropy
+            dist = Normal(mean, std)
 
+            # Keep self.distribution consistent for any later code that reads it
+            self.distribution = dist
 
-# ActorCritic.act を差し替え
+            return dist.sample()
+
+# Patch
 ActorCritic.act = _safe_act
 # =====================================================================
 

@@ -95,42 +95,51 @@ from rsl_rl.algorithms.ppo import PPO
 
 _original_ppo_update = PPO.update
 
+def _is_rank0():
+    return (not dist.is_available()) or (not dist.is_initialized()) or (dist.get_rank() == 0)
+
+
 def _safe_ppo_update(self, *args, **kwargs):
-    # Run original update
-    out = _original_ppo_update(self, *args, **kwargs)
+    """
+    Fix: if minibatch_generator yields None (can desync ranks / break unpack),
+    reuse the last valid minibatch to keep structure identical across steps.
+    """
 
-    # safety guard for log_std
-    with torch.no_grad():
-        policy = self.policy
-        if hasattr(policy, "log_std"):
-            log_std = policy.log_std.data
+    # Keep a reference to the original generator method
+    original_gen_fn = self.storage.mini_batch_generator
 
-            # detect invalid values
-            invalid_mask = ~torch.isfinite(log_std)
-            if invalid_mask.any():
-                print(
-                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). "
-                    "They have been reset to 0.0."
-                )
-                log_std[invalid_mask] = 0.0
+    def wrapped_mini_batch_generator(*g_args, **g_kwargs):
+        last_good = None
+        none_count = 0
+        yielded = 0
 
-            # detect values outside safe range
-            too_low  = (log_std < -20.0)
-            too_high = (log_std > 2.0)
+        for mb in original_gen_fn(*g_args, **g_kwargs):
+            if mb is None:
+                none_count += 1
+                if last_good is None:
+                    # We cannot fabricate the 12-tuple safely without knowing exact structure
+                    # so we must wait until we see the first valid one.
+                    continue
+                if _is_rank0():
+                    print(f"[WARN][rank0] minibatch_generator yielded None -> reusing last_good (none_count={none_count})")
+                yield last_good
+                yielded += 1
+                continue
 
-            if too_low.any() or too_high.any():
-                print(
-                    "[WARNING] Detected policy.log_std outside safe range "
-                    "(-20, 2). Values have been clamped."
-                )
+            last_good = mb
+            yield mb
+            yielded += 1
 
-            # clamp range so std = exp(log_std) stays valid
-            log_std.clamp_(min=-20.0, max=2.0)
+        # If generator produced only None (extreme case), fail loudly instead of corrupting shapes
+        if yielded == 0:
+            raise RuntimeError("mini_batch_generator produced no valid minibatches (all None).")
 
-            # write back
-            policy.log_std.data.copy_(log_std)
-
-    return out
+    # Monkey-patch only for this update call
+    self.storage.mini_batch_generator = wrapped_mini_batch_generator
+    try:
+        return _original_ppo_update(self, *args, **kwargs)
+    finally:
+        self.storage.mini_batch_generator = original_gen_fn
 
 # Patch PPO.update
 PPO.update = _safe_ppo_update

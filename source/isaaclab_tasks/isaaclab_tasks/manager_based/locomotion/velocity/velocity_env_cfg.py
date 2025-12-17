@@ -173,15 +173,6 @@ class EventCfg:
         },
     )
 
-    base_com = EventTerm(
-        func=mdp.randomize_rigid_body_com,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="base"),
-            "com_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.01, 0.01)},
-        },
-    )
-
     # reset
     base_external_force_torque = EventTerm(
         func=mdp.apply_external_force_torque,
@@ -240,6 +231,7 @@ class RewardsCfg:
     )
     # -- penalties
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
+    # lin_acc_z_l2 = RewTerm(func=mdp.body_lin_acc_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
@@ -271,6 +263,14 @@ class TerminationsCfg:
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
+    )
+    robot_exploded = DoneTerm(
+        func=mdp.robot_exploded,
+        params={
+            "limit_angle": 1.2,  # ≒ 70 deg
+            "asset_cfg": SceneEntityCfg("robot"),  # name だけ使われる
+        },
+        time_out=False,
     )
 
 

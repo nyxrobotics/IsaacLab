@@ -69,6 +69,7 @@ import torch
 import traceback
 from collections import OrderedDict
 from torch.utils.data import DataLoader
+from torch.utils.data._utils.collate import default_collate
 
 import psutil
 
@@ -78,6 +79,7 @@ import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.obs_utils as ObsUtils
 import robomimic.utils.torch_utils as TorchUtils
 import robomimic.utils.train_utils as TrainUtils
+import robomimic.utils.log_utils as LogUtils
 from robomimic.algo import algo_factory
 from robomimic.config import Config, config_factory
 from robomimic.utils.log_utils import DataLogger, PrintLogger
@@ -87,6 +89,9 @@ import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
 
 
+def _is_rank0():
+    return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+    
 def _make_dummy_like(ref):
     """Create a dummy sample with the same nested structure as ref."""
     if torch.is_tensor(ref):
@@ -102,6 +107,125 @@ def _make_dummy_like(ref):
     # Fallback: keep as-is (rarely used in robomimic batches)
     return ref
 
+
+def _replace_none_with_dummy(batch, ref_batch, step_idx):
+    if batch is None:
+        if _is_rank0():
+            print(f"[WARN][run_epoch] batch is None at step {step_idx}, replacing with dummy")
+        return _make_dummy_like(ref_batch)
+
+    if isinstance(batch, list) and any(b is None for b in batch):
+        if _is_rank0():
+            none_count = sum(b is None for b in batch)
+            print(
+                f"[WARN][run_epoch] batch list contains {none_count} None entries "
+                f"at step {step_idx}, replacing with dummy samples"
+            )
+        ref = next((b for b in batch if b is not None), None)
+        ref = ref if ref is not None else ref_batch
+        fixed = [(b if b is not None else _make_dummy_like(ref)) for b in batch]
+        return default_collate(fixed)
+
+    return batch
+
+
+
+def _run_epoch_patched(model, data_loader, epoch, validate=False, num_steps=None, obs_normalization_stats=None):
+    epoch_timestamp = time.time()
+    if validate:
+        model.set_eval()
+    else:
+        model.set_train()
+
+    if num_steps is None:
+        num_steps = len(data_loader)
+
+    step_log_all = []
+    timing_stats = dict(Data_Loading=[], Process_Batch=[], Train_Batch=[], Log_Info=[])
+
+    data_loader_iter = iter(data_loader)
+    last_good_batch = None
+
+    for step_idx in LogUtils.custom_tqdm(range(num_steps)):
+
+        # ---------------- load batch ----------------
+        t = time.time()
+        try:
+            batch = next(data_loader_iter)
+        except StopIteration:
+            data_loader_iter = iter(data_loader)
+            batch = next(data_loader_iter)
+        timing_stats["Data_Loading"].append(time.time() - t)
+
+        if last_good_batch is not None:
+            batch = _replace_none_with_dummy(batch, last_good_batch, step_idx)
+        else:
+            if batch is None:
+                raise RuntimeError("DataLoader returned None before any valid batch was seen")
+
+        # ---------------- process batch ----------------
+        t = time.time()
+        try:
+            input_batch = model.process_batch_for_training(batch)
+            input_batch = model.postprocess_batch_for_training(
+                input_batch,
+                obs_normalization_stats=obs_normalization_stats,
+            )
+            last_good_batch = batch
+        except Exception as e:
+            if _is_rank0():
+                print(
+                    "[ERROR][run_epoch] process_batch_for_training failed, "
+                    f"using dummy batch at step {step_idx}\n{e}"
+                )
+            if last_good_batch is None:
+                raise
+            dummy = _make_dummy_like(last_good_batch)
+            input_batch = model.process_batch_for_training(dummy)
+            input_batch = model.postprocess_batch_for_training(
+                input_batch,
+                obs_normalization_stats=obs_normalization_stats,
+            )
+        timing_stats["Process_Batch"].append(time.time() - t)
+
+        # ---------------- train step ----------------
+        t = time.time()
+        try:
+            info = model.train_on_batch(input_batch, epoch, validate=validate)
+        except Exception as e:
+            if _is_rank0():
+                print(
+                    "[ERROR][run_epoch] train_on_batch failed, "
+                    f"using dummy input at step {step_idx}\n{e}"
+                )
+            info = model.train_on_batch(_make_dummy_like(input_batch), epoch, validate=validate)
+        timing_stats["Train_Batch"].append(time.time() - t)
+
+        model.on_gradient_step()
+
+        # ---------------- logging ----------------
+        t = time.time()
+        step_log = model.log_info(info)
+        step_log_all.append(step_log)
+        timing_stats["Log_Info"].append(time.time() - t)
+
+    # aggregate metrics
+    step_log_dict = {}
+    for d in step_log_all:
+        for k, v in d.items():
+            step_log_dict.setdefault(k, []).append(v)
+
+    step_log_all = {k: float(np.mean(v)) for k, v in step_log_dict.items()}
+
+    for k in timing_stats:
+        step_log_all[f"Time_{k}"] = np.sum(timing_stats[k]) / 60.0
+    step_log_all["Time_Epoch"] = (time.time() - epoch_timestamp) / 60.0
+
+    return step_log_all
+
+
+# 🔥 monkey patch（外部パッケージは一切編集しない）
+TrainUtils.run_epoch = _run_epoch_patched
 
 def _none_safe_collate(batch):
     """

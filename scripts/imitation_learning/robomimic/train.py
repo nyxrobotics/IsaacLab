@@ -87,6 +87,42 @@ import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
 
 
+def _make_dummy_like(ref):
+    """Create a dummy sample with the same nested structure as ref."""
+    if torch.is_tensor(ref):
+        return torch.zeros_like(ref)
+    if isinstance(ref, np.ndarray):
+        return np.zeros_like(ref)
+    if isinstance(ref, (int, float, np.number)):
+        return type(ref)(0)
+    if isinstance(ref, dict):
+        return {k: _make_dummy_like(v) for k, v in ref.items()}
+    if isinstance(ref, (list, tuple)):
+        return type(ref)(_make_dummy_like(v) for v in ref)
+    # Fallback: keep as-is (rarely used in robomimic batches)
+    return ref
+
+
+def _none_safe_collate(batch):
+    """
+    Replace None samples with a dummy sample so that:
+    - every rank has the same batch size
+    - collectives (allreduce) are called in the same order
+    """
+    ref = None
+    for b in batch:
+        if b is not None:
+            ref = b
+            break
+
+    if ref is None:
+        # All None: make it fail loudly (better than NCCL hang)
+        raise RuntimeError("All samples in this batch are None")
+
+    fixed = [(b if b is not None else _make_dummy_like(ref)) for b in batch]
+    return default_collate(fixed)
+
+
 def normalize_hdf5_actions(config: Config, log_dir: str) -> str:
     """Normalizes actions in hdf5 dataset to [-1, 1] range.
 
@@ -241,6 +277,7 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
         shuffle=(train_sampler is None),
         num_workers=config.train.num_data_workers,
         drop_last=True,
+        collate_fn=_none_safe_collate,
     )
 
     if config.experiment.validate:
@@ -254,6 +291,7 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
             shuffle=(valid_sampler is None),
             num_workers=num_workers,
             drop_last=True,
+            collate_fn=_none_safe_collate,
         )
     else:
         valid_loader = None

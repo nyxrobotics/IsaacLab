@@ -259,6 +259,24 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
+class ActionSanitizerWrapper:
+    def __init__(self, env, clamp=1.0):
+        self.env = env
+        self.device = env.device
+        self.clamp = clamp
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)
+
+    def step(self, actions):
+        # actions: torch.Tensor
+        if not torch.isfinite(actions).all():
+            bad = (~torch.isfinite(actions)).sum().item()
+            print(f"[WARN] actions had non-finite values -> zeroed (count={bad})", flush=True)
+            actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
+
+        actions = torch.clamp(actions, -self.clamp, self.clamp)
+        return self.env.step(actions)
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
@@ -322,6 +340,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    env = ActionSanitizerWrapper(env, clamp=1.0)
 
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)

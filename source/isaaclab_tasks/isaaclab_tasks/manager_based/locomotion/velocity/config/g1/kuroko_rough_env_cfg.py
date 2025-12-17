@@ -64,37 +64,6 @@ class KurokoRewards(RewardsCfg):
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
-    # track_lin_vel_xy_exp = RewTerm(
-    #     func=mdp.track_lin_vel_xy_compensated_penalty,
-    #     weight=40.0,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=[
-    #                 "chest_link",
-    #                 "ankle_l_yaw_link",
-    #                 "ankle_r_yaw_link",
-    #             ],
-    #         ),
-    #     },
-    # )
-
-    # track_ang_vel_z_exp = RewTerm(
-    #     func=mdp.track_ang_vel_z_world_linear_penalty,
-    #     weight=10.0,
-    #     params={"command_name": "base_velocity"},
-    # )
-
-    # track_trajectory_penalty = RewTerm(
-    #     func=mdp.command_ratio_alignment_penalty,
-    #     weight=1.0,
-    #     params={"command_name": "base_velocity",
-    #         "margin": 1.5,
-    #         "gain": 1000.0},
-    # )
-
-
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
         weight=1000.0,
@@ -107,52 +76,6 @@ class KurokoRewards(RewardsCfg):
             "threshold": 0.02,
         },
     )
-
-    # feet_air_time = RewTerm(
-    #     func=mdp.step_reflex_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "vel_thresh": 0.0001,
-    #         "min_air_time": 0.1,
-    #         "max_stance_time": 0.2,
-    #         "min_air_height": 0.01,
-    #         "tilt_margin": 0.2,
-    #         "tilt_vel_scale": 1.0,
-    #         "tilt_stance_time_scale": 3.0,
-    #         "accel_margin": 6.0,
-    #         "accel_vel_scale": 1.0,
-    #         "accel_stance_time_scale": 0.2,
-    #         "time_penalty_scale": 1000.0,
-    #         "vel_penalty_scale": 10000.0,
-    #         "height_penalty_scale": 100000.0,
-    #         "weight_shift_penalty_scale": 100000.0,
-    #         "body_offset_forward": 0.0,
-    #         "weight_shift_angle_margin": 1.5,
-    #     },
-    # )
-
-    # support_plane_tilt = RewTerm(
-    #     func=mdp.support_plane_tilt_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["body_link", "ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "tilt_margin": 0.3,
-    #         "k": 1000.0,
-    #         "body_offset_forward": 0.0,
-    #     },
-    # )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide_with_yaw,
@@ -168,44 +91,6 @@ class KurokoRewards(RewardsCfg):
             ]),
         },
     )
-    # feet_force_angle_penalty = RewTerm(
-    #     func=mdp.feet_contact_angle_penalty,
-    #     weight=1000.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "ankle_r_yaw_link",
-    #             "ankle_l_yaw_link"]),
-    #         "angle_limit_deg": 75.0
-    #     },
-    # )
-
-    # feet_slide = RewTerm(
-    #     func=mdp.feet_slide_margin_penalty,
-    #     weight=-1.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "ankle_l_yaw_link",
-    #             "ankle_r_yaw_link"]),
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=[
-    #             "ankle_l_yaw_link",
-    #             "ankle_r_yaw_link"]),
-    #             "margin": 0.01,
-    #             "gain": 100.0,
-    #     },
-    # )
-
-    # feet_force_similarity_penalty = RewTerm(
-    #     func=mdp.feet_force_similarity_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "ankle_r_yaw_link",
-    #             "ankle_l_yaw_link"]),
-    #         "weight_dir": 0.1,
-    #         "weight_mag": 0.1,
-
-    #     },
-    # )
 
     joint_deviation_shoulders = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -234,13 +119,6 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},
     )
-    # joint_deviation_ankle_roll = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-0.1,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-    #             "ankle_l_roll",
-    #             "ankle_r_roll"])},
-    # )
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
@@ -287,36 +165,6 @@ class KurokoRewards(RewardsCfg):
                 "gain": 1.0,},
     )
 
-    # feet_separation_hard = RewTerm(
-    #     func=mdp.feet_lateral_separation_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "min_lateral_distance": 0.16,
-    #         "inner_gain": 460.0,
-    #         "outer_gain": 460.0,
-    #         "margin": 0.0,
-    #     },
-    # )
-
-    # feet_separation_soft = RewTerm(
-    #     func=mdp.feet_lateral_separation_penalty,
-    #     weight=1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["ankle_l_yaw_link", "ankle_r_yaw_link"],
-    #         ),
-    #         "min_lateral_distance": 0.16,
-    #         "margin": 0.0,
-    #         "inner_gain": 0.2,
-    #         "outer_gain": 0.2,
-    #     },
-    # )
-
 
     torso_height_hard = RewTerm(
         func=mdp.torso_height_penalty,
@@ -335,24 +183,6 @@ class KurokoRewards(RewardsCfg):
             "gain": 100.0,
         },
     )
-
-    # torso_height_soft = RewTerm(
-    #     func=mdp.torso_height_penalty,
-    #     weight= 1.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=[
-    #                 "body_link",
-    #                 "ankle_l_yaw_link",
-    #                 "ankle_r_yaw_link",
-    #             ],
-    #         ),
-    #         "target_height": 0.32,
-    #         "margin": 0.0,
-    #         "gain": 0.1,
-    #     },
-    # )
 
 
 # ---------------------------------------------------------------------
@@ -429,13 +259,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
-
-        # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
         self.terminations.base_contact = None
-        # self.terminations.base_contact.params["sensor_cfg"].body_names = [
-        #     "chest_link",
-        #     "hip_r_pitch_link",
-        #     "hip_l_pitch_link"]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
@@ -519,13 +343,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_l_active",
                 "shin_r_active",
                 "thigh_l_active",
-                "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
+                "thigh_r_active"
             ],
         )
 
@@ -536,13 +354,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_l_active",
                 "shin_r_active",
                 "thigh_l_active",
-                "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
+                "thigh_r_active"
             ],
         )
         # -----------------------------------------------------------

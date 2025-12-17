@@ -259,24 +259,73 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
+import torch
+
 class ActionSanitizerWrapper:
-    def __init__(self, env, clamp=1.0):
+    """
+    Wraps an RSL-RL vec env and sanitizes actions before stepping the sim.
+
+    - Replaces NaN/Inf with 0
+    - Clamps actions to [-clamp, clamp]
+    - Prints stats when something looks wrong (non-finite or too-large magnitude)
+    """
+
+    def __init__(self, env, clamp: float = 1.0, log_abs_threshold: float = 10.0):
         self.env = env
-        self.device = env.device
-        self.clamp = clamp
+        self.device = getattr(env, "device", None)
+        self.clamp = float(clamp)
+        self.log_abs_threshold = float(log_abs_threshold)
+        self._warn_nonfinite_count = 0
+        self._warn_too_large_count = 0
 
     def __getattr__(self, name):
+        # Delegate everything else to wrapped env
         return getattr(self.env, name)
 
-    def step(self, actions):
-        # actions: torch.Tensor
-        if not torch.isfinite(actions).all():
-            bad = (~torch.isfinite(actions)).sum().item()
-            print(f"[WARN] actions had non-finite values -> zeroed (count={bad})", flush=True)
+    def step(self, actions: torch.Tensor):
+        if not torch.is_tensor(actions):
+            actions = torch.as_tensor(actions, device=self.device)
+
+        # Ensure actions are on the env device (runner sometimes already does this, but keep it safe)
+        if self.device is not None and actions.device != torch.device(self.device):
+            actions = actions.to(self.device)
+
+        # Debug stats BEFORE modification (so you can see what policy produced)
+        finite_mask = torch.isfinite(actions)
+        has_nonfinite = not bool(finite_mask.all())
+        max_abs = float(actions.abs().max().item()) if actions.numel() > 0 else 0.0
+        too_large = max_abs > self.log_abs_threshold
+
+        if has_nonfinite:
+            self._warn_nonfinite_count += 1
+            bad = int((~finite_mask).sum().item())
+            print(
+                f"[WARN] actions had non-finite values -> zeroed "
+                f"(bad={bad}, warn_count={self._warn_nonfinite_count})",
+                flush=True,
+            )
+
+        if too_large:
+            self._warn_too_large_count += 1
+            amin = float(actions.min().item()) if actions.numel() > 0 else 0.0
+            amax = float(actions.max().item()) if actions.numel() > 0 else 0.0
+            print(
+                f"[WARN] actions magnitude too large "
+                f"(min={amin:.3e}, max={amax:.3e}, max_abs={max_abs:.3e}, "
+                f"warn_count={self._warn_too_large_count})",
+                flush=True,
+            )
+
+        # Sanitize non-finite -> 0
+        if has_nonfinite:
             actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
 
-        actions = torch.clamp(actions, -self.clamp, self.clamp)
+        # Clamp to safe range
+        if self.clamp > 0.0:
+            actions = torch.clamp(actions, -self.clamp, self.clamp)
+
         return self.env.step(actions)
+
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
@@ -340,7 +389,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    env = ActionSanitizerWrapper(env, clamp=1.0)
+    env = ActionSanitizerWrapper(env, clamp=1.0, log_abs_threshold=10.0)
 
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)

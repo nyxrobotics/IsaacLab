@@ -62,10 +62,9 @@ _build
 /.pretrained_checkpoints/
 
 # Teleop Recorded Dataset
-/datasets/
+datasets
 
-# Tests
-tests/
+# Files for kuroko
+!source/isaaclab_assets/isaaclab_assets/robots/kuroko/**
 
-# Docker history
-.isaac-lab-docker-history
+source/isaaclab_assets/isaaclab_assets/robots/kuroko/__pycache__/

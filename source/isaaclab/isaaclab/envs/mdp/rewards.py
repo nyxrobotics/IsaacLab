@@ -19,7 +19,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import RewardTermCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-
+from isaaclab.utils.math import quat_rotate_inverse
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -317,3 +317,159 @@ def track_ang_vel_z_exp(
     # compute the error
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
     return torch.exp(-ang_vel_error / std**2)
+
+
+def joint_deviation_axis_scaled_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    axis: str,         # "x", "y", "yaw"
+    axis_max: float,   # command range max
+) -> torch.Tensor:
+    """
+    Penalize deviation from default joint positions when commanded velocity is small.
+
+    axis:
+        "x"   -> use lin_vel_x
+        "y"   -> use lin_vel_y
+        "yaw" -> use ang_vel_z
+    """
+    # -----------------------------------------
+    # 1) Get the command component
+    # -----------------------------------------
+    cmd = env.command_manager.get_command(command_name)
+
+    if axis == "x":
+        v = torch.abs(cmd[:, 0])
+    elif axis == "y":
+        v = torch.abs(cmd[:, 1])
+    elif axis == "yaw":
+        v = torch.abs(cmd[:, 2])
+    else:
+        raise ValueError(f"axis must be 'x','y','yaw', got {axis}")
+
+    eps = 1e-6
+    v_norm = torch.clamp(v / (axis_max + eps), 0.0, 1.0)
+    scale = 1.0 - v_norm    # small command → strong penalty
+
+    # -----------------------------------------
+    # 2) Joint deviation from defaults
+    # -----------------------------------------
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # positions (N, #dofs_selected)
+    pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+
+    deviation = torch.abs(pos - default)
+
+    # baseline penalty: L1 deviation sum (same as joint_deviation_l1)
+    base_penalty = torch.sum(deviation, dim=1)   # (N,)
+
+    # -----------------------------------------
+    # 3) Command-scaled penalty (negative)
+    # -----------------------------------------
+    penalty = -base_penalty * scale
+
+    return penalty
+
+
+def feet_lateral_separation_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    min_lateral_distance: float,
+    margin: float = 0.0,        # ★ 初期値 0 の margin を追加
+    inner_gain: float = 1.0,
+    outer_gain: float = 0.2,
+) -> torch.Tensor:
+    """
+    Penalize deviation of lateral separation between left and right feet,
+    with a dead-zone margin around the target distance.
+
+    - If sep_y within [min_dist - margin, min_dist + margin] → penalty = 0
+    - sep_y <  min_dist - margin → too narrow
+        penalty = -inner_gain * ((min_dist - margin) - sep_y)
+    - sep_y >  min_dist + margin → too wide
+        penalty = -outer_gain * (sep_y - (min_dist + margin))
+    """
+
+    asset = env.scene[asset_cfg.name]
+
+    # world positions
+    pos_w = asset.data.body_pos_w
+
+    # root pose
+    root_pos_w = asset.data.root_pos_w
+    root_quat_w = asset.data.root_quat_w
+
+    # foot indices
+    left_id, right_id = asset_cfg.body_ids
+
+    # foot positions world
+    left_w = pos_w[:, left_id]
+    right_w = pos_w[:, right_id]
+
+    # convert to root-local frame
+    left_local = quat_rotate_inverse(root_quat_w, left_w - root_pos_w)
+    right_local = quat_rotate_inverse(root_quat_w, right_w - root_pos_w)
+
+    # lateral separation |y_L - y_R|
+    sep_y = torch.abs(left_local[:, 1] - right_local[:, 1])  # (N,)
+
+    # -----------------------------------------------------
+    # margin-deadzone logic
+    # -----------------------------------------------------
+    lower = min_lateral_distance - margin
+    upper = min_lateral_distance + margin
+
+    # too narrow
+    inner_error = torch.relu(lower - sep_y)
+
+    # too wide
+    outer_error = torch.relu(sep_y - upper)
+
+    penalty = -(inner_gain * inner_error + outer_gain * outer_error)
+
+    return penalty
+
+
+def flat_orientation_links_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    margin: float = 0.3,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    Penalize non-flat orientation for multiple links with a tolerance margin.
+
+    - Project gravity into body frames
+    - Compute L2 norm of xy components (tilt magnitude)
+    - If tilt <= margin → penalty = 0
+    - If tilt > margin → penalty = -gain * (tilt - margin)
+    """
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # body orientations
+    body_quat_w = asset.data.body_quat_w            # (N, B, 4)
+
+    # world gravity expanded to match shape (N, B, 3)
+    g_w = torch.zeros_like(asset.data.body_pos_w)
+    g_w[..., 2] = -1.0
+
+    # gravity in body frame
+    g_b = quat_rotate_inverse(body_quat_w, g_w)     # (N, B, 3)
+
+    # select target bodies
+    body_ids = asset_cfg.body_ids
+    g_sel = g_b[:, body_ids, :2]                    # (N, K, 2)
+
+    # tilt magnitude: L2 norm of xy gravity components
+    l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
+    l2_mean = torch.mean(l2_per_body, dim=1)        # (N,)
+
+    # margin-based penalty
+    excess = torch.relu(l2_mean - margin)
+    penalty = -gain * excess
+
+    return penalty

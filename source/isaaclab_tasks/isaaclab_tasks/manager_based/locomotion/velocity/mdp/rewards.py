@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_rotate, quat_rotate_inverse, yaw_quat
+from isaaclab.utils.math import quat_rotate, quat_apply_inverse, yaw_quat
 from isaaclab.envs import ManagerBasedRLEnv
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -204,7 +204,7 @@ def track_lin_vel_xy_yaw_frame_exp(
     """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
     # extract the used quantities (to enable type-hinting)
     asset = env.scene[asset_cfg.name]
-    vel_yaw = quat_rotate_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
+    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
     lin_vel_error = torch.sum(
         torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
     )
@@ -291,7 +291,7 @@ def track_lin_vel_xy_yaw_frame_linear_penalty(
     asset = env.scene[asset_cfg.name]
 
     # transform linear velocity into yaw-aligned base frame
-    vel_yaw = quat_rotate_inverse(
+    vel_yaw = quat_apply_inverse(
         yaw_quat(asset.data.root_quat_w),
         asset.data.root_lin_vel_w[:, :3]
     )  # (N, 3)
@@ -362,7 +362,7 @@ def command_ratio_alignment_penalty(
     # -----------------------------
     asset = env.scene[asset_cfg.name]
 
-    vel_yaw = quat_rotate_inverse(
+    vel_yaw = quat_apply_inverse(
         yaw_quat(asset.data.root_quat_w),
         asset.data.root_lin_vel_w[:, :3]
     )
@@ -661,7 +661,7 @@ def step_reflex_penalty(
     tilt_axis_world = torch.cross(z_world_vec, plane_n_unit, dim=1)  # (N,3)
 
     # 軸ベクトルを torso frame へ
-    tilt_axis_torso = quat_rotate_inverse(torso_quat, tilt_axis_world)    # (N,3)
+    tilt_axis_torso = quat_apply_inverse(torso_quat, tilt_axis_world)    # (N,3)
     axis_xy = tilt_axis_torso[:, :2]                                      # (N,2)
     axis_xy_norm = torch.norm(axis_xy, dim=1)                             # (N,)
 
@@ -717,8 +717,8 @@ def step_reflex_penalty(
     #   need_to_step        : 強い前向き加速時はステップが必要
     # --------------------------------------------------------
     # world → torso local
-    torso_vel_local = quat_rotate_inverse(torso_quat, torso_vel)  # (N,3)
-    torso_acc_local = quat_rotate_inverse(torso_quat, torso_acc)  # (N,3)
+    torso_vel_local = quat_apply_inverse(torso_quat, torso_vel)  # (N,3)
+    torso_acc_local = quat_apply_inverse(torso_quat, torso_acc)  # (N,3)
 
     v_xy = torso_vel_local[:, :2]   # (N,2) torso frame
     a_xy = torso_acc_local[:, :2]   # (N,2) torso frame
@@ -861,8 +861,8 @@ def step_reflex_penalty(
     half_air_time = min_air_time * 0.5
 
     # torso-local foot velocities
-    left_foot_vel_local  = quat_rotate_inverse(torso_quat, left_foot_vel)   # (N,3)
-    right_foot_vel_local = quat_rotate_inverse(torso_quat, right_foot_vel)
+    left_foot_vel_local  = quat_apply_inverse(torso_quat, left_foot_vel)   # (N,3)
+    right_foot_vel_local = quat_apply_inverse(torso_quat, right_foot_vel)
 
     left_up_speed_local  = left_foot_vel_local[:, 2]
     right_up_speed_local = right_foot_vel_local[:, 2]
@@ -890,8 +890,8 @@ def step_reflex_penalty(
     both_air = left_is_air & right_is_air
 
     # torso-local foot heights (for selecting higher one in both-air)
-    left_height_local  = quat_rotate_inverse(torso_quat, left_foot_pos - torso_pos)[:, 2]
-    right_height_local = quat_rotate_inverse(torso_quat, right_foot_pos - torso_pos)[:, 2]
+    left_height_local  = quat_apply_inverse(torso_quat, left_foot_pos - torso_pos)[:, 2]
+    right_height_local = quat_apply_inverse(torso_quat, right_foot_pos - torso_pos)[:, 2]
     left_higher = left_height_local >= right_height_local
 
     # initialize penalty container
@@ -968,8 +968,8 @@ def step_reflex_penalty(
     hR_w = right_foot_pos[:, 2]
 
     # torso-local absolute heights
-    left_local_pos  = quat_rotate_inverse(torso_quat, left_foot_pos - torso_pos)
-    right_local_pos = quat_rotate_inverse(torso_quat, right_foot_pos - torso_pos)
+    left_local_pos  = quat_apply_inverse(torso_quat, left_foot_pos - torso_pos)
+    right_local_pos = quat_apply_inverse(torso_quat, right_foot_pos - torso_pos)
     hL_l = left_local_pos[:, 2]
     hR_l = right_local_pos[:, 2]
 
@@ -1249,12 +1249,12 @@ def track_lin_vel_xy_compensated_penalty(
     v_base_w = body_vel[:, torso_id]                 # (N,3)
     # rotate into yaw-aligned frame
     yaw_q = yaw_quat(body_quat[:, torso_id])         # use chest yaw only
-    v_base_yaw = quat_rotate_inverse(yaw_q, v_base_w)[:, :2]   # (N,2)
+    v_base_yaw = quat_apply_inverse(yaw_q, v_base_w)[:, :2]   # (N,2)
 
     # --------------------------------------------------------
     # 3) rotate fall velocity into yaw frame
     # --------------------------------------------------------
-    v_fall_yaw = quat_rotate_inverse(yaw_q, torch.cat(
+    v_fall_yaw = quat_apply_inverse(yaw_q, torch.cat(
         [v_fall_xy, torch.zeros_like(v_fall_xy[:, :1])], dim=1
     ))[:, :2]
 
@@ -1351,7 +1351,7 @@ def drive_forward_foot_penalty(
     torso_quat = body_quat[:, torso_id]
 
     # torso vel local
-    torso_vel_local = quat_rotate_inverse(torso_quat, torso_vel_w)[:, :2]
+    torso_vel_local = quat_apply_inverse(torso_quat, torso_vel_w)[:, :2]
 
     # foot pos
     left_pos = body_pos[:, left_id]
@@ -1374,7 +1374,7 @@ def drive_forward_foot_penalty(
     r_w = torso_pos - stance_pos_w
     v_fall_w = torch.cross(torso_ang_w, r_w, dim=1)
 
-    v_fall_local = quat_rotate_inverse(torso_quat, v_fall_w)[:, :2]
+    v_fall_local = quat_apply_inverse(torso_quat, v_fall_w)[:, :2]
 
     v_des_local = cmd_local + fall_gain * v_fall_local
     des_speed_local = torch.norm(v_des_local, dim=1)
@@ -1459,8 +1459,8 @@ def drive_forward_foot_penalty(
     # 4) swing foot penalty（修正版：両足浮き → 両足とも swing）
     # -------------------------------------------------------
     # 各足の local velocity
-    left_vel_local = quat_rotate_inverse(torso_quat, body_vel[:, left_id])
-    right_vel_local = quat_rotate_inverse(torso_quat, body_vel[:, right_id])
+    left_vel_local = quat_apply_inverse(torso_quat, body_vel[:, left_id])
+    right_vel_local = quat_apply_inverse(torso_quat, body_vel[:, right_id])
 
     left_forward_local = torch.sum(left_vel_local[:, :2] * des_dir_local, dim=1)
     right_forward_local = torch.sum(right_vel_local[:, :2] * des_dir_local, dim=1)
@@ -1520,8 +1520,8 @@ def drive_forward_foot_penalty(
         right_pos,
     )
 
-    stance_local = quat_rotate_inverse(torso_quat, stance_world - torso_pos)
-    swing_local = quat_rotate_inverse(torso_quat, swing_world - torso_pos)
+    stance_local = quat_apply_inverse(torso_quat, stance_world - torso_pos)
+    swing_local = quat_apply_inverse(torso_quat, swing_world - torso_pos)
 
     stance_proj = torch.sum(stance_local[:, :2] * des_dir_local, dim=1)
     swing_proj = torch.sum(swing_local[:, :2] * des_dir_local, dim=1)

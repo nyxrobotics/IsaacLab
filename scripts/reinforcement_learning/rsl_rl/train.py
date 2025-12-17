@@ -183,55 +183,12 @@ ActorCritic.act = _safe_act
 
 
 # =====================================================================
-# PATCH: If rsl_rl minibatch generator yields None (or contains None),
-#        replace it with a dummy batch so all ranks run the same collectives.
-#        This is the closest equivalent to "pass dummy instead of None to collate".
+# PATCH: If rsl_rl minibatch generator yields None,
+#        reuse the last valid minibatch (keeps the exact 12-tuple structure).
 # =====================================================================
 
 def _dist_rank() -> int:
-    # Works even before torch.distributed is initialized
     return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
-
-def _contains_none(x) -> bool:
-    if x is None:
-        return True
-    if isinstance(x, dict):
-        return any(_contains_none(v) for v in x.values())
-    if isinstance(x, (list, tuple)):
-        return any(_contains_none(v) for v in x)
-    return False
-
-def _zeros_like_structure(example, target_batch: int | None = None):
-    """
-    Create a zero-filled structure matching `example`.
-    If `target_batch` is given and the first dim is batch-like, repeat to match.
-    """
-    if example is None:
-        # last-resort scalar tensor
-        return torch.zeros((1,), dtype=torch.float32)
-
-    if torch.is_tensor(example):
-        z = torch.zeros_like(example)
-        if target_batch is not None and z.ndim >= 1 and z.shape[0] != target_batch:
-            # Repeat along batch dim
-            if z.shape[0] == 1:
-                z = z.expand(target_batch, *z.shape[1:]).contiguous()
-            else:
-                reps = (target_batch + z.shape[0] - 1) // z.shape[0]
-                z = z.repeat(reps, *([1] * (z.ndim - 1)))[:target_batch].contiguous()
-        return z
-
-    if isinstance(example, dict):
-        return {k: _zeros_like_structure(v, target_batch=target_batch) for k, v in example.items()}
-
-    if isinstance(example, list):
-        return [_zeros_like_structure(v, target_batch=target_batch) for v in example]
-
-    if isinstance(example, tuple):
-        return tuple(_zeros_like_structure(v, target_batch=target_batch) for v in example)
-
-    # numbers / strings / objects: keep as-is
-    return example
 
 # Try patching RolloutStorage minibatch generator (names differ by rsl_rl version)
 _rollout_storage_cls = None
@@ -250,36 +207,41 @@ if _rollout_storage_cls is not None and hasattr(_rollout_storage_cls, "mini_batc
     _orig_mbg = _rollout_storage_cls.mini_batch_generator
 
     def _patched_mini_batch_generator(self, *args, **kwargs):
-        # Heuristic: minibatch size usually passed in kwargs or args; if not found, we still build from example.
-        target_batch = kwargs.get("mini_batch_size", None)
-        if target_batch is None and len(args) >= 1 and isinstance(args[0], int):
-            target_batch = args[0]
-
-        example = None
+        last_good = None
         none_count = 0
+        total_count = 0
 
         for batch in _orig_mbg(self, *args, **kwargs):
-            if batch is None or _contains_none(batch):
+            total_count += 1
+
+            if batch is None:
                 none_count += 1
-                if example is None:
-                    # If first ever batch is None, create a minimal dummy and keep going.
-                    dummy = torch.zeros((target_batch or 1, 1), dtype=torch.float32, device=getattr(self, "device", None))
-                else:
-                    dummy = _zeros_like_structure(example, target_batch=target_batch)
+
+                if last_good is None:
+                    # If the first batch is None, we cannot safely fabricate the expected 12-tuple.
+                    raise RuntimeError(
+                        f"[rank{_dist_rank()}] mini_batch_generator yielded None before any valid batch "
+                        f"(none_count={none_count}, total={total_count})."
+                    )
 
                 print(
-                    f"[WARN][rank{_dist_rank()}] minibatch_generator produced None -> replaced with dummy "
-                    f"(count={none_count}, target_batch={target_batch})",
+                    f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None -> reusing last_good "
+                    f"(none_count={none_count}, total={total_count})",
                     flush=True,
                 )
-                yield dummy
-            else:
-                if example is None:
-                    example = batch
-                yield batch
+                yield last_good
+                continue
+
+            # Keep the last valid batch (this preserves the exact expected tuple length, devices, dtypes)
+            last_good = batch
+            yield batch
 
     _rollout_storage_cls.mini_batch_generator = _patched_mini_batch_generator
-    print(f"[INFO][rank{_dist_rank()}] Patched {_rollout_storage_cls.__name__}.mini_batch_generator to replace None.", flush=True)
+    print(
+        f"[INFO][rank{_dist_rank()}] Patched {_rollout_storage_cls.__name__}.mini_batch_generator: "
+        f"None -> reuse last_good",
+        flush=True,
+    )
 else:
     print(f"[WARN][rank{_dist_rank()}] Could not patch RolloutStorage.mini_batch_generator (class not found).", flush=True)
 

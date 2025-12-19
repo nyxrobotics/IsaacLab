@@ -98,7 +98,7 @@ def _safe_update_distribution(self, obs):
             # Convert potentially-negative std into strictly-positive std.
             std = Functional.softplus(std) + 1e-6
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp_min(1e-6)
+            std = std.clamp(min=1e-6, max=10.0)
 
         elif self.noise_std_type == "log":
             mean, log_std = torch.unbind(mean_and_std, dim=-2)
@@ -119,7 +119,7 @@ def _safe_update_distribution(self, obs):
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp_min(1e-6)
+            std = std.clamp(min=1e-6, max=10.0)
 
         elif self.noise_std_type == "log":
             log_std = torch.nan_to_num(self.log_std, nan=0.0, posinf=0.0, neginf=0.0)

@@ -17,9 +17,11 @@ import cli_args  # isort: skip
 
 
 # =====================================================================
-# DIST DEBUG PATCH:
+# DIST DEBUG PATCH + NON-FINITE GUARD PATCH:
 # - Wrap torch.distributed.all_reduce to log every call (rank, shape, finite)
-# - Wrap PPO.update to print traceback on the *failing rank* and exit fast
+# - Add global consensus (all ranks) for "bad batch" decision
+# - If obs/buffer contains NaN/inf, reset env and skip PPO.update for that iter
+# - Wrap PPO.update to print traceback on the failing rank and exit fast
 #   so other ranks don't wait 600s.
 # =====================================================================
 import os
@@ -33,6 +35,25 @@ import threading
 import torch.distributed as dist
 
 faulthandler.enable(all_threads=True)
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+def _rank() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+    except Exception:
+        pass
+    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+
+def _world() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:
+        pass
+    return int(os.environ.get("WORLD_SIZE", "1"))
 
 def _log(msg: str):
     print(f"[DISTDBG][{_now()}][rank{_rank()}/{_world()}] {msg}", flush=True)
@@ -56,40 +77,141 @@ def _fail_fast(reason: str):
 
     os._exit(1)
 
-
-def _rank() -> int:
-    try:
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_rank()
-    except Exception:
-        pass
-    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
-
-def _world() -> int:
-    try:
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_world_size()
-    except Exception:
-        pass
-    return int(os.environ.get("WORLD_SIZE", "1"))
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
-
 def _tinfo(t: torch.Tensor) -> str:
     if not torch.is_tensor(t):
         return f"type={type(t)}"
     with torch.no_grad():
         dev = str(t.device)
         shp = tuple(t.shape)
-        dt  = str(t.dtype)
+        dt = str(t.dtype)
         finite = bool(torch.isfinite(t).all().item()) if t.numel() > 0 else True
-        # cheap stats (avoid sync-heavy ops)
         return f"shape={shp} dtype={dt} device={dev} finite={finite}"
 
+def _dist_inited() -> bool:
+    return bool(dist.is_available() and dist.is_initialized())
+
+def _global_any_bad(local_bad: bool, device: torch.device | None = None) -> bool:
+    """Return True if any rank reports bad."""
+    if not _dist_inited():
+        return local_bad
+    if device is None:
+        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    t = torch.tensor([1 if local_bad else 0], device=device, dtype=torch.int32)
+    dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return bool(t.item())
+
+# ---------------------------------------------------------------------
+# Skip-update flag (must be set consistently across ranks)
+# ---------------------------------------------------------------------
+_skip_lock = threading.Lock()
+_skip_update_requested = False
+_skip_reason = ""
+
+def _request_skip_update(reason: str):
+    global _skip_update_requested, _skip_reason
+    with _skip_lock:
+        _skip_update_requested = True
+        _skip_reason = reason
+
+def _consume_skip_update() -> tuple[bool, str]:
+    global _skip_update_requested, _skip_reason
+    with _skip_lock:
+        flag = _skip_update_requested
+        reason = _skip_reason
+        _skip_update_requested = False
+        _skip_reason = ""
+    return flag, reason
+
+# ---------------------------------------------------------------------
+# Non-finite detection helpers (best-effort across rsl_rl versions)
+# ---------------------------------------------------------------------
+def _is_nonfinite_tensor(x) -> bool:
+    if not torch.is_tensor(x):
+        return False
+    if x.numel() == 0:
+        return False
+    # isfinite() supports float/complex; for ints it returns True anyway
+    try:
+        return not bool(torch.isfinite(x).all().item())
+    except Exception:
+        return False
+
+def _iter_tensors(obj, prefix=""):
+    """Yield (name, tensor) pairs from common containers (best-effort)."""
+    if torch.is_tensor(obj):
+        yield prefix or "<tensor>", obj
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key = f"{prefix}.{k}" if prefix else str(k)
+            yield from _iter_tensors(v, key)
+        return
+    if isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            key = f"{prefix}[{i}]" if prefix else f"[{i}]"
+            yield from _iter_tensors(v, key)
+        return
+    # objects: try __dict__ shallow
+    if hasattr(obj, "__dict__"):
+        for k, v in vars(obj).items():
+            # avoid huge recursion / callables
+            if callable(v):
+                continue
+            key = f"{prefix}.{k}" if prefix else str(k)
+            yield from _iter_tensors(v, key)
+
+def _detect_nonfinite_in_runner(runner_obj) -> tuple[bool, str]:
+    """
+    Detect non-finite values in common runner/storage buffers.
+    Returns (bad, message).
+    """
+    suspects = []
+
+    # Common attributes across rsl_rl versions
+    candidates = [
+        ("storage", getattr(runner_obj, "storage", None)),
+        ("rollout_storage", getattr(runner_obj, "rollout_storage", None)),
+        ("buffer", getattr(runner_obj, "buffer", None)),
+        ("obs", getattr(runner_obj, "obs", None)),
+        ("observations", getattr(runner_obj, "observations", None)),
+    ]
+
+    for name, obj in candidates:
+        if obj is None:
+            continue
+        for tname, t in _iter_tensors(obj, prefix=name):
+            # filter likely useful fields by name to keep overhead sane
+            low = tname.lower()
+            if not any(s in low for s in [
+                "obs", "observation", "privileged", "action", "reward", "return", "advantage",
+                "value", "log_prob", "mu", "sigma",
+            ]):
+                continue
+            if _is_nonfinite_tensor(t):
+                suspects.append(f"{tname} ({_tinfo(t)})")
+                if len(suspects) >= 8:
+                    break
+        if len(suspects) >= 8:
+            break
+
+    if suspects:
+        msg = "non-finite detected: " + " | ".join(suspects)
+        return True, msg
+    return False, ""
+
+def _try_reset_env(runner_obj):
+    """Reset env in best-effort manner (safe for both wrapped/unwrapped)."""
+    try:
+        env = getattr(runner_obj, "env", None)
+        if env is None:
+            return
+        # Most wrappers expose reset()
+        if hasattr(env, "reset"):
+            env.reset()
+    except Exception as e:
+        _log(f"WARN: env.reset failed: {repr(e)}")
 
 # 1) monkeypatch torch.distributed.all_reduce
-
 if hasattr(dist, "all_reduce"):
     _orig_all_reduce = dist.all_reduce
 
@@ -128,7 +250,6 @@ def _get_attr_any(obj, names):
         if hasattr(obj, n):
             try:
                 v = getattr(obj, n)
-                # callableは避ける（メソッド誤爆防止）
                 if callable(v):
                     continue
                 return v
@@ -137,7 +258,6 @@ def _get_attr_any(obj, names):
     return None
 
 def _update_state_from_runner(runner_obj, phase: str):
-    # rsl_rl のバージョン差があるので候補を複数持つ
     it = _get_attr_any(runner_obj, [
         "current_learning_iteration",
         "learning_iteration",
@@ -183,6 +303,7 @@ def _set_phase(phase: str):
 # - Periodically dumps Python stack traces (all threads) per-rank.
 # - Logs runner phases (collect/update) if methods exist.
 # - Adds a barrier right before PPO.update to detect desync earlier.
+# - Adds non-finite guard after collect to request a synchronized skip.
 # =====================================================================
 
 _progress_lock = threading.Lock()
@@ -197,7 +318,7 @@ def _touch(tag: str):
 
 def _watchdog_thread():
     dump_every = 60
-    stall_sec  = 120
+    stall_sec = 120
     last_dump = time.time()
     while True:
         time.sleep(5)
@@ -216,16 +337,14 @@ def _watchdog_thread():
             faulthandler.dump_traceback(all_threads=True)
             _touch(f"watchdog_dump_after_{tag}")
 
-
 threading.Thread(target=_watchdog_thread, daemon=True).start()
 _log("Watchdog thread started (periodic+stall traceback dumps enabled).")
 
-# runner側の「collect → update」の境界をログる（メソッド名が違っても拾う）
+# Patch runner phases (collect/update boundary) with best-effort method names
 try:
     from rsl_rl.runners.on_policy_runner import OnPolicyRunner
     _log("Loaded OnPolicyRunner for phase patching.")
 
-    # あるかもしれない候補名（rsl_rlのバージョン差吸収）
     _collect_names = [
         "collect_rollouts",
         "collect_rollouts_and_compute_returns",
@@ -236,28 +355,42 @@ try:
     for _name in _collect_names:
         if hasattr(OnPolicyRunner, _name):
             _orig_collect = getattr(OnPolicyRunner, _name)
+
             def _collect_logged(self, *args, __orig=_orig_collect, __nm=_name, **kwargs):
-                _update_state_from_runner(self, phase=f"before_{__nm}")   # ★追加
+                _update_state_from_runner(self, phase=f"before_{__nm}")
                 _touch(f"before_{__nm}")
-                _log(f"ENTER runner.{__nm} ({_state_str()})")             # ★state表示を追加
+                _log(f"ENTER runner.{__nm} ({_state_str()})")
                 try:
                     out = __orig(self, *args, **kwargs)
-                    _log(f"EXIT  runner.{__nm} ({_state_str()})")         # ★追加
-                    _update_state_from_runner(self, phase=f"after_{__nm}")# ★追加
+                    _log(f"EXIT  runner.{__nm} ({_state_str()})")
+
+                    # ----------------------------------------------------------
+                    # Non-finite guard: after collect, detect bad buffers locally,
+                    # then make a global consensus decision (all ranks).
+                    # If bad, request skipping the next update and reset env.
+                    # ----------------------------------------------------------
+                    local_bad, msg = _detect_nonfinite_in_runner(self)
+                    bad = _global_any_bad(local_bad)
+                    if bad:
+                        reason = msg if msg else "non-finite detected on some rank"
+                        _log(f"NONFINITE: global_bad=True -> request skip update. local_bad={local_bad} msg={reason}")
+                        _request_skip_update(reason)
+                        _try_reset_env(self)
+
+                    _update_state_from_runner(self, phase=f"after_{__nm}")
                     _touch(f"after_{__nm}")
                     return out
                 except Exception as e:
                     _log(f"EXC   runner.{__nm} err={repr(e)} ({_state_str()})")
                     _log("TRACEBACK:\n" + traceback.format_exc())
                     _fail_fast("runner collect exception")
+
             setattr(OnPolicyRunner, _name, _collect_logged)
-            _log(f"Patched OnPolicyRunner.{_name} with logging.")
+            _log(f"Patched OnPolicyRunner.{_name} with logging + non-finite guard.")
             break
     else:
-        _log("WARN: No known collect method found on OnPolicyRunner; collect phase won't be logged.")
+        _log("WARN: No known collect method found on OnPolicyRunner; collect phase won't be logged/guarded.")
 
-
-    # update呼び出し側もログる（バージョン差吸収）
     _update_names = [
         "update",
         "_update",
@@ -274,6 +407,18 @@ try:
                 _update_state_from_runner(self, phase=f"before_{__nm}")
                 _touch(f"before_{__nm}")
                 _log(f"ENTER runner.{__nm} ({_state_str()})")
+
+                # ----------------------------------------------------------
+                # If skip was requested (globally agreed), skip update callsite
+                # so we never enter PPO.update (and its pre-barrier).
+                # ----------------------------------------------------------
+                skip, reason = _consume_skip_update()
+                if skip:
+                    _log(f"SKIP runner.{__nm}: {reason} ({_state_str()})")
+                    _update_state_from_runner(self, phase=f"after_{__nm}_skipped")
+                    _touch(f"after_{__nm}_skipped")
+                    return None
+
                 try:
                     out = __orig(self, *args, **kwargs)
                     _log(f"EXIT  runner.{__nm} ({_state_str()})")
@@ -286,17 +431,15 @@ try:
                     _fail_fast("runner update callsite exception")
 
             setattr(OnPolicyRunner, _uname, _update_callsite_logged)
-            _log(f"Patched OnPolicyRunner.{_uname} with logging.")
+            _log(f"Patched OnPolicyRunner.{_uname} with logging + skip-update hook.")
             break
     else:
-        _log("WARN: No known update method found on OnPolicyRunner; update phase may not be logged.")
-
+        _log("WARN: No known update method found on OnPolicyRunner; update phase may not be logged/skipped.")
 
 except Exception as e:
     _log(f"WARN: Failed to patch runner phases: {repr(e)}")
 
-# PPO.updateの最初にbarrierを置いて「update突入の足並み」を揃える
-# （rank3/5がupdate前で止まってるなら、ここで全rankが揃わずに早めに分かる）
+# PPO.update wrapper (kept for debug; now update may be skipped before reaching here)
 _orig_update = PPO.update
 
 def _update_with_barrier(self, *args, **kwargs):
@@ -304,7 +447,7 @@ def _update_with_barrier(self, *args, **kwargs):
     _set_phase("enter_ppo_update_wrapper")
     _log("ENTER PPO.update wrapper")
 
-    if dist.is_available() and dist.is_initialized():
+    if _dist_inited():
         # 1) CUDA sync: detect CUDA-side stall before comms
         if torch.cuda.is_available():
             _touch("before_cuda_sync_update")
@@ -325,7 +468,7 @@ def _update_with_barrier(self, *args, **kwargs):
         # 2) Barrier: detect rank desync / comm hang
         _touch("before_dist_barrier_update")
         _set_phase("before_dist_barrier")
-        _log(f"PRE-BARRIER STATE: {_state_str()}")   # ★追加
+        _log(f"PRE-BARRIER STATE: {_state_str()}")
         _log("ENTER dist.barrier() (pre-update)")
 
         try:
@@ -344,7 +487,7 @@ def _update_with_barrier(self, *args, **kwargs):
         except Exception:
             _log("TRACEBACK:\n" + traceback.format_exc())
             _fail_fast("barrier exception")
-        _set_phase("after_dist_barrier") 
+        _set_phase("after_dist_barrier")
         _touch("after_dist_barrier_update")
     else:
         _log("SKIP dist.barrier(): dist not initialized")
@@ -470,7 +613,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
 
     # set the environment seed
-    # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     # check for invalid combination of CPU device with distributed training
@@ -551,7 +693,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # load the checkpoint
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
         runner.load(resume_path)
 
     # dump the configuration into log-directory
@@ -566,7 +707,5 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
-    # run the main function
     main()
-    # close sim app
     simulation_app.close()

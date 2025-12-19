@@ -28,7 +28,28 @@ import traceback
 import faulthandler
 import torch
 
+
 faulthandler.enable(all_threads=True)
+
+def _fail_fast(reason: str):
+    _log(f"FAILFAST: {reason}")
+
+    # Try to tear down distributed cleanly (avoid other ranks hanging)
+    try:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception as e:
+        _log(f"FAILFAST: destroy_process_group failed: {repr(e)}")
+
+    # Try to close simulation app if available
+    try:
+        if "simulation_app" in globals():
+            simulation_app.close()
+    except Exception as e:
+        _log(f"FAILFAST: simulation_app.close failed: {repr(e)}")
+
+    raise SystemExit(1)
+
 
 def _rank() -> int:
     return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
@@ -68,8 +89,7 @@ if hasattr(dist, "all_reduce"):
         except Exception as e:
             _log(f"EXC   all_reduce: {_tinfo(tensor)} err={repr(e)}")
             _log("TRACEBACK:\n" + traceback.format_exc())
-            # fail fast: don't let other ranks hang for 600s
-            os._exit(1)
+            _fail_fast("all_reduce exception")
 
     dist.all_reduce = _all_reduce_logged
     _log("Patched torch.distributed.all_reduce with logging+failfast.")
@@ -90,8 +110,7 @@ def _update_logged(self, *args, **kwargs):
     except Exception as e:
         _log(f"EXC   PPO.update err={repr(e)}")
         _log("TRACEBACK:\n" + traceback.format_exc())
-        # fail fast to avoid monitoredBarrier 600s wait on other ranks
-        os._exit(1)
+        _fail_fast("PPO.update exception")
 
 PPO.update = _update_logged
 _log("Patched PPO.update with logging+failfast.")
@@ -171,8 +190,7 @@ try:
                 except Exception as e:
                     _log(f"EXC   runner.{__nm} err={repr(e)}")
                     _log("TRACEBACK:\n" + traceback.format_exc())
-                    os._exit(1)
-
+                    _fail_fast("runner collect exception")
             setattr(OnPolicyRunner, _name, _collect_logged)
             _log(f"Patched OnPolicyRunner.{_name} with logging.")
             break
@@ -197,7 +215,7 @@ def _update_with_barrier(self, *args, **kwargs):
     except Exception as e:
         _log(f"EXC   barrier before PPO.update err={repr(e)}")
         _log("TRACEBACK:\n" + traceback.format_exc())
-        os._exit(1)
+        _fail_fast("barrier before PPO.update exception")
 
     # 元のupdate（あなたが前に入れたログ付きupdateでもOK）
     return _orig_update2(self, *args, **kwargs)

@@ -16,6 +16,16 @@ from isaaclab.app import AppLauncher
 # SAFETY PATCH 1: Clamp policy.log_std after every PPO.update
 #   + warn when invalid values are detected
 # =====================================================================
+import multiprocessing as mp
+mp.set_start_method("spawn", force=True)
+
+import torch
+torch._dynamo.disable()
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+
 import os
 import torch
 from rsl_rl.algorithms.ppo import PPO

@@ -62,49 +62,84 @@ def _safe_ppo_update(self, *args, **kwargs):
 PPO.update = _safe_ppo_update
 
 # =====================================================================
-# SAFETY PATCH 2: Guard ActorCritic.act so that invalid std doesn't crash
+# SAFETY PATCH 2:
+#   Patch ActorCritic._update_distribution so Normal(mean, std) never
+#   receives negative/non-finite std. This prevents the crash *before*
+#   it happens (better than catching in act()).
 # =====================================================================
-from rsl_rl.modules.actor_critic import ActorCritic
+import torch
+import torch.nn.functional as F
 from torch.distributions import Normal
 
-_original_act = ActorCritic.act
+from rsl_rl.modules.actor_critic import ActorCritic
 
-def _safe_act(self, *args, **kwargs):
-    try:
-        return _original_act(self, *args, **kwargs)
-    except RuntimeError as e:
-        msg = str(e)
-        if "normal expects all elements of std" not in msg:
-            raise
+# Keep original for fallback/debug
+_original_update_distribution = ActorCritic._update_distribution
 
-        print("[WARNING] Invalid std detected. Reconstructing distribution with clamped std...")
+def _safe_update_distribution(self, obs):
+    """
+    Replacement for ActorCritic._update_distribution.
 
-        with torch.no_grad():
-            # ActorCritic が保持する mean / std を使用
-            if not (hasattr(self, "action_std") and hasattr(self, "action_mean")):
-                print("  - policy has no action_std or action_mean")
-                raise
+    Handles both:
+      - state_dependent_std=True:
+          * noise_std_type == "scalar": std may be negative -> softplus + eps
+          * noise_std_type == "log": std = exp(log_std) (optionally clamp log_std)
+      - state_dependent_std=False:
+          * "scalar": parameter std might become invalid -> clamp
+          * "log": clamp log_std -> exp
+    """
+    if getattr(self, "_std_guard_printed", False) is False:
+        # Print once per process
+        print("[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-6).", flush=True)
+        self._std_guard_printed = True
 
-            std = self.action_std
+    if self.state_dependent_std:
+        mean_and_std = self.actor(obs)
 
-            # NaN / Inf / 非正値を修正
-            invalid = (~torch.isfinite(std)) | (std <= 0.0)
-            std = torch.where(invalid, torch.full_like(std, 0.1), std)
+        if self.noise_std_type == "scalar":
+            mean, std = torch.unbind(mean_and_std, dim=-2)
 
-            # 最終 clamping
-            std = torch.clamp(std, min=1e-6, max=10.0)
+            # Convert potentially-negative std into strictly-positive std.
+            std = F.softplus(std) + 1e-6
+            std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
+            std = std.clamp_min(1e-6)
 
-            # ★ NOTE: self.action_std に書き込んではいけない！
-            # distribution を作り直すだけでOK
-            safe_dist = Normal(self.action_mean, std)
-            self.distribution = safe_dist
-            self.entropy = safe_dist.entropy()
+        elif self.noise_std_type == "log":
+            mean, log_std = torch.unbind(mean_and_std, dim=-2)
 
-        return self.distribution.sample()
+            # Keep log_std in a sane range to avoid Inf/NaN.
+            log_std = torch.nan_to_num(log_std, nan=0.0, posinf=0.0, neginf=0.0)
+            log_std = log_std.clamp(-20.0, 2.0)
 
+            std = torch.exp(log_std)
+        else:
+            raise ValueError(
+                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+            )
 
-# ActorCritic.act を差し替え
-ActorCritic.act = _safe_act
+    else:
+        mean = self.actor(obs)
+
+        if self.noise_std_type == "scalar":
+            std = self.std.expand_as(mean)
+            std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
+            std = std.clamp_min(1e-6)
+
+        elif self.noise_std_type == "log":
+            log_std = torch.nan_to_num(self.log_std, nan=0.0, posinf=0.0, neginf=0.0)
+            log_std = log_std.clamp(-20.0, 2.0)
+            std = torch.exp(log_std).expand_as(mean)
+
+        else:
+            raise ValueError(
+                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+            )
+
+    # Create distribution (this must never throw)
+    self.distribution = Normal(mean, std)
+
+# Patch ActorCritic._update_distribution
+ActorCritic._update_distribution = _safe_update_distribution
 # =====================================================================
 
 
@@ -240,7 +275,6 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 
 import gymnasium as gym
 import logging
-import torch
 from datetime import datetime
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner

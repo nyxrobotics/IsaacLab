@@ -90,10 +90,10 @@ class KurokoRewards(RewardsCfg):
     #     func=mdp.command_ratio_alignment_penalty,
     #     weight=1.0,
     #     params={"command_name": "base_velocity",
-    #         "margin": 1.5,
-    #         "gain": 1000.0},
+    #         "speed_scale": 1.0,
+    #         "margin": 0.0,
+    #         "gain": 1.0},
     # )
-
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
@@ -229,7 +229,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_ankle_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.01,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},

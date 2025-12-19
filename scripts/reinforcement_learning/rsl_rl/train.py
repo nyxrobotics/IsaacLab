@@ -201,7 +201,25 @@ def _update_with_barrier(self, *args, **kwargs):
     _log("ENTER PPO.update (pre-barrier)")
     try:
         if dist.is_available() and dist.is_initialized():
-            dist.barrier()
+            # If this hangs, it's a CUDA-side stall before we even touch comms.
+            if torch.cuda.is_available():
+                _touch("before_cuda_sync_update")
+                _log("ENTER torch.cuda.synchronize() (pre-barrier)")
+                try:
+                    torch.cuda.synchronize()
+                    _log("PASS  torch.cuda.synchronize() (pre-barrier)")
+                except Exception:
+                    _log("TRACEBACK:\n" + traceback.format_exc())
+                    _fail_fast("cuda.synchronize exception")
+
+            _touch("before_dist_barrier_update")
+            _log("ENTER dist.barrier() (pre-update)")
+            try:
+                dist.barrier()
+                _log("PASS  dist.barrier() (pre-update)")
+            except Exception:
+                _log("TRACEBACK:\n" + traceback.format_exc())
+                _fail_fast("barrier exception")
         _touch("after_barrier_update")
         _log("PASS  barrier before PPO.update")
     except Exception:

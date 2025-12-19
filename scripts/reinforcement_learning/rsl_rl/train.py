@@ -197,39 +197,47 @@ except Exception as e:
 _orig_update = PPO.update
 
 def _update_with_barrier(self, *args, **kwargs):
-    _touch("before_barrier_update")
-    _log("ENTER PPO.update (pre-barrier)")
-    try:
-        if dist.is_available() and dist.is_initialized():
-            # If this hangs, it's a CUDA-side stall before we even touch comms.
-            if torch.cuda.is_available():
-                _touch("before_cuda_sync_update")
-                _log("ENTER torch.cuda.synchronize() (pre-barrier)")
-                try:
-                    torch.cuda.synchronize()
-                    _log("PASS  torch.cuda.synchronize() (pre-barrier)")
-                except Exception:
-                    _log("TRACEBACK:\n" + traceback.format_exc())
-                    _fail_fast("cuda.synchronize exception")
+    _touch("enter_update_wrapper")
+    _log("ENTER PPO.update wrapper")
 
-            _touch("before_dist_barrier_update")
-            _log("ENTER dist.barrier() (pre-update)")
+    if dist.is_available() and dist.is_initialized():
+        # 1) CUDA sync: detect CUDA-side stall before comms
+        if torch.cuda.is_available():
+            _touch("before_cuda_sync_update")
+            _log("ENTER torch.cuda.synchronize() (pre-barrier)")
             try:
-                dist.barrier()
-                _log("PASS  dist.barrier() (pre-update)")
+                _log(
+                    f"CUDA current_device={torch.cuda.current_device()} "
+                    f"name={torch.cuda.get_device_name(torch.cuda.current_device())}"
+                )
+                torch.cuda.synchronize()
+                _log("PASS  torch.cuda.synchronize() (pre-barrier)")
             except Exception:
                 _log("TRACEBACK:\n" + traceback.format_exc())
-                _fail_fast("barrier exception")
-        _touch("after_barrier_update")
-        _log("PASS  barrier before PPO.update")
-    except Exception:
-        _log("TRACEBACK:\n" + traceback.format_exc())
-        _fail_fast("barrier exception")
+                _fail_fast("cuda.synchronize exception")
 
+        # 2) Barrier: detect rank desync / comm hang
+        _touch("before_dist_barrier_update")
+        _log("ENTER dist.barrier() (pre-update)")
+        try:
+            dist.barrier()
+            _log("PASS  dist.barrier() (pre-update)")
+        except Exception:
+            _log("TRACEBACK:\n" + traceback.format_exc())
+            _fail_fast("barrier exception")
+
+        _touch("after_dist_barrier_update")
+    else:
+        _log("SKIP dist.barrier(): dist not initialized")
+        _touch("skip_dist_barrier_update")
+
+    # 3) Actual PPO.update
+    _touch("enter_real_ppo_update")
     _log("ENTER PPO.update")
     try:
         out = _orig_update(self, *args, **kwargs)
         _log("EXIT  PPO.update")
+        _touch("exit_real_ppo_update")
         return out
     except Exception:
         _log("TRACEBACK:\n" + traceback.format_exc())

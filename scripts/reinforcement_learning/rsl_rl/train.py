@@ -97,6 +97,115 @@ PPO.update = _update_logged
 _log("Patched PPO.update with logging+failfast.")
 # =====================================================================
 
+
+# =====================================================================
+# WATCHDOG + PHASE LOG PATCH:
+# - Periodically dumps Python stack traces (all threads) per-rank.
+# - Logs runner phases (collect/update) if methods exist.
+# - Adds a barrier right before PPO.update to detect desync earlier.
+# =====================================================================
+import threading
+import faulthandler
+import torch.distributed as dist
+
+_progress_lock = threading.Lock()
+_last_progress = time.time()
+_last_tag = "init"
+
+def _touch(tag: str):
+    global _last_progress, _last_tag
+    with _progress_lock:
+        _last_progress = time.time()
+        _last_tag = tag
+
+def _watchdog_thread():
+    dump_every = 60
+    stall_sec  = 120
+    last_dump = time.time()
+    while True:
+        time.sleep(5)
+        now = time.time()
+        with _progress_lock:
+            dt = now - _last_progress
+            tag = _last_tag
+
+        if now - last_dump > dump_every:
+            _log("PERIODIC: dumping tracebacks")
+            faulthandler.dump_traceback(all_threads=True)
+            last_dump = now
+
+        if dt > stall_sec:
+            _log(f"STALL: no progress for {dt:.1f}s (last_tag={tag}) -> dumping tracebacks")
+            faulthandler.dump_traceback(all_threads=True)
+            _touch(f"watchdog_dump_after_{tag}")
+
+
+threading.Thread(target=_watchdog_thread, daemon=True).start()
+_log("Watchdog thread started + faulthandler.dump_traceback_later(60s, repeat=True) enabled.")
+
+# runner側の「collect → update」の境界をログる（メソッド名が違っても拾う）
+try:
+    from rsl_rl.runners.on_policy_runner import OnPolicyRunner
+    _log("Loaded OnPolicyRunner for phase patching.")
+
+    # あるかもしれない候補名（rsl_rlのバージョン差吸収）
+    _collect_names = [
+        "collect_rollouts",
+        "collect_rollouts_and_compute_returns",
+        "collect",
+        "_collect_rollouts",
+    ]
+
+    for _name in _collect_names:
+        if hasattr(OnPolicyRunner, _name):
+            _orig_collect = getattr(OnPolicyRunner, _name)
+
+            def _collect_logged(self, *args, __orig=_orig_collect, __nm=_name, **kwargs):
+                _touch(f"before_{__nm}")
+                _log(f"ENTER runner.{__nm}")
+                try:
+                    out = __orig(self, *args, **kwargs)
+                    _log(f"EXIT  runner.{__nm}")
+                    _touch(f"after_{__nm}")
+                    return out
+                except Exception as e:
+                    _log(f"EXC   runner.{__nm} err={repr(e)}")
+                    _log("TRACEBACK:\n" + traceback.format_exc())
+                    os._exit(1)
+
+            setattr(OnPolicyRunner, _name, _collect_logged)
+            _log(f"Patched OnPolicyRunner.{_name} with logging.")
+            break
+    else:
+        _log("WARN: No known collect method found on OnPolicyRunner; collect phase won't be logged.")
+
+except Exception as e:
+    _log(f"WARN: Failed to patch runner phases: {repr(e)}")
+
+# PPO.updateの最初にbarrierを置いて「update突入の足並み」を揃える
+# （rank3/5がupdate前で止まってるなら、ここで全rankが揃わずに早めに分かる）
+_orig_update2 = PPO.update
+
+def _update_with_barrier(self, *args, **kwargs):
+    _touch("before_barrier_update")
+    _log("ENTER PPO.update (pre-barrier)")
+    try:
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        _touch("after_barrier_update")
+        _log("PASS  barrier before PPO.update")
+    except Exception as e:
+        _log(f"EXC   barrier before PPO.update err={repr(e)}")
+        _log("TRACEBACK:\n" + traceback.format_exc())
+        os._exit(1)
+
+    # 元のupdate（あなたが前に入れたログ付きupdateでもOK）
+    return _orig_update2(self, *args, **kwargs)
+
+PPO.update = _update_with_barrier
+_log("Patched PPO.update to include a pre-barrier for synchronization.")
+# =====================================================================
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")

@@ -15,6 +15,88 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
+
+# =====================================================================
+# DIST DEBUG PATCH:
+# - Wrap torch.distributed.all_reduce to log every call (rank, shape, finite)
+# - Wrap PPO.update to print traceback on the *failing rank* and exit fast
+#   so other ranks don't wait 600s.
+# =====================================================================
+import os
+import time
+import traceback
+import faulthandler
+import torch
+
+faulthandler.enable(all_threads=True)
+
+def _rank() -> int:
+    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+
+def _world() -> int:
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+def _tinfo(t: torch.Tensor) -> str:
+    if not torch.is_tensor(t):
+        return f"type={type(t)}"
+    with torch.no_grad():
+        dev = str(t.device)
+        shp = tuple(t.shape)
+        dt  = str(t.dtype)
+        finite = bool(torch.isfinite(t).all().item()) if t.numel() > 0 else True
+        # cheap stats (avoid sync-heavy ops)
+        return f"shape={shp} dtype={dt} device={dev} finite={finite}"
+
+def _log(msg: str):
+    print(f"[DISTDBG][{_now()}][rank{_rank()}/{_world()}] {msg}", flush=True)
+
+# 1) monkeypatch torch.distributed.all_reduce
+import torch.distributed as dist
+
+if hasattr(dist, "all_reduce"):
+    _orig_all_reduce = dist.all_reduce
+
+    def _all_reduce_logged(tensor, *args, **kwargs):
+        _log(f"ENTER all_reduce: {_tinfo(tensor)}")
+        try:
+            out = _orig_all_reduce(tensor, *args, **kwargs)
+            _log(f"EXIT  all_reduce: {_tinfo(tensor)}")
+            return out
+        except Exception as e:
+            _log(f"EXC   all_reduce: {_tinfo(tensor)} err={repr(e)}")
+            _log("TRACEBACK:\n" + traceback.format_exc())
+            # fail fast: don't let other ranks hang for 600s
+            os._exit(1)
+
+    dist.all_reduce = _all_reduce_logged
+    _log("Patched torch.distributed.all_reduce with logging+failfast.")
+else:
+    _log("WARN: torch.distributed.all_reduce not found; skip patch.")
+
+# 2) wrap PPO.update to print failing-rank traceback + failfast
+from rsl_rl.algorithms.ppo import PPO
+
+_orig_update = PPO.update
+
+def _update_logged(self, *args, **kwargs):
+    _log("ENTER PPO.update")
+    try:
+        out = _orig_update(self, *args, **kwargs)
+        _log("EXIT  PPO.update")
+        return out
+    except Exception as e:
+        _log(f"EXC   PPO.update err={repr(e)}")
+        _log("TRACEBACK:\n" + traceback.format_exc())
+        # fail fast to avoid monitoredBarrier 600s wait on other ranks
+        os._exit(1)
+
+PPO.update = _update_logged
+_log("Patched PPO.update with logging+failfast.")
+# =====================================================================
+
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
@@ -77,7 +159,6 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 
 import gymnasium as gym
 import logging
-import os
 import torch
 from datetime import datetime
 

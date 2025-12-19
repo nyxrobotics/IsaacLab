@@ -49,7 +49,7 @@ def _fail_fast(reason: str):
 
     # Try to close simulation app if available
     try:
-        if "simulation_app" in globals():
+        if _rank() == 0 and "simulation_app" in globals():
             simulation_app.close()
     except Exception as e:
         _log(f"FAILFAST: simulation_app.close failed: {repr(e)}")
@@ -191,13 +191,12 @@ def _update_with_barrier(self, *args, **kwargs):
     _log("ENTER PPO.update (pre-barrier)")
     try:
         if dist.is_available() and dist.is_initialized():
-            from datetime import timedelta
-            dist.monitored_barrier(timeout=timedelta(seconds=120))
+            dist.barrier()
         _touch("after_barrier_update")
         _log("PASS  barrier before PPO.update")
     except Exception:
         _log("TRACEBACK:\n" + traceback.format_exc())
-        _fail_fast("monitored_barrier exception")
+        _fail_fast("barrier exception")
 
     _log("ENTER PPO.update")
     try:

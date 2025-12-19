@@ -54,13 +54,23 @@ def _fail_fast(reason: str):
     except Exception as e:
         _log(f"FAILFAST: simulation_app.close failed: {repr(e)}")
 
-    raise SystemExit(1)
+    os._exit(1)
 
 
 def _rank() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+    except Exception:
+        pass
     return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
 
 def _world() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:
+        pass
     return int(os.environ.get("WORLD_SIZE", "1"))
 
 def _now() -> str:
@@ -273,7 +283,6 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 
 import gymnasium as gym
 import logging
-import torch
 from datetime import datetime
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner

@@ -234,23 +234,6 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},
     )
-    # joint_deviation_ankle_roll = RewTerm(
-    #     func=mdp.joint_deviation_l1,
-    #     weight=-0.1,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-    #             "ankle_l_roll",
-    #             "ankle_r_roll"])},
-    # )
-
-    flat_toe_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-                "margin": 0.0,
-                "gain": 1.0,},
-    )
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_deviation_l1,

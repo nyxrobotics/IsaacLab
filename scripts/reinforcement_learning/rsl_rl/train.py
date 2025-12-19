@@ -27,9 +27,15 @@ import time
 import traceback
 import faulthandler
 import torch
+from rsl_rl.algorithms.ppo import PPO
 
+import threading
+import torch.distributed as dist
 
 faulthandler.enable(all_threads=True)
+
+def _log(msg: str):
+    print(f"[DISTDBG][{_now()}][rank{_rank()}/{_world()}] {msg}", flush=True)
 
 def _fail_fast(reason: str):
     _log(f"FAILFAST: {reason}")
@@ -71,11 +77,8 @@ def _tinfo(t: torch.Tensor) -> str:
         # cheap stats (avoid sync-heavy ops)
         return f"shape={shp} dtype={dt} device={dev} finite={finite}"
 
-def _log(msg: str):
-    print(f"[DISTDBG][{_now()}][rank{_rank()}/{_world()}] {msg}", flush=True)
 
 # 1) monkeypatch torch.distributed.all_reduce
-import torch.distributed as dist
 
 if hasattr(dist, "all_reduce"):
     _orig_all_reduce = dist.all_reduce
@@ -96,24 +99,6 @@ if hasattr(dist, "all_reduce"):
 else:
     _log("WARN: torch.distributed.all_reduce not found; skip patch.")
 
-# 2) wrap PPO.update to print failing-rank traceback + failfast
-from rsl_rl.algorithms.ppo import PPO
-
-_orig_update = PPO.update
-
-def _update_logged(self, *args, **kwargs):
-    _log("ENTER PPO.update")
-    try:
-        out = _orig_update(self, *args, **kwargs)
-        _log("EXIT  PPO.update")
-        return out
-    except Exception as e:
-        _log(f"EXC   PPO.update err={repr(e)}")
-        _log("TRACEBACK:\n" + traceback.format_exc())
-        _fail_fast("PPO.update exception")
-
-PPO.update = _update_logged
-_log("Patched PPO.update with logging+failfast.")
 # =====================================================================
 
 
@@ -123,9 +108,6 @@ _log("Patched PPO.update with logging+failfast.")
 # - Logs runner phases (collect/update) if methods exist.
 # - Adds a barrier right before PPO.update to detect desync earlier.
 # =====================================================================
-import threading
-import faulthandler
-import torch.distributed as dist
 
 _progress_lock = threading.Lock()
 _last_progress = time.time()
@@ -160,7 +142,7 @@ def _watchdog_thread():
 
 
 threading.Thread(target=_watchdog_thread, daemon=True).start()
-_log("Watchdog thread started + faulthandler.dump_traceback_later(60s, repeat=True) enabled.")
+_log("Watchdog thread started (periodic+stall traceback dumps enabled).")
 
 # runner側の「collect → update」の境界をログる（メソッド名が違っても拾う）
 try:
@@ -202,23 +184,29 @@ except Exception as e:
 
 # PPO.updateの最初にbarrierを置いて「update突入の足並み」を揃える
 # （rank3/5がupdate前で止まってるなら、ここで全rankが揃わずに早めに分かる）
-_orig_update2 = PPO.update
+_orig_update = PPO.update
 
 def _update_with_barrier(self, *args, **kwargs):
     _touch("before_barrier_update")
     _log("ENTER PPO.update (pre-barrier)")
     try:
         if dist.is_available() and dist.is_initialized():
-            dist.barrier()
+            from datetime import timedelta
+            dist.monitored_barrier(timeout=timedelta(seconds=120))
         _touch("after_barrier_update")
         _log("PASS  barrier before PPO.update")
-    except Exception as e:
-        _log(f"EXC   barrier before PPO.update err={repr(e)}")
+    except Exception:
         _log("TRACEBACK:\n" + traceback.format_exc())
-        _fail_fast("barrier before PPO.update exception")
+        _fail_fast("monitored_barrier exception")
 
-    # 元のupdate（あなたが前に入れたログ付きupdateでもOK）
-    return _orig_update2(self, *args, **kwargs)
+    _log("ENTER PPO.update")
+    try:
+        out = _orig_update(self, *args, **kwargs)
+        _log("EXIT  PPO.update")
+        return out
+    except Exception:
+        _log("TRACEBACK:\n" + traceback.format_exc())
+        _fail_fast("PPO.update exception")
 
 PPO.update = _update_with_barrier
 _log("Patched PPO.update to include a pre-barrier for synchronization.")

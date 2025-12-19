@@ -112,6 +112,69 @@ else:
 # =====================================================================
 
 
+# ---------------------------------------------------------------------
+# Rank-local progress state (iteration/step/phase) for desync visibility
+# ---------------------------------------------------------------------
+_state_lock = threading.Lock()
+_state = {
+    "phase": "init",
+    "iter": None,
+    "step": None,
+    "ep": None,
+}
+
+def _get_attr_any(obj, names):
+    for n in names:
+        if hasattr(obj, n):
+            try:
+                v = getattr(obj, n)
+                # callableは避ける（メソッド誤爆防止）
+                if callable(v):
+                    continue
+                return v
+            except Exception:
+                pass
+    return None
+
+def _update_state_from_runner(runner_obj, phase: str):
+    # rsl_rl のバージョン差があるので候補を複数持つ
+    it = _get_attr_any(runner_obj, [
+        "current_learning_iteration",
+        "learning_iteration",
+        "iteration",
+        "it",
+        "_it",
+    ])
+
+    step = _get_attr_any(runner_obj, [
+        "tot_timesteps",
+        "total_timesteps",
+        "num_timesteps",
+        "global_step",
+        "step",
+        "_step",
+    ])
+
+    ep = _get_attr_any(runner_obj, [
+        "tot_episodes",
+        "total_episodes",
+        "episode",
+        "ep",
+        "_ep",
+    ])
+
+    with _state_lock:
+        _state["phase"] = phase
+        _state["iter"] = it
+        _state["step"] = step
+        _state["ep"] = ep
+
+def _state_str():
+    with _state_lock:
+        return f"phase={_state['phase']} iter={_state['iter']} step={_state['step']} ep={_state['ep']}"
+
+
+
 # =====================================================================
 # WATCHDOG + PHASE LOG PATCH:
 # - Periodically dumps Python stack traces (all threads) per-rank.
@@ -170,17 +233,18 @@ try:
     for _name in _collect_names:
         if hasattr(OnPolicyRunner, _name):
             _orig_collect = getattr(OnPolicyRunner, _name)
-
             def _collect_logged(self, *args, __orig=_orig_collect, __nm=_name, **kwargs):
+                _update_state_from_runner(self, phase=f"before_{__nm}")   # ★追加
                 _touch(f"before_{__nm}")
-                _log(f"ENTER runner.{__nm}")
+                _log(f"ENTER runner.{__nm} ({_state_str()})")             # ★state表示を追加
                 try:
                     out = __orig(self, *args, **kwargs)
-                    _log(f"EXIT  runner.{__nm}")
+                    _log(f"EXIT  runner.{__nm} ({_state_str()})")         # ★追加
+                    _update_state_from_runner(self, phase=f"after_{__nm}")# ★追加
                     _touch(f"after_{__nm}")
                     return out
                 except Exception as e:
-                    _log(f"EXC   runner.{__nm} err={repr(e)}")
+                    _log(f"EXC   runner.{__nm} err={repr(e)} ({_state_str()})")
                     _log("TRACEBACK:\n" + traceback.format_exc())
                     _fail_fast("runner collect exception")
             setattr(OnPolicyRunner, _name, _collect_logged)
@@ -188,6 +252,42 @@ try:
             break
     else:
         _log("WARN: No known collect method found on OnPolicyRunner; collect phase won't be logged.")
+
+
+    # update呼び出し側もログる（バージョン差吸収）
+    _update_names = [
+        "update",
+        "_update",
+        "_update_policy",
+        "_update_alg",
+        "_update_algorithm",
+    ]
+
+    for _uname in _update_names:
+        if hasattr(OnPolicyRunner, _uname):
+            _orig_u = getattr(OnPolicyRunner, _uname)
+
+            def _update_callsite_logged(self, *args, __orig=_orig_u, __nm=_uname, **kwargs):
+                _update_state_from_runner(self, phase=f"before_{__nm}")
+                _touch(f"before_{__nm}")
+                _log(f"ENTER runner.{__nm} ({_state_str()})")
+                try:
+                    out = __orig(self, *args, **kwargs)
+                    _log(f"EXIT  runner.{__nm} ({_state_str()})")
+                    _update_state_from_runner(self, phase=f"after_{__nm}")
+                    _touch(f"after_{__nm}")
+                    return out
+                except Exception:
+                    _log(f"EXC   runner.{__nm} ({_state_str()})")
+                    _log("TRACEBACK:\n" + traceback.format_exc())
+                    _fail_fast("runner update callsite exception")
+
+            setattr(OnPolicyRunner, _uname, _update_callsite_logged)
+            _log(f"Patched OnPolicyRunner.{_uname} with logging.")
+            break
+    else:
+        _log("WARN: No known update method found on OnPolicyRunner; update phase may not be logged.")
+
 
 except Exception as e:
     _log(f"WARN: Failed to patch runner phases: {repr(e)}")
@@ -218,6 +318,7 @@ def _update_with_barrier(self, *args, **kwargs):
 
         # 2) Barrier: detect rank desync / comm hang
         _touch("before_dist_barrier_update")
+        _log(f"PRE-BARRIER STATE: {_state_str()}")   # ★追加
         _log("ENTER dist.barrier() (pre-update)")
         try:
             dist.barrier()

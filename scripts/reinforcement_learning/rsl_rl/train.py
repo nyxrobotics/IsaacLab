@@ -173,6 +173,9 @@ def _state_str():
     with _state_lock:
         return f"phase={_state['phase']} iter={_state['iter']} step={_state['step']} ep={_state['ep']}"
 
+def _set_phase(phase: str):
+    with _state_lock:
+        _state["phase"] = phase
 
 
 # =====================================================================
@@ -298,12 +301,14 @@ _orig_update = PPO.update
 
 def _update_with_barrier(self, *args, **kwargs):
     _touch("enter_update_wrapper")
+    _set_phase("enter_ppo_update_wrapper")
     _log("ENTER PPO.update wrapper")
 
     if dist.is_available() and dist.is_initialized():
         # 1) CUDA sync: detect CUDA-side stall before comms
         if torch.cuda.is_available():
             _touch("before_cuda_sync_update")
+            _set_phase("before_cuda_synchronize")
             _log("ENTER torch.cuda.synchronize() (pre-barrier)")
             try:
                 _log(
@@ -311,6 +316,7 @@ def _update_with_barrier(self, *args, **kwargs):
                     f"name={torch.cuda.get_device_name(torch.cuda.current_device())}"
                 )
                 torch.cuda.synchronize()
+                _set_phase("after_cuda_synchronize")
                 _log("PASS  torch.cuda.synchronize() (pre-barrier)")
             except Exception:
                 _log("TRACEBACK:\n" + traceback.format_exc())
@@ -318,15 +324,27 @@ def _update_with_barrier(self, *args, **kwargs):
 
         # 2) Barrier: detect rank desync / comm hang
         _touch("before_dist_barrier_update")
+        _set_phase("before_dist_barrier")
         _log(f"PRE-BARRIER STATE: {_state_str()}")   # ★追加
         _log("ENTER dist.barrier() (pre-update)")
+
+        try:
+            obj = {"rank": _rank(), "state": _state_str()}
+            gathered = [None for _ in range(_world())]
+            dist.all_gather_object(gathered, obj)
+            if _rank() == 0:
+                joined = " | ".join([f"r{d['rank']}:{d['state']}" for d in gathered if d is not None])
+                _log("ALLRANK PRE-BARRIER: " + joined)
+        except Exception:
+            _log("WARN: all_gather_object failed:\n" + traceback.format_exc())
+
         try:
             dist.barrier()
             _log("PASS  dist.barrier() (pre-update)")
         except Exception:
             _log("TRACEBACK:\n" + traceback.format_exc())
             _fail_fast("barrier exception")
-
+        _set_phase("after_dist_barrier") 
         _touch("after_dist_barrier_update")
     else:
         _log("SKIP dist.barrier(): dist not initialized")

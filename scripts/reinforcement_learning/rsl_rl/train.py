@@ -471,15 +471,34 @@ def _update_with_barrier(self, *args, **kwargs):
         _log(f"PRE-BARRIER STATE: {_state_str()}")
         _log("ENTER dist.barrier() (pre-update)")
 
+
         try:
-            obj = {"rank": _rank(), "state": _state_str()}
-            gathered = [None for _ in range(_world())]
-            dist.all_gather_object(gathered, obj)
+            # Pack numeric progress only (safe for NCCL): [rank, iter, step, ep]
+            def _i(x):
+                try:
+                    return int(x) if x is not None else -1
+                except Exception:
+                    return -1
+
+            with _state_lock:
+                it = _i(_state["iter"])
+                st = _i(_state["step"])
+                ep = _i(_state["ep"])
+
+            dev = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+            payload = torch.tensor([_rank(), it, st, ep], device=dev, dtype=torch.int64)
+
+            gathered = [torch.empty_like(payload) for _ in range(_world())]
+            dist.all_gather(gathered, payload)
+
             if _rank() == 0:
-                joined = " | ".join([f"r{d['rank']}:{d['state']}" for d in gathered if d is not None])
-                _log("ALLRANK PRE-BARRIER: " + joined)
+                joined = " | ".join([f"r{int(t[0])}:iter={int(t[1])} step={int(t[2])} ep={int(t[3])}" for t in gathered])
+                _log("ALLRANK PRE-BARRIER (numeric): " + joined)
+
         except Exception:
-            _log("WARN: all_gather_object failed:\n" + traceback.format_exc())
+            _log("WARN: all_gather (tensor) failed:\n" + traceback.format_exc())
+
+
 
         try:
             dist.barrier()

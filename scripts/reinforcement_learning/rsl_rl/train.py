@@ -12,6 +12,195 @@ import sys
 
 from isaaclab.app import AppLauncher
 
+# =====================================================================
+# SAFETY PATCH 1: Clamp policy.log_std after every PPO.update
+#   + warn when invalid values are detected
+# =====================================================================
+import os
+import torch
+from rsl_rl.algorithms.ppo import PPO
+
+_original_ppo_update = PPO.update
+
+def _safe_ppo_update(self, *args, **kwargs):
+    # Run original update
+    out = _original_ppo_update(self, *args, **kwargs)
+
+    # safety guard for log_std
+    with torch.no_grad():
+        policy = self.policy
+        if hasattr(policy, "log_std"):
+            log_std = policy.log_std.data
+
+            # detect invalid values
+            invalid_mask = ~torch.isfinite(log_std)
+            if invalid_mask.any():
+                print(
+                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). "
+                    "They have been reset to 0.0."
+                )
+                log_std[invalid_mask] = 0.0
+
+            # detect values outside safe range
+            too_low  = (log_std < -20.0)
+            too_high = (log_std > 2.0)
+
+            if too_low.any() or too_high.any():
+                print(
+                    "[WARNING] Detected policy.log_std outside safe range "
+                    "(-20, 2). Values have been clamped."
+                )
+
+            # clamp range so std = exp(log_std) stays valid
+            log_std.clamp_(min=-20.0, max=2.0)
+
+            # write back
+            policy.log_std.data.copy_(log_std)
+
+    return out
+
+# Patch PPO.update
+PPO.update = _safe_ppo_update
+
+# =====================================================================
+# SAFETY PATCH 2:
+#   Patch ActorCritic._update_distribution so Normal(mean, std) never
+#   receives negative/non-finite std. This prevents the crash *before*
+#   it happens (better than catching in act()).
+# =====================================================================
+import torch.nn.functional as Functional
+from torch.distributions import Normal
+from rsl_rl.modules.actor_critic import ActorCritic
+
+def _safe_update_distribution(self, obs):
+    """
+    Replacement for ActorCritic._update_distribution.
+
+    Handles both:
+      - state_dependent_std=True:
+          * noise_std_type == "scalar": std may be negative -> softplus + eps
+          * noise_std_type == "log": std = exp(log_std) (optionally clamp log_std)
+      - state_dependent_std=False:
+          * "scalar": parameter std might become invalid -> clamp
+          * "log": clamp log_std -> exp
+    """
+    if getattr(self, "_std_guard_printed", False) is False:
+        # Print once per process
+        print("[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-6).", flush=True)
+        self._std_guard_printed = True
+
+    if self.state_dependent_std:
+        mean_and_std = self.actor(obs)
+
+        if self.noise_std_type == "scalar":
+            mean, std = torch.unbind(mean_and_std, dim=-2)
+
+            # Convert potentially-negative std into strictly-positive std.
+            std = Functional.softplus(std) + 1e-6
+            std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
+            std = std.clamp_min(1e-6)
+
+        elif self.noise_std_type == "log":
+            mean, log_std = torch.unbind(mean_and_std, dim=-2)
+
+            # Keep log_std in a sane range to avoid Inf/NaN.
+            log_std = torch.nan_to_num(log_std, nan=0.0, posinf=0.0, neginf=0.0)
+            log_std = log_std.clamp(-20.0, 2.0)
+
+            std = torch.exp(log_std)
+        else:
+            raise ValueError(
+                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+            )
+
+    else:
+        mean = self.actor(obs)
+
+        if self.noise_std_type == "scalar":
+            std = self.std.expand_as(mean)
+            std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
+            std = std.clamp_min(1e-6)
+
+        elif self.noise_std_type == "log":
+            log_std = torch.nan_to_num(self.log_std, nan=0.0, posinf=0.0, neginf=0.0)
+            log_std = log_std.clamp(-20.0, 2.0)
+            std = torch.exp(log_std).expand_as(mean)
+
+        else:
+            raise ValueError(
+                f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
+            )
+
+    # Create distribution (this must never throw)
+    self.distribution = Normal(mean, std)
+
+# Patch ActorCritic._update_distribution
+ActorCritic._update_distribution = _safe_update_distribution
+
+# =====================================================================
+# SAFETY PATCH 3: If rsl_rl minibatch generator yields None,
+#        reuse the last valid minibatch (keeps the exact 12-tuple structure).
+# =====================================================================
+def _dist_rank() -> int:
+    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+
+# Try patching RolloutStorage minibatch generator (names differ by rsl_rl version)
+_rollout_storage_cls = None
+for _mod_path, _cls_name in [
+    ("rsl_rl.storage.rollout_storage", "RolloutStorage"),
+    ("rsl_rl.storage", "RolloutStorage"),
+]:
+    try:
+        _m = __import__(_mod_path, fromlist=[_cls_name])
+        _rollout_storage_cls = getattr(_m, _cls_name)
+        break
+    except Exception:
+        pass
+
+if _rollout_storage_cls is not None and hasattr(_rollout_storage_cls, "mini_batch_generator"):
+    _orig_mbg = _rollout_storage_cls.mini_batch_generator
+
+    def _patched_mini_batch_generator(self, *args, **kwargs):
+        last_good = None
+        none_count = 0
+        total_count = 0
+
+        for batch in _orig_mbg(self, *args, **kwargs):
+            total_count += 1
+
+            if batch is None:
+                none_count += 1
+
+                if last_good is None:
+                    # If the first batch is None, we cannot safely fabricate the expected 12-tuple.
+                    raise RuntimeError(
+                        f"[rank{_dist_rank()}] mini_batch_generator yielded None before any valid batch "
+                        f"(none_count={none_count}, total={total_count})."
+                    )
+
+                print(
+                    f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None -> reusing last_good "
+                    f"(none_count={none_count}, total={total_count})",
+                    flush=True,
+                )
+                yield last_good
+                continue
+
+            # Keep the last valid batch (this preserves the exact expected tuple length, devices, dtypes)
+            last_good = batch
+            yield batch
+
+    _rollout_storage_cls.mini_batch_generator = _patched_mini_batch_generator
+    print(
+        f"[INFO][rank{_dist_rank()}] Patched {_rollout_storage_cls.__name__}.mini_batch_generator: "
+        f"None -> reuse last_good",
+        flush=True,
+    )
+else:
+    print(f"[WARN][rank{_dist_rank()}] Could not patch RolloutStorage.mini_batch_generator (class not found).", flush=True)
+
+# =====================================================================
+
 # local imports
 import cli_args  # isort: skip
 
@@ -70,8 +259,6 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 """Rest everything follows."""
 
 import gymnasium as gym
-import os
-import torch
 from datetime import datetime
 
 from rsl_rl.runners import OnPolicyRunner
@@ -87,100 +274,6 @@ from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
-# =====================================================================
-# SAFETY PATCH: Clamp policy.log_std after every PPO.update
-#   + warn when invalid values are detected
-# =====================================================================
-from rsl_rl.algorithms.ppo import PPO
-
-_original_ppo_update = PPO.update
-
-def _safe_ppo_update(self, *args, **kwargs):
-    # Run original update
-    out = _original_ppo_update(self, *args, **kwargs)
-
-    # safety guard for log_std
-    with torch.no_grad():
-        policy = self.policy
-        if hasattr(policy, "log_std"):
-            log_std = policy.log_std.data
-
-            # detect invalid values
-            invalid_mask = ~torch.isfinite(log_std)
-            if invalid_mask.any():
-                print(
-                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). "
-                    "They have been reset to 0.0."
-                )
-                log_std[invalid_mask] = 0.0
-
-            # detect values outside safe range
-            too_low  = (log_std < -20.0)
-            too_high = (log_std > 2.0)
-
-            if too_low.any() or too_high.any():
-                print(
-                    "[WARNING] Detected policy.log_std outside safe range "
-                    "(-20, 2). Values have been clamped."
-                )
-
-            # clamp range so std = exp(log_std) stays valid
-            log_std.clamp_(min=-20.0, max=2.0)
-
-            # write back
-            policy.log_std.data.copy_(log_std)
-
-    return out
-
-# Patch PPO.update
-PPO.update = _safe_ppo_update
-
-# =====================================================================
-# SAFETY PATCH 2: Guard ActorCritic.act so that invalid std doesn't crash
-# =====================================================================
-from rsl_rl.modules.actor_critic import ActorCritic
-from torch.distributions import Normal
-
-_original_act = ActorCritic.act
-
-def _safe_act(self, *args, **kwargs):
-    try:
-        return _original_act(self, *args, **kwargs)
-    except RuntimeError as e:
-        msg = str(e)
-        if "normal expects all elements of std" not in msg:
-            raise
-
-        print("[WARNING] Invalid std detected. Reconstructing distribution with clamped std...")
-
-        with torch.no_grad():
-            # ActorCritic が保持する mean / std を使用
-            if not (hasattr(self, "action_std") and hasattr(self, "action_mean")):
-                print("  - policy has no action_std or action_mean")
-                raise
-
-            std = self.action_std
-
-            # NaN / Inf / 非正値を修正
-            invalid = (~torch.isfinite(std)) | (std <= 0.0)
-            std = torch.where(invalid, torch.full_like(std, 0.1), std)
-
-            # 最終 clamping
-            std = torch.clamp(std, min=1e-6, max=10.0)
-
-            # ★ NOTE: self.action_std に書き込んではいけない！
-            # distribution を作り直すだけでOK
-            safe_dist = Normal(self.action_mean, std)
-            self.distribution = safe_dist
-            self.entropy = safe_dist.entropy()
-
-        return self.distribution.sample()
-
-
-# ActorCritic.act を差し替え
-ActorCritic.act = _safe_act
-# =====================================================================
-
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path

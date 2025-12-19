@@ -138,11 +138,41 @@ def _safe_update_distribution(self, obs):
 ActorCritic._update_distribution = _safe_update_distribution
 
 # =====================================================================
-# SAFETY PATCH 3: If rsl_rl minibatch generator yields None,
-#        reuse the last valid minibatch (keeps the exact 12-tuple structure).
+# SAFETY PATCH 3:
+#   - Keep minibatch iteration count identical across all ranks.
+#   - Decisions (yield / reuse / skip / pad) are made only from
+#     all_reduce results so every rank follows the same control flow.
+#   - No forced termination: when consistency cannot be guaranteed,
+#     the step is skipped on all ranks.
 # =====================================================================
+
+import torch.distributed as dist
+
 def _dist_rank() -> int:
     return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+
+def _ddp_ready() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+def _ddp_device() -> torch.device:
+    # Prefer current CUDA device if available; otherwise CPU.
+    if torch.cuda.is_available():
+        return torch.device(f"cuda:{torch.cuda.current_device()}")
+    return torch.device("cpu")
+
+def _ddp_sum_i32(x: int) -> int:
+    if not _ddp_ready():
+        return x
+    t = torch.tensor([x], device=_ddp_device(), dtype=torch.int32)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return int(t.item())
+
+def _ddp_max_i32(x: int) -> int:
+    if not _ddp_ready():
+        return x
+    t = torch.tensor([x], device=_ddp_device(), dtype=torch.int32)
+    dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return int(t.item())
 
 # Try patching RolloutStorage minibatch generator (names differ by rsl_rl version)
 _rollout_storage_cls = None
@@ -162,44 +192,114 @@ if _rollout_storage_cls is not None and hasattr(_rollout_storage_cls, "mini_batc
 
     def _patched_mini_batch_generator(self, *args, **kwargs):
         last_good = None
-        none_count = 0
-        total_count = 0
+        local_yield_count = 0
+
+        # Print once per rank
+        if not getattr(self, "_mbg_patch_printed", False):
+            print(
+                f"[INFO][rank{_dist_rank()}] Patched mini_batch_generator (DDP-safe, rank0-free): "
+                "if any rank yields None -> all ranks reuse last_good; "
+                "if last_good missing on any rank -> all ranks skip that step; "
+                "pad to global max yields (only if last_good exists on all ranks).",
+                flush=True,
+            )
+            self._mbg_patch_printed = True
 
         for batch in _orig_mbg(self, *args, **kwargs):
-            total_count += 1
+            local_is_none = 1 if (batch is None) else 0
 
-            if batch is None:
-                none_count += 1
-
-                if last_good is None:
-                    # If the first batch is None, we cannot safely fabricate the expected 12-tuple.
-                    raise RuntimeError(
-                        f"[rank{_dist_rank()}] mini_batch_generator yielded None before any valid batch "
-                        f"(none_count={none_count}, total={total_count})."
-                    )
-
-                print(
-                    f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None -> reusing last_good "
-                    f"(none_count={none_count}, total={total_count})",
-                    flush=True,
-                )
-                yield last_good
+            # If not distributed, keep the old local behavior.
+            if not _ddp_ready():
+                if batch is None:
+                    if last_good is not None:
+                        print(
+                            f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None -> reusing last_good",
+                            flush=True,
+                        )
+                        yield last_good
+                        local_yield_count += 1
+                    else:
+                        # No forced stop: just skip this step.
+                        print(
+                            f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None but last_good is None -> skip",
+                            flush=True,
+                        )
+                    continue
+                last_good = batch
+                yield batch
+                local_yield_count += 1
                 continue
 
-            # Keep the last valid batch (this preserves the exact expected tuple length, devices, dtypes)
+            # DDP path: decide action using only all_reduce (no rank0).
+            world_size = dist.get_world_size()
+            n_none = _ddp_sum_i32(local_is_none)
+
+            if n_none > 0:
+                # At least one rank got None. To keep all ranks aligned,
+                # all ranks take the same branch.
+                local_has_last = 1 if (last_good is not None) else 0
+                n_has_last = _ddp_sum_i32(local_has_last)
+
+                if n_has_last == world_size:
+                    # Everyone has last_good -> everyone yields last_good
+                    if local_is_none:
+                        print(
+                            f"[WARN][rank{_dist_rank()}] batch=None detected globally (n_none={n_none}/{world_size}) "
+                            "-> yielding last_good (aligned)",
+                            flush=True,
+                        )
+                    yield last_good
+                    local_yield_count += 1
+                else:
+                    # Someone lacks last_good -> no forced termination; skip on all ranks.
+                    if local_is_none:
+                        print(
+                            f"[WARN][rank{_dist_rank()}] batch=None detected globally (n_none={n_none}/{world_size}) "
+                            f"but last_good missing on some rank (n_has_last={n_has_last}/{world_size}) "
+                            "-> skipping this step on all ranks (aligned)",
+                            flush=True,
+                        )
+                    # Everyone skips this step, so yield count stays aligned.
+                continue
+
+            # n_none == 0: all ranks have a valid batch -> safe to yield
             last_good = batch
             yield batch
+            local_yield_count += 1
+
+        # Optional padding: ensure all ranks yield the same number of batches.
+        if _ddp_ready():
+            world_size = dist.get_world_size()
+            global_max = _ddp_max_i32(local_yield_count)
+
+            if global_max > local_yield_count:
+                local_has_last = 1 if (last_good is not None) else 0
+                n_has_last = _ddp_sum_i32(local_has_last)
+
+                if n_has_last == world_size:
+                    pad = global_max - local_yield_count
+                    print(
+                        f"[INFO][rank{_dist_rank()}] Padding minibatches to global_max={global_max} "
+                        f"(local={local_yield_count}, pad={pad}) using last_good (aligned)",
+                        flush=True,
+                    )
+                    for _ in range(pad):
+                        yield last_good
+                else:
+                    # If not everyone has last_good, don't pad (still aligned: those ranks also can't pad).
+                    print(
+                        f"[WARN][rank{_dist_rank()}] global_max={global_max} > local={local_yield_count} "
+                        f"but last_good missing on some rank (n_has_last={n_has_last}/{world_size}) "
+                        "-> padding disabled to avoid desync",
+                        flush=True,
+                    )
 
     _rollout_storage_cls.mini_batch_generator = _patched_mini_batch_generator
-    print(
-        f"[INFO][rank{_dist_rank()}] Patched {_rollout_storage_cls.__name__}.mini_batch_generator: "
-        f"None -> reuse last_good",
-        flush=True,
-    )
 else:
     print(f"[WARN][rank{_dist_rank()}] Could not patch RolloutStorage.mini_batch_generator (class not found).", flush=True)
 
 # =====================================================================
+
 
 # local imports
 import cli_args  # isort: skip

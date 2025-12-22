@@ -213,7 +213,7 @@ parser.add_argument(
     type=int,
     default=None,
     help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit. "
-    "Default: TORCH_NCCL_TIMEOUT (or 180 if unset).",
+    "Default: 600 seconds (10 minutes).",
 )
 parser.add_argument(
     "--startup_timeout_s",
@@ -230,18 +230,19 @@ args_cli, hydra_args = parser.parse_known_args()
 
 # ---------------------------------------------------------------------
 # NCCL timeout / watchdog timeout synchronization
-#   - Default watchdog timeout follows TORCH_NCCL_TIMEOUT (if set)
+#   - Use longer default timeout (600s = 10 minutes) for stability
 #   - If user specifies --hang_timeout_s, we also set TORCH_NCCL_TIMEOUT
 #     to the same value so collective timeouts happen within ~that window.
 # ---------------------------------------------------------------------
 _env_torch_nccl_timeout = os.environ.get("TORCH_NCCL_TIMEOUT", "")
 try:
-    _env_torch_nccl_timeout_s = int(_env_torch_nccl_timeout) if _env_torch_nccl_timeout else 180
+    _env_torch_nccl_timeout_s = int(_env_torch_nccl_timeout) if _env_torch_nccl_timeout else 600
 except Exception:
-    _env_torch_nccl_timeout_s = 180
+    _env_torch_nccl_timeout_s = 600
 
 if args_cli.hang_timeout_s is None:
-    args_cli.hang_timeout_s = _env_torch_nccl_timeout_s
+    # Default to 600 seconds (10 minutes) instead of 180
+    args_cli.hang_timeout_s = max(_env_torch_nccl_timeout_s, 600)
 else:
     os.environ["TORCH_NCCL_TIMEOUT"] = str(int(args_cli.hang_timeout_s))
 
@@ -616,7 +617,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
-    
+    # Auto-resume logic - try to load latest checkpoint from run_dir
     if args_cli.auto_resume:
         ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
         if ckpt_candidates:
@@ -639,9 +640,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if _is_rank0():
                 print(f"[INFO] Auto-resume: no checkpoint found in run_dir={effective_run_dir}", flush=True)
 
-        runner.add_git_repo_to_log(__file__)
+    # Add git repo to log (moved outside of auto_resume block - this was the bug!)
+    runner.add_git_repo_to_log(__file__)
 
-        
+    # Load specific resume_path if provided (separate from auto-resume)
     if resume_path is not None:
         if _is_rank0():
             print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)

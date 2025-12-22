@@ -169,168 +169,6 @@ def _safe_update_distribution(self, obs):
 
 # Patch ActorCritic._update_distribution
 ActorCritic._update_distribution = _safe_update_distribution
-
-# =====================================================================
-# SAFETY PATCH 3:
-#   - Keep minibatch iteration count identical across all ranks.
-#   - Decisions (yield / reuse / skip / pad) are made only from
-#     all_reduce results so every rank follows the same control flow.
-#   - No forced termination: when consistency cannot be guaranteed,
-#     the step is skipped on all ranks.
-# =====================================================================
-
-import torch.distributed as dist
-
-def _dist_rank() -> int:
-    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
-
-def _ddp_ready() -> bool:
-    return dist.is_available() and dist.is_initialized()
-
-def _ddp_device() -> torch.device:
-    # Prefer current CUDA device if available; otherwise CPU.
-    if torch.cuda.is_available():
-        return torch.device(f"cuda:{torch.cuda.current_device()}")
-    return torch.device("cpu")
-
-def _ddp_sum_i32(x: int) -> int:
-    if not _ddp_ready():
-        return x
-    t = torch.tensor([x], device=_ddp_device(), dtype=torch.int32)
-    dist.all_reduce(t, op=dist.ReduceOp.SUM)
-    return int(t.item())
-
-def _ddp_max_i32(x: int) -> int:
-    if not _ddp_ready():
-        return x
-    t = torch.tensor([x], device=_ddp_device(), dtype=torch.int32)
-    dist.all_reduce(t, op=dist.ReduceOp.MAX)
-    return int(t.item())
-
-# Try patching RolloutStorage minibatch generator (names differ by rsl_rl version)
-_rollout_storage_cls = None
-for _mod_path, _cls_name in [
-    ("rsl_rl.storage.rollout_storage", "RolloutStorage"),
-    ("rsl_rl.storage", "RolloutStorage"),
-]:
-    try:
-        _m = __import__(_mod_path, fromlist=[_cls_name])
-        _rollout_storage_cls = getattr(_m, _cls_name)
-        break
-    except Exception:
-        pass
-
-if _rollout_storage_cls is not None and hasattr(_rollout_storage_cls, "mini_batch_generator"):
-    _orig_mbg = _rollout_storage_cls.mini_batch_generator
-
-    def _patched_mini_batch_generator(self, *args, **kwargs):
-        last_good = None
-        local_yield_count = 0
-
-        # Print once per rank
-        if not getattr(self, "_mbg_patch_printed", False):
-            print(
-                f"[INFO][rank{_dist_rank()}] Patched mini_batch_generator (DDP-safe, rank0-free): "
-                "if any rank yields None -> all ranks reuse last_good; "
-                "if last_good missing on any rank -> all ranks skip that step; "
-                "pad to global max yields (only if last_good exists on all ranks).",
-                flush=True,
-            )
-            self._mbg_patch_printed = True
-
-        for batch in _orig_mbg(self, *args, **kwargs):
-            local_is_none = 1 if (batch is None) else 0
-
-            # If not distributed, keep the old local behavior.
-            if not _ddp_ready():
-                if batch is None:
-                    if last_good is not None:
-                        print(
-                            f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None -> reusing last_good",
-                            flush=True,
-                        )
-                        yield last_good
-                        local_yield_count += 1
-                    else:
-                        # No forced stop: just skip this step.
-                        print(
-                            f"[WARN][rank{_dist_rank()}] minibatch_generator yielded None but last_good is None -> skip",
-                            flush=True,
-                        )
-                    continue
-                last_good = batch
-                yield batch
-                local_yield_count += 1
-                continue
-
-            # DDP path: decide action using only all_reduce (no rank0).
-            world_size = dist.get_world_size()
-            n_none = _ddp_sum_i32(local_is_none)
-
-            if n_none > 0:
-                # At least one rank got None. To keep all ranks aligned,
-                # all ranks take the same branch.
-                local_has_last = 1 if (last_good is not None) else 0
-                n_has_last = _ddp_sum_i32(local_has_last)
-
-                if n_has_last == world_size:
-                    # Everyone has last_good -> everyone yields last_good
-                    if local_is_none:
-                        print(
-                            f"[WARN][rank{_dist_rank()}] batch=None detected globally (n_none={n_none}/{world_size}) "
-                            "-> yielding last_good (aligned)",
-                            flush=True,
-                        )
-                    yield last_good
-                    local_yield_count += 1
-                else:
-                    # Someone lacks last_good -> no forced termination; skip on all ranks.
-                    if local_is_none:
-                        print(
-                            f"[WARN][rank{_dist_rank()}] batch=None detected globally (n_none={n_none}/{world_size}) "
-                            f"but last_good missing on some rank (n_has_last={n_has_last}/{world_size}) "
-                            "-> skipping this step on all ranks (aligned)",
-                            flush=True,
-                        )
-                    # Everyone skips this step, so yield count stays aligned.
-                continue
-
-            # n_none == 0: all ranks have a valid batch -> safe to yield
-            last_good = batch
-            yield batch
-            local_yield_count += 1
-
-        # Optional padding: ensure all ranks yield the same number of batches.
-        if _ddp_ready():
-            world_size = dist.get_world_size()
-            global_max = _ddp_max_i32(local_yield_count)
-
-            if global_max > local_yield_count:
-                local_has_last = 1 if (last_good is not None) else 0
-                n_has_last = _ddp_sum_i32(local_has_last)
-
-                if n_has_last == world_size:
-                    pad = global_max - local_yield_count
-                    print(
-                        f"[INFO][rank{_dist_rank()}] Padding minibatches to global_max={global_max} "
-                        f"(local={local_yield_count}, pad={pad}) using last_good (aligned)",
-                        flush=True,
-                    )
-                    for _ in range(pad):
-                        yield last_good
-                else:
-                    # If not everyone has last_good, don't pad (still aligned: those ranks also can't pad).
-                    print(
-                        f"[WARN][rank{_dist_rank()}] global_max={global_max} > local={local_yield_count} "
-                        f"but last_good missing on some rank (n_has_last={n_has_last}/{world_size}) "
-                        "-> padding disabled to avoid desync",
-                        flush=True,
-                    )
-
-    _rollout_storage_cls.mini_batch_generator = _patched_mini_batch_generator
-else:
-    print(f"[WARN][rank{_dist_rank()}] Could not patch RolloutStorage.mini_batch_generator (class not found).", flush=True)
-
 # =====================================================================
 
 
@@ -368,6 +206,7 @@ import time
 import threading
 import faulthandler
 import traceback
+import signal
 from pathlib import Path
 
 faulthandler.enable(all_threads=True)
@@ -401,8 +240,6 @@ def _find_latest_checkpoint(run_dir: str) -> str | None:
     return str(candidates[0])
 
 def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | None]:
-    """Search for the most recently modified checkpoint under root_dir.
-    Returns (ckpt_path, ckpt_parent_dir)."""
     root = Path(root_dir)
     if not root.exists():
         return None, None
@@ -418,11 +255,8 @@ def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | No
     return str(ckpt), str(ckpt.parent)
 
 def _maybe_reuse_existing_run_dir(default_log_dir: str) -> tuple[str | None, str | None]:
-    """Try to reuse an existing run dir when --auto_resume is set without --run_dir.
-    We search under the parent directory of default_log_dir and pick the newest checkpoint."""
     parent = str(Path(default_log_dir).parent)
     return _find_latest_checkpoint_in_tree(parent)
-
 
 def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
     if run_dir is None or runner is None:
@@ -446,9 +280,6 @@ def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
         traceback.print_exc()
 
 def _start_hang_watchdog(get_runner_fn, run_dir: str | None, heartbeat_path: str | None, timeout_s: int) -> None:
-    # Best-effort watchdog: if Python threads can still run, try to save and exit.
-    # If the process is fully wedged (e.g., stuck in native code while holding the GIL),
-    # an external watchdog must still kill/restart the process.
     if timeout_s <= 0:
         return
 
@@ -465,22 +296,29 @@ def _start_hang_watchdog(get_runner_fn, run_dir: str | None, heartbeat_path: str
                     faulthandler.dump_traceback(all_threads=True)
                 except Exception:
                     pass
-                # Try an emergency checkpoint (best effort).
                 try:
                     runner = get_runner_fn()
                 except Exception:
                     runner = None
                 _emergency_save(runner, run_dir, tag="hang")
-                # Always exit so an external supervisor can restart.
-                os._exit(1)
-            # Update heartbeat file even if we only touched in-memory markers.
+                # Terminate the whole job so an external supervisor can restart.
+                # In distributed runs, exiting only one rank can strand others in NCCL.
+                if _is_rank0():
+                    try:
+                        os.killpg(os.getpgid(0), signal.SIGTERM)
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                    os._exit(1)
+                else:
+                    # Non-rank0: wait for rank0/launcher to terminate the job.
+                    pass
             if heartbeat_path and _is_rank0():
                 _write_heartbeat_file(heartbeat_path)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     print(f"[INFO] Hang watchdog enabled (timeout_s={timeout_s}).", flush=True)
-
 
 # always enable cameras to record video
 if args_cli.video:
@@ -550,47 +388,37 @@ torch.backends.cudnn.benchmark = False
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
 
-    # Export paths for any patched components that run outside main() scope.
     if args_cli.heartbeat_path is not None:
         os.environ["ISAACLAB_HEARTBEAT_PATH"] = args_cli.heartbeat_path
     if args_cli.run_dir is not None:
         os.environ["ISAACLAB_RUN_DIR"] = os.path.abspath(args_cli.run_dir)
-    # override configurations with non-hydra CLI arguments
+
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
 
-    # set the environment seed
-    # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # multi-gpu training configuration
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
         agent_cfg.device = f"cuda:{app_launcher.local_rank}"
 
-        # set seed to have diversity in different threads
         seed = agent_cfg.seed + app_launcher.local_rank
         env_cfg.seed = seed
         agent_cfg.seed = seed
 
-    # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # This way, the Ray Tune workflow can extract experiment name.
     print(f"Exact experiment name requested from command line: {log_dir}")
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
-    # If run_dir is provided, reuse it across restarts (no timestamp subdir).
-    # If run_dir is not provided but --auto_resume is set, try to reuse the most recent run dir
-    # under the same experiment parent directory so restarts keep writing to the same place.
+
     if args_cli.run_dir is not None:
         log_dir = os.path.abspath(args_cli.run_dir)
         log_root_path = log_dir
@@ -604,20 +432,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             log_dir = ckpt_parent
             log_root_path = ckpt_parent
 
-    effective_run_dir = args_cli.run_dir if args_cli.run_dir is not None else log_dir
+    effective_run_dir = os.path.abspath(log_dir)
 
-    # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
-    # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
-    # wrap for video recording
     if args_cli.video:
         video_kwargs = {
             "video_folder": os.path.join(log_dir, "videos", "train"),
@@ -629,18 +453,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-    # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
-
-    # Start an in-process hang watchdog (best effort) and update an external heartbeat file.
     runner_holder = {"runner": runner}
+
+    def _handle_signal(sig: int, _frame) -> None:
+        print(f"[WARN] Received signal {sig}. Attempting emergency checkpoint then exiting.", flush=True)
+        _emergency_save(runner_holder.get("runner"), effective_run_dir, tag=f"signal{sig}")
+        os._exit(128 + int(sig))
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
     _start_hang_watchdog(lambda: runner_holder.get("runner"), effective_run_dir, args_cli.heartbeat_path, args_cli.hang_timeout_s)
 
-    # Auto-resume from the latest checkpoint in run_dir, if requested.
-    if args_cli.auto_resume and effective_run_dir is not None:
+    if args_cli.auto_resume:
         ckpt = _find_latest_checkpoint(effective_run_dir)
         if ckpt is not None:
             if _is_rank0():
@@ -649,37 +477,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             if _is_rank0():
                 print(f"[INFO] Auto-resume: no checkpoint found in run_dir={effective_run_dir}", flush=True)
-    # write git state to logs
+
     runner.add_git_repo_to_log(__file__)
-    # load the checkpoint
+
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
         runner.load(resume_path)
 
-    # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
-    # run training
+
     _touch_heartbeat("before_learn")
     hb_path = os.environ.get("ISAACLAB_HEARTBEAT_PATH")
     if hb_path and _is_rank0():
         _write_heartbeat_file(hb_path)
+
     try:
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     except BaseException:
-        # Best-effort emergency checkpoint on failures. (Hangs are handled by watchdogs.)
         _emergency_save(runner, effective_run_dir, tag="exception")
         raise
 
-    # close the simulator
     env.close()
 
 
 if __name__ == "__main__":
-    # run the main function
     main()
-    # close sim app
     simulation_app.close()

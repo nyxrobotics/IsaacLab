@@ -16,18 +16,9 @@ from isaaclab.app import AppLauncher
 # SAFETY PATCH 1: Clamp policy.log_std after every PPO.update
 #   + warn when invalid values are detected
 # =====================================================================
-import multiprocessing as mp
-mp.set_start_method("spawn", force=True)
-
 import torch
-torch._dynamo.disable()
-torch.backends.cuda.matmul.allow_tf32 = False
-torch.backends.cudnn.allow_tf32 = False
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = True
 
 import os
-import torch
 from rsl_rl.algorithms.ppo import PPO
 
 # =====================================================================
@@ -176,8 +167,6 @@ def _safe_update_distribution(self, obs):
 
 # Patch ActorCritic._update_distribution
 ActorCritic._update_distribution = _safe_update_distribution
-# =====================================================================
-
 
 # local imports
 import cli_args  # isort: skip
@@ -197,14 +186,31 @@ parser.add_argument(
 )
 
 parser.add_argument("--run_dir", type=str, default=None, help="Fixed directory for logs/checkpoints (reused across restarts).")
-parser.add_argument("--auto_resume", action="store_true", default=True, help="Automatically resume from the latest checkpoint found in run_dir.")
+parser.add_argument("--auto_resume", action="store_true", default=False, help="Automatically resume from the latest checkpoint found in run_dir.")
 parser.add_argument("--heartbeat_path", type=str, default=None, help="Path where rank0 writes a heartbeat timestamp during training.")
-parser.add_argument("--hang_timeout_s", type=int, default=30, help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit.")
+parser.add_argument("--hang_timeout_s", type=int, default=None, help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit. Default: TORCH_NCCL_TIMEOUT (or 180 if unset).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+# ---------------------------------------------------------------------
+# NCCL timeout / watchdog timeout synchronization
+#   - Default watchdog timeout follows TORCH_NCCL_TIMEOUT (if set)
+#   - If user specifies --hang_timeout_s, we also set TORCH_NCCL_TIMEOUT
+#     to the same value so collective timeouts happen within ~that window.
+# ---------------------------------------------------------------------
+_env_torch_nccl_timeout = os.environ.get("TORCH_NCCL_TIMEOUT", "")
+try:
+    _env_torch_nccl_timeout_s = int(_env_torch_nccl_timeout) if _env_torch_nccl_timeout else 180
+except Exception:
+    _env_torch_nccl_timeout_s = 180
+
+if args_cli.hang_timeout_s is None:
+    args_cli.hang_timeout_s = _env_torch_nccl_timeout_s
+else:
+    os.environ["TORCH_NCCL_TIMEOUT"] = str(int(args_cli.hang_timeout_s))
+
 
 # =====================================================================
 # WATCHDOG / AUTO-RESUME utilities
@@ -295,9 +301,7 @@ def _start_hang_watchdog(
 ) -> None:
     if timeout_s <= 0:
         return
-
-    # In distributed (torchrun) mode, only rank0 should run the watchdog.
-    # If a non-zero rank self-exits mid-collective, it can leave NCCL in a bad state.
+    # In distributed (torchrun) mode: only rank0 should run this watchdog.
     if distributed and (not _is_rank0()):
         return
 
@@ -319,6 +323,12 @@ def _start_hang_watchdog(
                 except Exception:
                     runner = None
                 _emergency_save(runner, run_dir, tag="hang")
+                # Try to terminate the whole process group so other ranks don't remain stuck in NCCL.
+                try:
+                    os.killpg(os.getpgid(0), signal.SIGTERM)
+                except Exception:
+                    pass
+                time.sleep(2)
                 os._exit(1)
             if heartbeat_path and _is_rank0():
                 _write_heartbeat_file(heartbeat_path)

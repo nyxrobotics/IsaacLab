@@ -30,11 +30,33 @@ import os
 import torch
 from rsl_rl.algorithms.ppo import PPO
 
+# =====================================================================
+# HEARTBEAT (defined early so safety patches can use it)
+# =====================================================================
+import time as _time
+_LAST_HEARTBEAT_TIME = _time.time()
+_LAST_HEARTBEAT_TAG = "startup"
+
+def _touch_heartbeat(tag: str) -> None:
+    global _LAST_HEARTBEAT_TIME, _LAST_HEARTBEAT_TAG
+    _LAST_HEARTBEAT_TIME = _time.time()
+    _LAST_HEARTBEAT_TAG = tag
+
+def _get_heartbeat_age_s() -> float:
+    return _time.time() - _LAST_HEARTBEAT_TIME
+
+
 _original_ppo_update = PPO.update
 
 def _safe_ppo_update(self, *args, **kwargs):
     # Run original update
     out = _original_ppo_update(self, *args, **kwargs)
+
+    # progress heartbeat: if PPO.update runs, training is still making progress
+    _touch_heartbeat("ppo_update")
+    hb_path = os.environ.get("ISAACLAB_HEARTBEAT_PATH")
+    if hb_path and _is_rank0():
+        _write_heartbeat_file(hb_path)
 
     # safety guard for log_std
     with torch.no_grad():
@@ -71,6 +93,7 @@ def _safe_ppo_update(self, *args, **kwargs):
 
 # Patch PPO.update
 PPO.update = _safe_ppo_update
+print("[INFO] Patched rsl_rl PPO.update with log_std clamp + heartbeat", flush=True)
 
 # =====================================================================
 # SAFETY PATCH 2:
@@ -327,11 +350,113 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
+
+parser.add_argument("--run_dir", type=str, default=None, help="Fixed directory for logs/checkpoints (reused across restarts).")
+parser.add_argument("--auto_resume", action="store_true", default=False, help="Automatically resume from the latest checkpoint found in run_dir.")
+parser.add_argument("--heartbeat_path", type=str, default=None, help="Path where rank0 writes a heartbeat timestamp during training.")
+parser.add_argument("--hang_timeout_s", type=int, default=180, help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+
+# =====================================================================
+# WATCHDOG / AUTO-RESUME utilities
+# =====================================================================
+import time
+import threading
+import faulthandler
+import traceback
+from pathlib import Path
+
+faulthandler.enable(all_threads=True)
+
+def _is_rank0() -> bool:
+    return int(os.environ.get("RANK", "0")) == 0
+
+def _write_heartbeat_file(path: str) -> None:
+    # Keep this as small/robust as possible.
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(time.time()))
+    except Exception:
+        # Never crash training due to heartbeat IO.
+        pass
+
+def _find_latest_checkpoint(run_dir: str) -> str | None:
+    # Pick the most recently modified checkpoint-like file.
+    exts = (".pt", ".pth", ".ckpt")
+    candidates: list[Path] = []
+    root = Path(run_dir)
+    if not root.exists():
+        return None
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix in exts:
+            candidates.append(p)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return str(candidates[0])
+
+def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
+    if run_dir is None or runner is None:
+        return
+    if not _is_rank0():
+        return
+    try:
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out = str(Path(run_dir) / f"emergency_{tag}_{ts}.pt")
+        if hasattr(runner, "save"):
+            runner.save(out)
+        elif hasattr(runner, "save_checkpoint"):
+            runner.save_checkpoint(out)
+        else:
+            print("[WARN] Runner has no save/save_checkpoint. Skipping emergency checkpoint.", flush=True)
+            return
+        print(f"[INFO] Emergency checkpoint saved: {out}", flush=True)
+    except Exception:
+        print("[ERROR] Emergency checkpoint failed.", flush=True)
+        traceback.print_exc()
+
+def _start_hang_watchdog(get_runner_fn, run_dir: str | None, heartbeat_path: str | None, timeout_s: int) -> None:
+    # Best-effort watchdog: if Python threads can still run, try to save and exit.
+    # If the process is fully wedged (e.g., stuck in native code while holding the GIL),
+    # an external watchdog must still kill/restart the process.
+    if timeout_s <= 0:
+        return
+
+    def _worker():
+        while True:
+            time.sleep(5)
+            dt = _get_heartbeat_age_s()
+            if dt > timeout_s:
+                print(
+                    f"[ERROR] Hang suspected: no heartbeat for {dt:.1f}s (last_tag={_LAST_HEARTBEAT_TAG}).",
+                    flush=True,
+                )
+                try:
+                    faulthandler.dump_traceback(all_threads=True)
+                except Exception:
+                    pass
+                # Try an emergency checkpoint (best effort).
+                try:
+                    runner = get_runner_fn()
+                except Exception:
+                    runner = None
+                _emergency_save(runner, run_dir, tag="hang")
+                # Always exit so an external supervisor can restart.
+                os._exit(1)
+            # Update heartbeat file even if we only touched in-memory markers.
+            if heartbeat_path and _is_rank0():
+                _write_heartbeat_file(heartbeat_path)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    print(f"[INFO] Hang watchdog enabled (timeout_s={timeout_s}).", flush=True)
+
 
 # always enable cameras to record video
 if args_cli.video:
@@ -400,6 +525,12 @@ torch.backends.cudnn.benchmark = False
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
+
+    # Export paths for any patched components that run outside main() scope.
+    if args_cli.heartbeat_path is not None:
+        os.environ["ISAACLAB_HEARTBEAT_PATH"] = args_cli.heartbeat_path
+    if args_cli.run_dir is not None:
+        os.environ["ISAACLAB_RUN_DIR"] = os.path.abspath(args_cli.run_dir)
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
@@ -434,6 +565,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
 
+    # If run_dir is provided, reuse it across restarts (no timestamp subdir).
+    if args_cli.run_dir is not None:
+        log_dir = os.path.abspath(args_cli.run_dir)
+        log_root_path = log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        print(f"[INFO] Using fixed run_dir for logs/checkpoints: {log_dir}", flush=True)
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -462,6 +600,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+
+    # Start an in-process hang watchdog (best effort) and update an external heartbeat file.
+    runner_holder = {"runner": runner}
+    _start_hang_watchdog(lambda: runner_holder.get("runner"), args_cli.run_dir, args_cli.heartbeat_path, args_cli.hang_timeout_s)
+
+    # Auto-resume from the latest checkpoint in run_dir, if requested.
+    if args_cli.auto_resume and args_cli.run_dir is not None:
+        ckpt = _find_latest_checkpoint(args_cli.run_dir)
+        if ckpt is not None:
+            if _is_rank0():
+                print(f"[INFO] Auto-resume: loading latest checkpoint: {ckpt}", flush=True)
+            runner.load(ckpt)
+        else:
+            if _is_rank0():
+                print(f"[INFO] Auto-resume: no checkpoint found in run_dir={args_cli.run_dir}", flush=True)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
@@ -475,9 +628,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
-
     # run training
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    _touch_heartbeat("before_learn")
+    hb_path = os.environ.get("ISAACLAB_HEARTBEAT_PATH")
+    if hb_path and _is_rank0():
+        _write_heartbeat_file(hb_path)
+    try:
+        runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    except BaseException:
+        # Best-effort emergency checkpoint on failures. (Hangs are handled by watchdogs.)
+        _emergency_save(runner, args_cli.run_dir, tag="exception")
+        raise
 
     # close the simulator
     env.close()

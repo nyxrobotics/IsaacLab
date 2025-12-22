@@ -60,7 +60,7 @@ class KurokoRewards(RewardsCfg):
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=20.0,
+        weight=100.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -227,9 +227,19 @@ class KurokoRewards(RewardsCfg):
                 "elbow_r_rear"])},
     )
 
+    # joint_acc_elbows = RewTerm(
+    #     func=mdp.joint_acc_l2,
+    #     weight=-1e-7,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+    #             "elbow_l_front",
+    #             "elbow_l_rear",
+    #             "elbow_r_front",
+    #             "elbow_r_rear"])},
+    # )
+
     joint_deviation_ankle_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.01,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},

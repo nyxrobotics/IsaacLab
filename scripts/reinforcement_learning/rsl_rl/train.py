@@ -52,7 +52,7 @@ parser.add_argument(
 parser.add_argument(
     "--hang_timeout_s",
     type=int,
-    default=0,
+    default=30,
     help="If >0 and no progress heartbeat for this many seconds (after iter>=1), save emergency checkpoint and exit.",
 )
 parser.add_argument(
@@ -70,8 +70,8 @@ parser.add_argument(
 parser.add_argument(
     "--nccl_timeout_s",
     type=int,
-    default=60,
-    help="Timeout (seconds) for NCCL collectives / process group watchdog (best-effort via env vars).",
+    default=None,  # default follows hang_timeout_s
+    help="Timeout (seconds) for NCCL collectives / process group watchdog (best-effort via env vars). Default: hang_timeout_s.",
 )
 
 # append RSL-RL cli arguments
@@ -84,6 +84,9 @@ args_cli, hydra_args = parser.parse_known_args()
 # Apply NCCL timeout env vars BEFORE launching the app / importing torch.
 # ---------------------------------------------------------------------
 import os
+
+if args_cli.nccl_timeout_s is None:
+    args_cli.nccl_timeout_s = int(args_cli.hang_timeout_s)
 
 # Best-effort: enable blocking wait + async error handling so timeouts surface.
 os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")
@@ -276,6 +279,7 @@ def _start_hang_watchdog(get_runner_fn, out_dir: str | None, startup_timeout_s: 
                 _emergency_save(runner, out_dir, tag="hang")
 
                 # Exit non-zero so an external supervisor (bash loop) can restart.
+                # Also terminate the whole process group from rank0 so ctrl+c / SIGTERM doesn't strand ranks.
                 try:
                     os.killpg(os.getpgid(0), signal.SIGTERM)
                 except Exception:
@@ -393,10 +397,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     runner_holder = {"runner": runner}
 
+    # handle SIGTERM/SIGINT: rank0 terminates the whole process group
     def _handle_signal(sig: int, _frame) -> None:
         if _is_rank0():
             print(f"[WARN] Received signal {sig}. Attempting emergency checkpoint then exiting.", flush=True)
         _emergency_save(runner_holder.get("runner"), effective_run_dir, tag=f"signal{sig}")
+
+        if _is_rank0():
+            # ensure all ranks get terminated so bash loop / ctrl+c doesn't stall
+            try:
+                os.killpg(os.getpgid(0), signal.SIGTERM)
+            except Exception:
+                pass
+
         os._exit(128 + int(sig))
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -430,16 +443,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
 
-    # Keep TOTAL iterations fixed across restarts
-    def _get_current_iter() -> int:
-        it = getattr(runner, "current_learning_iteration", 0)
+    # -----------------------------------------------------------------
+    # Keep TOTAL iterations fixed across restarts:
+    #   total_target = agent_cfg.max_iterations (after CLI override)
+    #   already_done = runner.current_learning_iteration (after resume)
+    #   remaining    = max(0, total_target - already_done)
+    # -----------------------------------------------------------------
+    def _get_current_iter(r) -> int:
+        it = getattr(r, "current_learning_iteration", 0)
         try:
             return int(it)
         except Exception:
             return 0
 
     total_target = int(agent_cfg.max_iterations)
-    already_done = _get_current_iter()
+    already_done = _get_current_iter(runner)
     remaining = max(0, total_target - already_done)
 
     if _is_rank0():
@@ -448,6 +466,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             flush=True,
         )
 
+    # run training (wrap so we can emergency-save on unexpected exceptions)
     _touch_heartbeat("before_learn")
     try:
         if remaining > 0:

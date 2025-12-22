@@ -49,6 +49,13 @@ def _get_heartbeat_age_s() -> float:
 _original_ppo_update = PPO.update
 
 def _safe_ppo_update(self, *args, **kwargs):
+    # progress heartbeat: entering PPO.update means the training loop is alive.
+    # (If PPO.update later hangs, this will still allow longer timeouts without false positives.)
+    _touch_heartbeat("ppo_update_enter")
+    hb_path = os.environ.get("ISAACLAB_HEARTBEAT_PATH")
+    if hb_path and _is_rank0():
+        _write_heartbeat_file(hb_path)
+
     # Run original update
     out = _original_ppo_update(self, *args, **kwargs)
 
@@ -190,9 +197,9 @@ parser.add_argument(
 )
 
 parser.add_argument("--run_dir", type=str, default=None, help="Fixed directory for logs/checkpoints (reused across restarts).")
-parser.add_argument("--auto_resume", action="store_true", default=False, help="Automatically resume from the latest checkpoint found in run_dir.")
+parser.add_argument("--auto_resume", action="store_true", default=True, help="Automatically resume from the latest checkpoint found in run_dir.")
 parser.add_argument("--heartbeat_path", type=str, default=None, help="Path where rank0 writes a heartbeat timestamp during training.")
-parser.add_argument("--hang_timeout_s", type=int, default=180, help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit.")
+parser.add_argument("--hang_timeout_s", type=int, default=30, help="If no heartbeat update for this many seconds, attempt emergency checkpoint and exit.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -279,8 +286,19 @@ def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
         print("[ERROR] Emergency checkpoint failed.", flush=True)
         traceback.print_exc()
 
-def _start_hang_watchdog(get_runner_fn, run_dir: str | None, heartbeat_path: str | None, timeout_s: int) -> None:
+def _start_hang_watchdog(
+    get_runner_fn,
+    run_dir: str | None,
+    heartbeat_path: str | None,
+    timeout_s: int,
+    distributed: bool = False,
+) -> None:
     if timeout_s <= 0:
+        return
+
+    # In distributed (torchrun) mode, only rank0 should run the watchdog.
+    # If a non-zero rank self-exits mid-collective, it can leave NCCL in a bad state.
+    if distributed and (not _is_rank0()):
         return
 
     def _worker():
@@ -301,18 +319,7 @@ def _start_hang_watchdog(get_runner_fn, run_dir: str | None, heartbeat_path: str
                 except Exception:
                     runner = None
                 _emergency_save(runner, run_dir, tag="hang")
-                # Terminate the whole job so an external supervisor can restart.
-                # In distributed runs, exiting only one rank can strand others in NCCL.
-                if _is_rank0():
-                    try:
-                        os.killpg(os.getpgid(0), signal.SIGTERM)
-                    except Exception:
-                        pass
-                    time.sleep(2)
-                    os._exit(1)
-                else:
-                    # Non-rank0: wait for rank0/launcher to terminate the job.
-                    pass
+                os._exit(1)
             if heartbeat_path and _is_rank0():
                 _write_heartbeat_file(heartbeat_path)
 
@@ -466,7 +473,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    _start_hang_watchdog(lambda: runner_holder.get("runner"), effective_run_dir, args_cli.heartbeat_path, args_cli.hang_timeout_s)
+    _start_hang_watchdog(
+        lambda: runner_holder.get("runner"),
+        effective_run_dir,
+        args_cli.heartbeat_path,
+        args_cli.hang_timeout_s,
+        distributed=args_cli.distributed,
+    )
 
     if args_cli.auto_resume:
         ckpt = _find_latest_checkpoint(effective_run_dir)

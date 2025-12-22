@@ -211,6 +211,58 @@ if args_cli.hang_timeout_s is None:
 else:
     os.environ["TORCH_NCCL_TIMEOUT"] = str(int(args_cli.hang_timeout_s))
 
+# ---------------------------------------------------------------------
+# IMPORTANT: TORCH_NCCL_TIMEOUT alone does not reliably change the timeout
+# used by ProcessGroupNCCL collectives.
+#
+# The timeout shown in errors like:
+#   Timeout(ms)=600000
+# comes from torch.distributed.init_process_group(timeout=...).
+# IsaacLab/torchrun may call init_process_group without passing `timeout`,
+# which leaves the default (10 minutes).
+#
+# To actually shorten ALLREDUCE (and other collective) timeouts, we patch
+# torch.distributed.init_process_group to inject a timeout derived from
+# TORCH_NCCL_TIMEOUT (seconds) when none is provided.
+# ---------------------------------------------------------------------
+import datetime as _datetime
+try:
+    import torch.distributed as _dist
+
+    _orig_init_pg = _dist.init_process_group
+    _patched_pg_printed = False
+
+    def _init_process_group_with_timeout(*pg_args, **pg_kwargs):
+        global _patched_pg_printed
+        # Prefer the env we manage above.
+        try:
+            _sec = int(os.environ.get("TORCH_NCCL_TIMEOUT", "600"))
+        except Exception:
+            _sec = 600
+
+        # If caller didn't specify a timeout, inject one.
+        if pg_kwargs.get("timeout", None) is None:
+            pg_kwargs["timeout"] = _datetime.timedelta(seconds=_sec)
+            if not _patched_pg_printed:
+                print(
+                    f"[INFO] Patched torch.distributed.init_process_group timeout to {_sec}s (affects ProcessGroupNCCL collectives).",
+                    flush=True,
+                )
+                _patched_pg_printed = True
+
+        return _orig_init_pg(*pg_args, **pg_kwargs)
+
+    _dist.init_process_group = _init_process_group_with_timeout
+
+    # These envs help NCCL fail fast / surface errors earlier.
+    os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+    os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")
+    # NCCL_TIMEOUT is in seconds (applies to NCCL internal watchdog, not PG timeout).
+    os.environ.setdefault("NCCL_TIMEOUT", os.environ.get("TORCH_NCCL_TIMEOUT", "600"))
+except Exception:
+    # Never crash due to distributed patching.
+    pass
+
 
 # =====================================================================
 # WATCHDOG / AUTO-RESUME utilities

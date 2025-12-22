@@ -298,19 +298,36 @@ except Exception:
 faulthandler.enable(all_threads=True)
 
 
-def _find_latest_checkpoint(run_dir: str) -> str | None:
+def _list_checkpoints_sorted(run_dir: str) -> list[str]:
+    """Return checkpoint-like files in run_dir sorted by mtime (newest first)."""
     exts = (".pt", ".pth", ".ckpt")
-    candidates: list[Path] = []
     root = Path(run_dir)
     if not root.exists():
-        return None
+        return []
+    candidates: list[Path] = []
     for p in root.rglob("*"):
         if p.is_file() and p.suffix in exts:
             candidates.append(p)
-    if not candidates:
-        return None
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    return str(candidates[0])
+    return [str(p) for p in candidates]
+
+
+def _find_latest_checkpoint(run_dir: str) -> str | None:
+    ckpts = _list_checkpoints_sorted(run_dir)
+    return ckpts[0] if ckpts else None
+
+
+def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
+    """Try loading checkpoints in order until one succeeds."""
+    if runner is None:
+        return None
+    for p in checkpoint_paths:
+        try:
+            runner.load(p)
+            return p
+        except Exception as exc:
+            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
+    return None
 
 
 def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | None]:
@@ -599,21 +616,62 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
+    
     if args_cli.auto_resume:
-        ckpt = _find_latest_checkpoint(effective_run_dir)
-        if ckpt is not None:
+        ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
+        if ckpt_candidates:
             if _is_rank0():
-                print(f"[INFO] Auto-resume: loading latest checkpoint: {ckpt}", flush=True)
-            runner.load(ckpt)
+                print(
+                    f"[INFO] Auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
+                    flush=True,
+                )
+            loaded = _try_load_checkpoints(runner, ckpt_candidates)
+            if loaded is not None:
+                if _is_rank0():
+                    print(f"[INFO] Auto-resume: loaded checkpoint: {loaded}", flush=True)
+            else:
+                if _is_rank0():
+                    print(
+                        f"[WARN] Auto-resume: no usable checkpoint found in run_dir={effective_run_dir}. Starting from scratch.",
+                        flush=True,
+                    )
         else:
             if _is_rank0():
                 print(f"[INFO] Auto-resume: no checkpoint found in run_dir={effective_run_dir}", flush=True)
 
-    runner.add_git_repo_to_log(__file__)
+        runner.add_git_repo_to_log(__file__)
 
+        
     if resume_path is not None:
-        print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
-        runner.load(resume_path)
+        if _is_rank0():
+            print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
+        try:
+            runner.load(resume_path)
+            if _is_rank0():
+                print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
+        except Exception as exc:
+            if _is_rank0():
+                print(
+                    f"[WARN] Failed to load requested checkpoint: {resume_path} "
+                    f"({type(exc).__name__}: {exc}).",
+                    flush=True,
+                )
+            # Optional fallback: walk back through run_dir checkpoints if enabled
+            if args_cli.auto_resume:
+                ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
+                if ckpt_candidates:
+                    if _is_rank0():
+                        print(
+                            f"[INFO] Fallback auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
+                            flush=True,
+                        )
+                    loaded = _try_load_checkpoints(runner, ckpt_candidates)
+                    if loaded is not None:
+                        if _is_rank0():
+                            print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
+                    else:
+                        if _is_rank0():
+                            print("[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.", flush=True)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

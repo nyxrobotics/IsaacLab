@@ -400,6 +400,30 @@ def _find_latest_checkpoint(run_dir: str) -> str | None:
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return str(candidates[0])
 
+def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | None]:
+    """Search for the most recently modified checkpoint under root_dir.
+    Returns (ckpt_path, ckpt_parent_dir)."""
+    root = Path(root_dir)
+    if not root.exists():
+        return None, None
+    patterns = ["**/*.pt", "**/*.pth", "**/*.ckpt"]
+    files: list[Path] = []
+    for pat in patterns:
+        files.extend(root.glob(pat))
+    files = [p for p in files if p.is_file()]
+    if not files:
+        return None, None
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    ckpt = files[0]
+    return str(ckpt), str(ckpt.parent)
+
+def _maybe_reuse_existing_run_dir(default_log_dir: str) -> tuple[str | None, str | None]:
+    """Try to reuse an existing run dir when --auto_resume is set without --run_dir.
+    We search under the parent directory of default_log_dir and pick the newest checkpoint."""
+    parent = str(Path(default_log_dir).parent)
+    return _find_latest_checkpoint_in_tree(parent)
+
+
 def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
     if run_dir is None or runner is None:
         return
@@ -564,13 +588,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
-
     # If run_dir is provided, reuse it across restarts (no timestamp subdir).
+    # If run_dir is not provided but --auto_resume is set, try to reuse the most recent run dir
+    # under the same experiment parent directory so restarts keep writing to the same place.
     if args_cli.run_dir is not None:
         log_dir = os.path.abspath(args_cli.run_dir)
         log_root_path = log_dir
         os.makedirs(log_dir, exist_ok=True)
         print(f"[INFO] Using fixed run_dir for logs/checkpoints: {log_dir}", flush=True)
+    elif args_cli.auto_resume:
+        ckpt, ckpt_parent = _maybe_reuse_existing_run_dir(log_dir)
+        if ckpt_parent is not None:
+            if _is_rank0():
+                print(f"[INFO] Auto-resume (no --run_dir): reusing existing run_dir={ckpt_parent}", flush=True)
+            log_dir = ckpt_parent
+            log_root_path = ckpt_parent
+
+    effective_run_dir = args_cli.run_dir if args_cli.run_dir is not None else log_dir
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -603,18 +637,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Start an in-process hang watchdog (best effort) and update an external heartbeat file.
     runner_holder = {"runner": runner}
-    _start_hang_watchdog(lambda: runner_holder.get("runner"), args_cli.run_dir, args_cli.heartbeat_path, args_cli.hang_timeout_s)
+    _start_hang_watchdog(lambda: runner_holder.get("runner"), effective_run_dir, args_cli.heartbeat_path, args_cli.hang_timeout_s)
 
     # Auto-resume from the latest checkpoint in run_dir, if requested.
-    if args_cli.auto_resume and args_cli.run_dir is not None:
-        ckpt = _find_latest_checkpoint(args_cli.run_dir)
+    if args_cli.auto_resume and effective_run_dir is not None:
+        ckpt = _find_latest_checkpoint(effective_run_dir)
         if ckpt is not None:
             if _is_rank0():
                 print(f"[INFO] Auto-resume: loading latest checkpoint: {ckpt}", flush=True)
             runner.load(ckpt)
         else:
             if _is_rank0():
-                print(f"[INFO] Auto-resume: no checkpoint found in run_dir={args_cli.run_dir}", flush=True)
+                print(f"[INFO] Auto-resume: no checkpoint found in run_dir={effective_run_dir}", flush=True)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
@@ -637,7 +671,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     except BaseException:
         # Best-effort emergency checkpoint on failures. (Hangs are handled by watchdogs.)
-        _emergency_save(runner, args_cli.run_dir, tag="exception")
+        _emergency_save(runner, effective_run_dir, tag="exception")
         raise
 
     # close the simulator

@@ -298,36 +298,19 @@ except Exception:
 faulthandler.enable(all_threads=True)
 
 
-def _list_checkpoints_sorted(run_dir: str) -> list[str]:
-    """Return checkpoint-like files in run_dir sorted by mtime (newest first)."""
+def _find_latest_checkpoint(run_dir: str) -> str | None:
     exts = (".pt", ".pth", ".ckpt")
+    candidates: list[Path] = []
     root = Path(run_dir)
     if not root.exists():
-        return []
-    candidates: list[Path] = []
+        return None
     for p in root.rglob("*"):
         if p.is_file() and p.suffix in exts:
             candidates.append(p)
-    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    return [str(p) for p in candidates]
-
-
-def _find_latest_checkpoint(run_dir: str) -> str | None:
-    ckpts = _list_checkpoints_sorted(run_dir)
-    return ckpts[0] if ckpts else None
-
-
-def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
-    """Try loading checkpoints in order until one succeeds."""
-    if runner is None:
+    if not candidates:
         return None
-    for p in checkpoint_paths:
-        try:
-            runner.load(p)
-            return p
-        except Exception as exc:
-            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
-    return None
+    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return str(candidates[0])
 
 
 def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | None]:
@@ -371,6 +354,35 @@ def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
     except Exception:
         print("[ERROR] Emergency checkpoint failed.", flush=True)
         traceback.print_exc()
+
+
+def _terminate_process_group_and_exit(exit_code: int = 1) -> None:
+    """Terminate the whole process group (best-effort) and exit immediately."""
+    try:
+        os.killpg(os.getpgid(0), signal.SIGTERM)
+    except Exception:
+        pass
+    time.sleep(1)
+    os._exit(int(exit_code))
+
+
+def _delete_broken_checkpoint_and_exit(path: str, exc: BaseException) -> None:
+    """Delete a broken checkpoint (rank0 only) and exit. This forces a clean restart."""
+    if _is_rank0():
+        try:
+            p = Path(path)
+            if p.exists():
+                p.unlink()
+                print(f"[INFO] Removed broken checkpoint: {path}", flush=True)
+        except Exception as remove_exc:
+            print(f"[WARN] Failed to remove broken checkpoint: {path} ({type(remove_exc).__name__}: {remove_exc})", flush=True)
+
+        print(
+            f"[ERROR] Checkpoint load failed: {path} ({type(exc).__name__}: {exc}). Exiting for clean restart.",
+            flush=True,
+        )
+
+    _terminate_process_group_and_exit(exit_code=1)
 
 
 def _start_hang_watchdog(
@@ -616,62 +628,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
-    
     if args_cli.auto_resume:
-        ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
-        if ckpt_candidates:
+        ckpt = _find_latest_checkpoint(effective_run_dir)
+        if ckpt is not None:
             if _is_rank0():
-                print(
-                    f"[INFO] Auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
-                    flush=True,
-                )
-            loaded = _try_load_checkpoints(runner, ckpt_candidates)
-            if loaded is not None:
-                if _is_rank0():
-                    print(f"[INFO] Auto-resume: loaded checkpoint: {loaded}", flush=True)
-            else:
-                if _is_rank0():
-                    print(
-                        f"[WARN] Auto-resume: no usable checkpoint found in run_dir={effective_run_dir}. Starting from scratch.",
-                        flush=True,
-                    )
+                print(f"[INFO] Auto-resume: loading latest checkpoint: {ckpt}", flush=True)
+            try:
+                runner.load(ckpt)
+            except BaseException as exc:
+                _delete_broken_checkpoint_and_exit(ckpt, exc)
         else:
             if _is_rank0():
                 print(f"[INFO] Auto-resume: no checkpoint found in run_dir={effective_run_dir}", flush=True)
 
-        runner.add_git_repo_to_log(__file__)
+    runner.add_git_repo_to_log(__file__)
 
-        
     if resume_path is not None:
         if _is_rank0():
             print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
         try:
             runner.load(resume_path)
-            if _is_rank0():
-                print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
-        except Exception as exc:
-            if _is_rank0():
-                print(
-                    f"[WARN] Failed to load requested checkpoint: {resume_path} "
-                    f"({type(exc).__name__}: {exc}).",
-                    flush=True,
-                )
-            # Optional fallback: walk back through run_dir checkpoints if enabled
-            if args_cli.auto_resume:
-                ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
-                if ckpt_candidates:
-                    if _is_rank0():
-                        print(
-                            f"[INFO] Fallback auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
-                            flush=True,
-                        )
-                    loaded = _try_load_checkpoints(runner, ckpt_candidates)
-                    if loaded is not None:
-                        if _is_rank0():
-                            print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
-                    else:
-                        if _is_rank0():
-                            print("[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.", flush=True)
+        except BaseException as exc:
+            _delete_broken_checkpoint_and_exit(resume_path, exc)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

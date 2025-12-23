@@ -3,7 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to train RL agent with RSL-RL."""
+"""Script to train RL agent with RSL-RL.
+
+This file contains small safety/robustness patches to improve stability in long-running,
+distributed training (auto-resume, watchdog, and numerical guards).
+"""
 
 """Launch Isaac Sim Simulator first."""
 
@@ -19,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+import types as _types
 
 import torch
 import torch.nn.functional as Functional
@@ -50,150 +55,170 @@ def _get_heartbeat_age_s() -> float:
 def _is_rank0() -> bool:
     return int(os.environ.get("RANK", "0")) == 0
 
-# ================================
-# PSAFETY PATCH 0: make Normal(scale) always valid (scale >= 0)
-# This prevents hard-crashes like:
-#   RuntimeError: normal expects all elements of std >= 0.0
-# Root cause is typically an unconstrained or corrupted std parameter in the policy.
-# ================================
-import torch.distributions.normal as _dist_normal
+
+# =====================================================================
+# SAFETY PATCH 0: make Normal(scale) always valid (finite, >= eps)
+#   Prevents hard-crashes like:
+#     RuntimeError: normal expects all elements of std >= 0.0
+# =====================================================================
+import torch.distributions.normal as _dist_normal  # noqa: E402
 
 _ORIG_NORMAL_INIT = _dist_normal.Normal.__init__
 _WARNED_NEG_STD = False
 
+
 def _safe_normal_init(self, loc, scale, validate_args=None, *args, **kwargs):
     global _WARNED_NEG_STD
 
-    # Convert Python scalars too
+    eps = 1e-3
+
     if torch.is_tensor(scale):
-        # Replace NaN/Inf first to avoid propagating invalid values
         scale_clean = torch.nan_to_num(scale, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Detect negative values once and print diagnostics
         if (not _WARNED_NEG_STD) and torch.any(scale_clean < 0):
             try:
                 mn = float(scale_clean.min().detach().cpu())
                 mx = float(scale_clean.max().detach().cpu())
-                print(f"[WARN] Normal(scale) had negative values. min={mn}, max={mx}. "
-                      f"Applying abs()+clamp_min().", flush=True)
+                print(
+                    f"[WARN] Normal(scale) had negative values. min={mn}, max={mx}. Applying abs()+clamp_min().",
+                    flush=True,
+                )
             except Exception:
                 print("[WARN] Normal(scale) had negative values. Applying abs()+clamp_min().", flush=True)
             _WARNED_NEG_STD = True
 
-        # Force valid scale
-        scale_safe = scale_clean.abs().clamp_min(1e-6)
+        scale_safe = scale_clean.abs().clamp_min(eps)
     else:
-        # Python float/int
         try:
             scale_val = float(scale)
         except Exception:
             scale_val = 0.0
-        scale_safe = max(abs(scale_val), 1e-6)
+        scale_safe = max(abs(scale_val), eps)
 
     return _ORIG_NORMAL_INIT(self, loc, scale_safe, validate_args=validate_args)
 
-# Apply monkey patch once
+
 _dist_normal.Normal.__init__ = _safe_normal_init
-print("[INFO] Patched torch.distributions.Normal to enforce scale >= 1e-6.", flush=True)
+print("[INFO] Patched torch.distributions.Normal to enforce scale >= 1e-3.", flush=True)
+
 
 # =====================================================================
-# SAFETY PATCH 1: Clamp policy.log_std after every PPO.update
-#   + warn when invalid values are detected
+# SAFETY PATCH 1: PPO.update guard
+#   - heartbeat updates
+#   - detect NaN/Inf in PPO.update outputs and skip contaminating the run
+#   - clamp policy.log_std to a safe range
 # =====================================================================
 _original_ppo_update = PPO.update
+
+
+def _tensor_has_bad(x) -> bool:
+    if x is None:
+        return False
+    if torch.is_tensor(x):
+        return (not torch.isfinite(x).all()).item()
+    return False
 
 
 def _safe_ppo_update(self, *args, **kwargs):
     global _FIRST_ITERATION_DONE
 
-    # Progress heartbeat: entering PPO.update means the training loop is alive.
     _touch_heartbeat("ppo_update_enter")
 
-    # Run original update
     out = _original_ppo_update(self, *args, **kwargs)
 
-    # Progress heartbeat: PPO.update finished successfully
+    # Detect invalid update outputs early.
+    bad = False
+    if isinstance(out, (tuple, list)):
+        for v in out:
+            bad = bad or _tensor_has_bad(v)
+    elif isinstance(out, dict):
+        for v in out.values():
+            bad = bad or _tensor_has_bad(v)
+    elif torch.is_tensor(out):
+        bad = _tensor_has_bad(out)
+
+    if bad:
+        print("[ERROR] Detected NaN/Inf in PPO.update outputs. Skipping this update.", flush=True)
+
+        # Best-effort: clear gradients so the next step starts cleanly.
+        try:
+            for opt_name in ("optimizer", "actor_optimizer", "critic_optimizer"):
+                opt = getattr(self, opt_name, None)
+                if opt is not None and hasattr(opt, "zero_grad"):
+                    opt.zero_grad(set_to_none=True)
+        except Exception:
+            pass
+
+        # Best-effort: reduce LR to recover from a blow-up.
+        try:
+            for opt_name in ("optimizer", "actor_optimizer", "critic_optimizer"):
+                opt = getattr(self, opt_name, None)
+                if opt is None:
+                    continue
+                for pg in opt.param_groups:
+                    pg["lr"] = float(pg.get("lr", 0.0)) * 0.5
+            print("[WARN] Halved optimizer learning rate(s) due to NaN/Inf.", flush=True)
+        except Exception:
+            pass
+
+        _touch_heartbeat("ppo_update_nan_skipped")
+        _FIRST_ITERATION_DONE = True
+        return out
+
     _touch_heartbeat("ppo_update")
     _FIRST_ITERATION_DONE = True
 
-    # Safety guard for log_std
+    # Clamp log_std so std = exp(log_std) stays sane.
     with torch.no_grad():
-        policy = self.policy
-        if hasattr(policy, "log_std"):
+        policy = getattr(self, "policy", None)
+        if policy is not None and hasattr(policy, "log_std"):
             log_std = policy.log_std.data
 
-            # Detect invalid values
             invalid_mask = ~torch.isfinite(log_std)
             if invalid_mask.any():
-                print(
-                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). "
-                    "They have been reset to 0.0.",
-                    flush=True,
-                )
+                print("[WARNING] Detected invalid policy.log_std (NaN/Inf). Reset to 0.0.", flush=True)
                 log_std[invalid_mask] = 0.0
 
-            # Detect values outside safe range
-            too_low = (log_std < -100.0)
-            too_high = (log_std > 100.0)
-            if too_low.any() or too_high.any():
-                print(
-                    "[WARNING] Detected policy.log_std outside safe range (-100, 100). "
-                    "Values have been clamped.",
-                    flush=True,
-                )
-
-            # Clamp range so std = exp(log_std) stays valid
             log_std.clamp_(min=-100.0, max=100.0)
-
-            # Write back
             policy.log_std.data.copy_(log_std)
 
     return out
 
 
-# Patch PPO.update
 PPO.update = _safe_ppo_update
-print("[INFO] Patched rsl_rl PPO.update with log_std clamp + in-memory heartbeat", flush=True)
+print("[INFO] Patched rsl_rl PPO.update with NaN/Inf guard + log_std clamp + heartbeat.", flush=True)
+
 
 # =====================================================================
 # SAFETY PATCH 2:
 #   Patch ActorCritic._update_distribution so Normal(mean, std) never
-#   receives negative/non-finite std.
+#   receives negative/non-finite std, and std keeps a minimum exploration.
 # =====================================================================
-
-
 def _safe_update_distribution(self, obs):
-    """Replacement for ActorCritic._update_distribution.
-
-    Handles both:
-      - state_dependent_std=True:
-          * noise_std_type == "scalar": std may be negative -> softplus + eps
-          * noise_std_type == "log": std = exp(log_std) (optionally clamp log_std)
-      - state_dependent_std=False:
-          * "scalar": parameter std might become invalid -> clamp
-          * "log": clamp log_std -> exp
-    """
     if getattr(self, "_std_guard_printed", False) is False:
         print(
-            "[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-6).",
+            "[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-3).",
             flush=True,
         )
         self._std_guard_printed = True
+
+    std_min = 1e-3
+    std_max = 1e3
 
     if self.state_dependent_std:
         mean_and_std = self.actor(obs)
 
         if self.noise_std_type == "scalar":
             mean, std = torch.unbind(mean_and_std, dim=-2)
-            std = Functional.softplus(std) + 1e-6
+            std = Functional.softplus(std) + std_min
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp(min=1e-6, max=1e6)
+            std = std.clamp(min=std_min, max=std_max)
 
         elif self.noise_std_type == "log":
             mean, log_std = torch.unbind(mean_and_std, dim=-2)
             log_std = torch.nan_to_num(log_std, nan=0.0, posinf=0.0, neginf=0.0)
             log_std = log_std.clamp(-100.0, 100.0)
-            std = torch.exp(log_std)
+            std = torch.exp(log_std).clamp(min=std_min, max=std_max)
 
         else:
             raise ValueError(
@@ -206,24 +231,23 @@ def _safe_update_distribution(self, obs):
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp(min=1e-6, max=1e6)
+            std = std.clamp(min=std_min, max=std_max)
 
         elif self.noise_std_type == "log":
             log_std = torch.nan_to_num(self.log_std, nan=0.0, posinf=0.0, neginf=0.0)
             log_std = log_std.clamp(-100.0, 100.0)
-            std = torch.exp(log_std).expand_as(mean)
+            std = torch.exp(log_std).expand_as(mean).clamp(min=std_min, max=std_max)
 
         else:
             raise ValueError(
                 f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'"
             )
 
-    # Create distribution (this must never throw)
     self.distribution = Normal(mean, std)
 
 
-# Patch ActorCritic._update_distribution
 ActorCritic._update_distribution = _safe_update_distribution
+
 
 # =====================================================================
 # SAFETY PATCH 3:
@@ -231,8 +255,6 @@ ActorCritic._update_distribution = _safe_update_distribution
 #   - Replace NaN/Inf with 0
 #   - Clamp to action_space bounds (or fallback to [-1, 1])
 # =====================================================================
-import types as _types
-
 def _sanitize_actions_for_env(env, actions: torch.Tensor) -> torch.Tensor:
     a = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -258,7 +280,7 @@ def _sanitize_actions_for_env(env, actions: torch.Tensor) -> torch.Tensor:
 
 
 # Local imports
-import cli_args  # isort: skip
+import cli_args  # isort: skip  # noqa: E402
 
 # =====================================================================
 # CLI args
@@ -307,9 +329,6 @@ args_cli, hydra_args = parser.parse_known_args()
 
 # ---------------------------------------------------------------------
 # NCCL timeout / watchdog timeout synchronization
-#   - Default watchdog timeout follows TORCH_NCCL_TIMEOUT (if set)
-#   - If user specifies --hang_timeout_s, we also set TORCH_NCCL_TIMEOUT
-#     to the same value so collective timeouts happen within ~that window.
 # ---------------------------------------------------------------------
 _env_torch_nccl_timeout = os.environ.get("TORCH_NCCL_TIMEOUT", "")
 try:
@@ -322,7 +341,6 @@ if args_cli.hang_timeout_s is None:
 else:
     os.environ["TORCH_NCCL_TIMEOUT"] = str(int(args_cli.hang_timeout_s))
 
-# Ensure startup_timeout_s is always at least hang_timeout_s unless explicitly set smaller.
 try:
     if args_cli.startup_timeout_s is None:
         args_cli.startup_timeout_s = max(int(args_cli.hang_timeout_s), 1800)
@@ -332,8 +350,7 @@ except Exception:
     args_cli.startup_timeout_s = 1800
 
 # ---------------------------------------------------------------------
-# Patch torch.distributed.init_process_group to inject timeout derived from
-# TORCH_NCCL_TIMEOUT when caller doesn't specify one.
+# Patch torch.distributed.init_process_group to inject timeout derived from TORCH_NCCL_TIMEOUT.
 # ---------------------------------------------------------------------
 try:
     import torch.distributed as _dist
@@ -362,7 +379,6 @@ try:
 
     _dist.init_process_group = _init_process_group_with_timeout
 
-    # These envs help NCCL fail fast / surface errors earlier.
     os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
     os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")
     os.environ.setdefault("NCCL_TIMEOUT", os.environ.get("TORCH_NCCL_TIMEOUT", "600"))
@@ -389,24 +405,6 @@ def _list_checkpoints_sorted(run_dir: str) -> list[str]:
     return [str(p) for p in candidates]
 
 
-def _find_latest_checkpoint(run_dir: str) -> str | None:
-    ckpts = _list_checkpoints_sorted(run_dir)
-    return ckpts[0] if ckpts else None
-
-
-def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
-    """Try loading checkpoints in order until one succeeds."""
-    if runner is None:
-        return None
-    for p in checkpoint_paths:
-        try:
-            runner.load(p)
-            return p
-        except Exception as exc:
-            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
-    return None
-
-
 def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | None]:
     root = Path(root_dir)
     if not root.exists():
@@ -426,6 +424,74 @@ def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | No
 def _maybe_reuse_existing_run_dir(default_log_dir: str) -> tuple[str | None, str | None]:
     parent = str(Path(default_log_dir).parent)
     return _find_latest_checkpoint_in_tree(parent)
+
+
+def _runner_has_nonfinite_params(runner) -> bool:
+    """Return True if runner's policy parameters contain NaN/Inf."""
+    try:
+        alg = getattr(runner, "alg", None)
+        if alg is None:
+            return False
+
+        policy = getattr(alg, "policy", None)
+        if policy is None:
+            policy = getattr(runner, "policy", None)
+
+        if policy is None or not hasattr(policy, "parameters"):
+            return False
+
+        with torch.no_grad():
+            for p in policy.parameters():
+                if p is None:
+                    continue
+                if torch.is_tensor(p) and (not torch.isfinite(p).all()).item():
+                    return True
+    except Exception:
+        # If we cannot validate, do not mark as bad here.
+        return False
+
+    return False
+
+
+def _delete_bad_checkpoint(path: str) -> None:
+    try:
+        Path(path).unlink(missing_ok=True)
+        print(f"[WARN] Deleted bad checkpoint: {path}", flush=True)
+    except Exception as exc:
+        print(f"[WARN] Failed to delete checkpoint {path}: {type(exc).__name__}: {exc}", flush=True)
+
+
+def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
+    """Try loading checkpoints in order until one succeeds and looks numerically sane.
+
+    Strategy:
+      1) newest -> oldest
+      2) if load fails OR loaded model has NaN/Inf parameters, treat it as bad
+      3) delete bad checkpoint (rank0 only) and continue searching older ones
+      4) if none works, return None
+    """
+    if runner is None:
+        return None
+
+    for p in checkpoint_paths:
+        try:
+            runner.load(p)
+        except Exception as exc:
+            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
+            if _is_rank0():
+                _delete_bad_checkpoint(p)
+            continue
+
+        # Validate the loaded checkpoint.
+        if _runner_has_nonfinite_params(runner):
+            print(f"[WARN] Loaded checkpoint has NaN/Inf parameters, skipping: {p}", flush=True)
+            if _is_rank0():
+                _delete_bad_checkpoint(p)
+            continue
+
+        return p
+
+    return None
 
 
 def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
@@ -563,9 +629,7 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
     print(
         "Please install the correct version of RSL-RL.\n"
         f"Existing version is: '{installed_version}' and required version is: '{RSL_RL_VERSION}'.\n"
-        "To install the correct version, run:\n\n\t"
-        + " ".join(cmd)
-        + "\n",
+        "To install the correct version, run:\n\n\t" + " ".join(cmd) + "\n",
         flush=True,
     )
     exit(1)
@@ -573,26 +637,26 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 # =====================================================================
 # The rest follows.
 # =====================================================================
-import gymnasium as gym
-from datetime import datetime
+import gymnasium as gym  # noqa: E402
+from datetime import datetime  # noqa: E402
 
-from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
-from isaaclab.envs import (
+from isaaclab.envs import (  # noqa: E402
     DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
-from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
+from isaaclab.utils.dict import print_dict  # noqa: E402
+from isaaclab.utils.io import dump_pickle, dump_yaml  # noqa: E402
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
 
-import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils import get_checkpoint_path
-from isaaclab_tasks.utils.hydra import hydra_task_config
+import isaaclab_tasks  # noqa: F401,E402
+from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
+from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -672,9 +736,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    # -----------------------------------------------------------------
-    # SAFETY PATCH 3 (apply): patch env.step to sanitize actions
-    # -----------------------------------------------------------------
+
+    # Apply SAFETY PATCH 3: sanitize actions in env.step()
     try:
         _orig_step = env.step
 
@@ -688,7 +751,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     except Exception as e:
         if _is_rank0():
             print(f"[WARN] Failed to patch env.step for action sanitization: {e}", flush=True)
-    # -----------------------------------------------------------------
+
     _touch_heartbeat("before_runner_init")
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     runner_holder = {"runner": runner}
@@ -709,8 +772,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
-    
     if args_cli.auto_resume:
+        # Prefer newest, but walk back until a loadable + numerically sane checkpoint is found.
         ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
         if ckpt_candidates:
             if _is_rank0():
@@ -734,12 +797,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         runner.add_git_repo_to_log(__file__)
 
-        
     if resume_path is not None:
         if _is_rank0():
             print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
         try:
             runner.load(resume_path)
+            if _runner_has_nonfinite_params(runner):
+                raise RuntimeError("Loaded requested checkpoint contains NaN/Inf parameters.")
             if _is_rank0():
                 print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
         except Exception as exc:
@@ -749,7 +813,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     f"({type(exc).__name__}: {exc}).",
                     flush=True,
                 )
-            # Optional fallback: walk back through run_dir checkpoints if enabled
             if args_cli.auto_resume:
                 ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
                 if ckpt_candidates:
@@ -764,7 +827,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                             print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
                     else:
                         if _is_rank0():
-                            print("[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.", flush=True)
+                            print(
+                                "[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.",
+                                flush=True,
+                            )
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

@@ -239,7 +239,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_ankle_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.01,
+        weight=-0.02,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},
@@ -247,7 +247,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-4.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
@@ -255,7 +255,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-10.0,
+        weight=-4.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll",])},
@@ -436,12 +436,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         # 6. Explosion termination: use base_link as reference body
         # -----------------------------------------------------------
-        if hasattr(self.terminations, "robot_exploded"):
-            self.terminations.robot_exploded.params["asset_cfg"] = SceneEntityCfg(
+        if hasattr(self.terminations, "robot_illegal_state"):
+            self.terminations.robot_illegal_state.params["asset_cfg"] = SceneEntityCfg(
                 "robot",
                 body_names=[base_link_name],
             )
 
+        if hasattr(self.terminations, "joint_pos_out_of_limit"):
+            self.terminations.joint_pos_out_of_limit.params["asset_cfg"] = SceneEntityCfg("robot")
         # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------
@@ -513,12 +515,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_r_active",
                 "thigh_l_active",
                 "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
             ],
         )
 
@@ -530,12 +526,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_r_active",
                 "thigh_l_active",
                 "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
             ],
         )
         # -----------------------------------------------------------

@@ -264,15 +264,19 @@ class TerminationsCfg:
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
     )
-    robot_exploded = DoneTerm(
-        func=mdp.robot_exploded,
+    robot_illegal_state = DoneTerm(
+        func=mdp.robot_illegal_state,
         params={
-            "limit_angle": 1.2,  # ≒ 70 deg
-            "asset_cfg": SceneEntityCfg("robot"),  # name だけ使われる
+            "limit_angle": 1.2,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
         time_out=False,
     )
-
+    joint_pos_out_of_limit = DoneTerm(
+        func=mdp.joint_pos_out_of_limit,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+        time_out=False,
+    )
 
 @configclass
 class CurriculumCfg:

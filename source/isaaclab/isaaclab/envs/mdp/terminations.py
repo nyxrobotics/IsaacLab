@@ -78,13 +78,26 @@ Joint terminations.
 
 
 def joint_pos_out_of_limit(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Terminate when the asset's joint positions are outside of the soft joint limits."""
-    # extract the used quantities (to enable type-hinting)
+    """Terminate when the asset's joint positions are outside of the soft joint limits.
+
+    - By default, checks all joints.
+    - If asset_cfg.joint_ids is provided, checks only those joints.
+    Returns:
+        (num_envs,) boolean tensor.
+    """
     asset: Articulation = env.scene[asset_cfg.name]
-    # compute any violations
-    out_of_upper_limits = torch.any(asset.data.joint_pos > asset.data.soft_joint_pos_limits[..., 1], dim=1)
-    out_of_lower_limits = torch.any(asset.data.joint_pos < asset.data.soft_joint_pos_limits[..., 0], dim=1)
-    return torch.logical_or(out_of_upper_limits[:, asset_cfg.joint_ids], out_of_lower_limits[:, asset_cfg.joint_ids])
+
+    # (num_envs, num_joints)
+    out_of_upper = asset.data.joint_pos > asset.data.soft_joint_pos_limits[..., 1]
+    out_of_lower = asset.data.joint_pos < asset.data.soft_joint_pos_limits[..., 0]
+    violation = torch.logical_or(out_of_upper, out_of_lower)
+
+    # Optional restriction to joint_ids (but you said you don't need names -> leave it None and it checks all joints)
+    if asset_cfg.joint_ids is not None:
+        violation = violation[:, asset_cfg.joint_ids]
+
+    # Reduce over joints -> (num_envs,)
+    return torch.any(violation, dim=1)
 
 
 def joint_pos_out_of_manual_limit(
@@ -158,7 +171,7 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
     )
 
 
-def robot_exploded(
+def robot_illegal_state(
     env: "ManagerBasedRLEnv",
     limit_angle: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

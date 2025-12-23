@@ -3,11 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to train RL agent with RSL-RL.
-
-This file contains small safety/robustness patches to improve stability in long-running,
-distributed training (auto-resume, watchdog, and numerical guards).
-"""
+"""Script to train RL agent with RSL-RL."""
 
 """Launch Isaac Sim Simulator first."""
 
@@ -23,7 +19,6 @@ import sys
 import threading
 import time
 import traceback
-import types as _types
 
 import torch
 import torch.nn.functional as Functional
@@ -56,12 +51,11 @@ def _is_rank0() -> bool:
     return int(os.environ.get("RANK", "0")) == 0
 
 
-# =====================================================================
-# SAFETY PATCH 0: make Normal(scale) always valid (finite, >= eps)
-#   Prevents hard-crashes like:
-#     RuntimeError: normal expects all elements of std >= 0.0
-# =====================================================================
-import torch.distributions.normal as _dist_normal  # noqa: E402
+# ================================
+# SAFETY PATCH 0: make Normal(scale) always valid (scale >= 0)
+# std clamp min changed: 1e-3 -> 1e-2
+# ================================
+import torch.distributions.normal as _dist_normal
 
 _ORIG_NORMAL_INIT = _dist_normal.Normal.__init__
 _WARNED_NEG_STD = False
@@ -69,8 +63,6 @@ _WARNED_NEG_STD = False
 
 def _safe_normal_init(self, loc, scale, validate_args=None, *args, **kwargs):
     global _WARNED_NEG_STD
-
-    eps = 1e-3
 
     if torch.is_tensor(scale):
         scale_clean = torch.nan_to_num(scale, nan=0.0, posinf=0.0, neginf=0.0)
@@ -80,33 +72,34 @@ def _safe_normal_init(self, loc, scale, validate_args=None, *args, **kwargs):
                 mn = float(scale_clean.min().detach().cpu())
                 mx = float(scale_clean.max().detach().cpu())
                 print(
-                    f"[WARN] Normal(scale) had negative values. min={mn}, max={mx}. Applying abs()+clamp_min().",
+                    f"[WARN] Normal(scale) had negative values. min={mn}, max={mx}. "
+                    f"Applying abs()+clamp_min().",
                     flush=True,
                 )
             except Exception:
                 print("[WARN] Normal(scale) had negative values. Applying abs()+clamp_min().", flush=True)
             _WARNED_NEG_STD = True
 
-        scale_safe = scale_clean.abs().clamp_min(eps)
+        scale_safe = scale_clean.abs().clamp_min(1e-2)
     else:
         try:
             scale_val = float(scale)
         except Exception:
             scale_val = 0.0
-        scale_safe = max(abs(scale_val), eps)
+        scale_safe = max(abs(scale_val), 1e-2)
 
     return _ORIG_NORMAL_INIT(self, loc, scale_safe, validate_args=validate_args)
 
 
 _dist_normal.Normal.__init__ = _safe_normal_init
-print("[INFO] Patched torch.distributions.Normal to enforce scale >= 1e-3.", flush=True)
-
+print("[INFO] Patched torch.distributions.Normal to enforce scale >= 1e-2.", flush=True)
 
 # =====================================================================
-# SAFETY PATCH 1: PPO.update guard
-#   - heartbeat updates
-#   - detect NaN/Inf in PPO.update outputs and skip contaminating the run
-#   - clamp policy.log_std to a safe range
+# SAFETY PATCH 1:
+#   Patch PPO.update:
+#     - heartbeat tags
+#     - clamp policy.log_std to [-100, 100]
+#     - if outputs contain NaN/Inf: zero grads + half LR (best-effort) and return out
 # =====================================================================
 _original_ppo_update = PPO.update
 
@@ -119,28 +112,28 @@ def _tensor_has_bad(x) -> bool:
     return False
 
 
+def _outputs_have_bad(out) -> bool:
+    if out is None:
+        return False
+    if torch.is_tensor(out):
+        return _tensor_has_bad(out)
+    if isinstance(out, (tuple, list)):
+        return any(_tensor_has_bad(v) for v in out)
+    if isinstance(out, dict):
+        return any(_tensor_has_bad(v) for v in out.values())
+    return False
+
+
 def _safe_ppo_update(self, *args, **kwargs):
     global _FIRST_ITERATION_DONE
 
     _touch_heartbeat("ppo_update_enter")
-
     out = _original_ppo_update(self, *args, **kwargs)
+    _touch_heartbeat("ppo_update")
+    _FIRST_ITERATION_DONE = True
 
-    # Detect invalid update outputs early.
-    bad = False
-    if isinstance(out, (tuple, list)):
-        for v in out:
-            bad = bad or _tensor_has_bad(v)
-    elif isinstance(out, dict):
-        for v in out.values():
-            bad = bad or _tensor_has_bad(v)
-    elif torch.is_tensor(out):
-        bad = _tensor_has_bad(out)
-
-    if bad:
-        print("[ERROR] Detected NaN/Inf in PPO.update outputs. Skipping this update.", flush=True)
-
-        # Best-effort: clear gradients so the next step starts cleanly.
+    if _outputs_have_bad(out):
+        print("[ERROR] Detected NaN/Inf in PPO.update outputs. Zeroing grads and reducing LR.", flush=True)
         try:
             for opt_name in ("optimizer", "actor_optimizer", "critic_optimizer"):
                 opt = getattr(self, opt_name, None)
@@ -149,7 +142,6 @@ def _safe_ppo_update(self, *args, **kwargs):
         except Exception:
             pass
 
-        # Best-effort: reduce LR to recover from a blow-up.
         try:
             for opt_name in ("optimizer", "actor_optimizer", "critic_optimizer"):
                 opt = getattr(self, opt_name, None)
@@ -162,23 +154,19 @@ def _safe_ppo_update(self, *args, **kwargs):
             pass
 
         _touch_heartbeat("ppo_update_nan_skipped")
-        _FIRST_ITERATION_DONE = True
         return out
 
-    _touch_heartbeat("ppo_update")
-    _FIRST_ITERATION_DONE = True
-
-    # Clamp log_std so std = exp(log_std) stays sane.
     with torch.no_grad():
         policy = getattr(self, "policy", None)
         if policy is not None and hasattr(policy, "log_std"):
             log_std = policy.log_std.data
-
             invalid_mask = ~torch.isfinite(log_std)
             if invalid_mask.any():
-                print("[WARNING] Detected invalid policy.log_std (NaN/Inf). Reset to 0.0.", flush=True)
+                print(
+                    "[WARNING] Detected invalid policy.log_std values (NaN or Inf). Resetting to 0.0.",
+                    flush=True,
+                )
                 log_std[invalid_mask] = 0.0
-
             log_std.clamp_(min=-100.0, max=100.0)
             policy.log_std.data.copy_(log_std)
 
@@ -186,39 +174,37 @@ def _safe_ppo_update(self, *args, **kwargs):
 
 
 PPO.update = _safe_ppo_update
-print("[INFO] Patched rsl_rl PPO.update with NaN/Inf guard + log_std clamp + heartbeat.", flush=True)
-
+print("[INFO] Patched rsl_rl PPO.update with log_std clamp + in-memory heartbeat.", flush=True)
 
 # =====================================================================
 # SAFETY PATCH 2:
 #   Patch ActorCritic._update_distribution so Normal(mean, std) never
-#   receives negative/non-finite std, and std keeps a minimum exploration.
+#   receives negative/non-finite std. std clamp min changed: 1e-3 -> 1e-2
 # =====================================================================
+
+
 def _safe_update_distribution(self, obs):
     if getattr(self, "_std_guard_printed", False) is False:
         print(
-            "[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-3).",
+            "[INFO] Patched ActorCritic._update_distribution: std is guarded (finite, >= 1e-2).",
             flush=True,
         )
         self._std_guard_printed = True
-
-    std_min = 1e-3
-    std_max = 1e3
 
     if self.state_dependent_std:
         mean_and_std = self.actor(obs)
 
         if self.noise_std_type == "scalar":
             mean, std = torch.unbind(mean_and_std, dim=-2)
-            std = Functional.softplus(std) + std_min
+            std = Functional.softplus(std) + 1e-2
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp(min=std_min, max=std_max)
+            std = std.clamp(min=1e-2, max=1e3)
 
         elif self.noise_std_type == "log":
             mean, log_std = torch.unbind(mean_and_std, dim=-2)
             log_std = torch.nan_to_num(log_std, nan=0.0, posinf=0.0, neginf=0.0)
             log_std = log_std.clamp(-100.0, 100.0)
-            std = torch.exp(log_std).clamp(min=std_min, max=std_max)
+            std = torch.exp(log_std).clamp(min=1e-2, max=1e3)
 
         else:
             raise ValueError(
@@ -231,12 +217,12 @@ def _safe_update_distribution(self, obs):
         if self.noise_std_type == "scalar":
             std = self.std.expand_as(mean)
             std = torch.nan_to_num(std, nan=1.0, posinf=1.0, neginf=1.0)
-            std = std.clamp(min=std_min, max=std_max)
+            std = std.clamp(min=1e-2, max=1e3)
 
         elif self.noise_std_type == "log":
             log_std = torch.nan_to_num(self.log_std, nan=0.0, posinf=0.0, neginf=0.0)
             log_std = log_std.clamp(-100.0, 100.0)
-            std = torch.exp(log_std).expand_as(mean).clamp(min=std_min, max=std_max)
+            std = torch.exp(log_std).expand_as(mean).clamp(min=1e-2, max=1e3)
 
         else:
             raise ValueError(
@@ -248,13 +234,13 @@ def _safe_update_distribution(self, obs):
 
 ActorCritic._update_distribution = _safe_update_distribution
 
-
 # =====================================================================
 # SAFETY PATCH 3:
 #   Sanitize actions before env.step() to avoid simulator freeze.
-#   - Replace NaN/Inf with 0
-#   - Clamp to action_space bounds (or fallback to [-1, 1])
 # =====================================================================
+import types as _types
+
+
 def _sanitize_actions_for_env(env, actions: torch.Tensor) -> torch.Tensor:
     a = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -280,7 +266,7 @@ def _sanitize_actions_for_env(env, actions: torch.Tensor) -> torch.Tensor:
 
 
 # Local imports
-import cli_args  # isort: skip  # noqa: E402
+import cli_args  # isort: skip
 
 # =====================================================================
 # CLI args
@@ -321,9 +307,7 @@ parser.add_argument(
     help="If no heartbeat update before iteration 1 for this many seconds, attempt emergency checkpoint and exit.",
 )
 
-# Append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
-# Append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
@@ -350,7 +334,7 @@ except Exception:
     args_cli.startup_timeout_s = 1800
 
 # ---------------------------------------------------------------------
-# Patch torch.distributed.init_process_group to inject timeout derived from TORCH_NCCL_TIMEOUT.
+# Patch torch.distributed.init_process_group to inject timeout derived from TORCH_NCCL_TIMEOUT
 # ---------------------------------------------------------------------
 try:
     import torch.distributed as _dist
@@ -379,7 +363,8 @@ try:
 
     _dist.init_process_group = _init_process_group_with_timeout
 
-    os.environ.setdefault("NCCL_ASYNC_ERROR_HANDLING", "1")
+    # Prefer Torch env vars (avoid deprecated NCCL_ASYNC_ERROR_HANDLING warning)
+    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
     os.environ.setdefault("NCCL_BLOCKING_WAIT", "1")
     os.environ.setdefault("NCCL_TIMEOUT", os.environ.get("TORCH_NCCL_TIMEOUT", "600"))
 except Exception:
@@ -392,7 +377,6 @@ faulthandler.enable(all_threads=True)
 
 
 def _list_checkpoints_sorted(run_dir: str) -> list[str]:
-    """Return checkpoint-like files in run_dir sorted by mtime (newest first)."""
     exts = (".pt", ".pth", ".ckpt")
     root = Path(run_dir)
     if not root.exists():
@@ -426,72 +410,14 @@ def _maybe_reuse_existing_run_dir(default_log_dir: str) -> tuple[str | None, str
     return _find_latest_checkpoint_in_tree(parent)
 
 
-def _runner_has_nonfinite_params(runner) -> bool:
-    """Return True if runner's policy parameters contain NaN/Inf."""
-    try:
-        alg = getattr(runner, "alg", None)
-        if alg is None:
-            return False
-
-        policy = getattr(alg, "policy", None)
-        if policy is None:
-            policy = getattr(runner, "policy", None)
-
-        if policy is None or not hasattr(policy, "parameters"):
-            return False
-
-        with torch.no_grad():
-            for p in policy.parameters():
-                if p is None:
-                    continue
-                if torch.is_tensor(p) and (not torch.isfinite(p).all()).item():
-                    return True
-    except Exception:
-        # If we cannot validate, do not mark as bad here.
-        return False
-
-    return False
-
-
 def _delete_bad_checkpoint(path: str) -> None:
+    if not _is_rank0():
+        return
     try:
-        Path(path).unlink(missing_ok=True)
+        os.remove(path)
         print(f"[WARN] Deleted bad checkpoint: {path}", flush=True)
     except Exception as exc:
-        print(f"[WARN] Failed to delete checkpoint {path}: {type(exc).__name__}: {exc}", flush=True)
-
-
-def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
-    """Try loading checkpoints in order until one succeeds and looks numerically sane.
-
-    Strategy:
-      1) newest -> oldest
-      2) if load fails OR loaded model has NaN/Inf parameters, treat it as bad
-      3) delete bad checkpoint (rank0 only) and continue searching older ones
-      4) if none works, return None
-    """
-    if runner is None:
-        return None
-
-    for p in checkpoint_paths:
-        try:
-            runner.load(p)
-        except Exception as exc:
-            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
-            if _is_rank0():
-                _delete_bad_checkpoint(p)
-            continue
-
-        # Validate the loaded checkpoint.
-        if _runner_has_nonfinite_params(runner):
-            print(f"[WARN] Loaded checkpoint has NaN/Inf parameters, skipping: {p}", flush=True)
-            if _is_rank0():
-                _delete_bad_checkpoint(p)
-            continue
-
-        return p
-
-    return None
+        print(f"[WARN] Failed to delete checkpoint: {path} ({type(exc).__name__}: {exc})", flush=True)
 
 
 def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
@@ -575,7 +501,6 @@ def _start_hang_watchdog(
 
 
 def _get_completed_learning_iterations(runner) -> int:
-    """Try to infer how many learning iterations were already completed."""
     if runner is None:
         return 0
 
@@ -603,6 +528,132 @@ def _get_completed_learning_iterations(runner) -> int:
             pass
 
     return 0
+
+
+def _mean_action_noise_std_from_runner(runner) -> float | None:
+    """Compute Mean action noise std from loaded policy. Returns None if can't infer."""
+    try:
+        alg = getattr(runner, "alg", None)
+        if alg is None:
+            return None
+        policy = getattr(alg, "policy", None)
+        if policy is None:
+            return None
+
+        with torch.no_grad():
+            # Typical rsl_rl ActorCritic has either log_std or std
+            if hasattr(policy, "log_std"):
+                log_std = policy.log_std
+                if log_std is None:
+                    return None
+                std = torch.exp(log_std)
+            elif hasattr(policy, "std"):
+                std = policy.std
+            else:
+                return None
+
+            std = torch.nan_to_num(std, nan=0.0, posinf=0.0, neginf=0.0)
+            if std.numel() == 0:
+                return None
+            m = float(std.mean().detach().cpu())
+            return m
+    except Exception:
+        return None
+
+
+def _runner_state_is_finite(runner) -> bool:
+    """Check model/optimizer tensors for NaN/Inf (best-effort)."""
+    try:
+        alg = getattr(runner, "alg", None)
+        if alg is None:
+            return True
+
+        def _check_module(m) -> bool:
+            if m is None:
+                return True
+            for p in m.parameters():
+                if p is None:
+                    continue
+                if not torch.isfinite(p.detach()).all().item():
+                    return False
+            return True
+
+        # policy / actor_critic
+        if hasattr(alg, "policy") and not _check_module(alg.policy):
+            return False
+
+        # optimizer states
+        for opt_name in ("optimizer", "actor_optimizer", "critic_optimizer"):
+            opt = getattr(alg, opt_name, None)
+            if opt is None:
+                continue
+            st = getattr(opt, "state", None)
+            if not isinstance(st, dict):
+                continue
+            for v in st.values():
+                if isinstance(v, dict):
+                    for vv in v.values():
+                        if torch.is_tensor(vv) and (not torch.isfinite(vv).all().item()):
+                            return False
+                elif torch.is_tensor(v) and (not torch.isfinite(v).all().item()):
+                    return False
+
+        return True
+    except Exception:
+        # If we can't inspect, don't brick.
+        return True
+
+
+def _checkpoint_is_usable(runner) -> bool:
+    """Your requested ckpt validity rule:
+       - no NaN/Inf in params/optimizer (best-effort)
+       - Mean action noise std >= 0.01
+    """
+    if not _runner_state_is_finite(runner):
+        return False
+
+    mstd = _mean_action_noise_std_from_runner(runner)
+    if mstd is None:
+        # Can't infer -> treat as bad, because you asked to include this criterion.
+        return False
+
+    if (not (mstd == mstd)) or (mstd == float("inf")) or (mstd == float("-inf")):
+        return False
+
+    if mstd < 0.01:
+        return False
+
+    return True
+
+
+def _try_load_checkpoints(runner, checkpoint_paths: list[str]) -> str | None:
+    """Try loading checkpoints in order until one succeeds and passes validity checks.
+       Bad ones are deleted (rank0) and we continue.
+    """
+    if runner is None:
+        return None
+
+    for p in checkpoint_paths:
+        try:
+            runner.load(p)
+        except Exception as exc:
+            print(f"[WARN] Failed to load checkpoint: {p} ({type(exc).__name__}: {exc})", flush=True)
+            _delete_bad_checkpoint(p)
+            continue
+
+        if not _checkpoint_is_usable(runner):
+            mstd = _mean_action_noise_std_from_runner(runner)
+            print(
+                f"[WARN] Checkpoint rejected (finite_check or mean_action_noise_std<0.01). "
+                f"mean_action_noise_std={mstd}. skipping: {p}",
+                flush=True,
+            )
+            _delete_bad_checkpoint(p)
+            continue
+
+        return p
+
+    return None
 
 
 # Always enable cameras to record video
@@ -637,26 +688,26 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 # =====================================================================
 # The rest follows.
 # =====================================================================
-import gymnasium as gym  # noqa: E402
-from datetime import datetime  # noqa: E402
+import gymnasium as gym
+from datetime import datetime
 
-from rsl_rl.runners import OnPolicyRunner  # noqa: E402
+from rsl_rl.runners import OnPolicyRunner
 
-from isaaclab.envs import (  # noqa: E402
+from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
     multi_agent_to_single_agent,
 )
-from isaaclab.utils.dict import print_dict  # noqa: E402
-from isaaclab.utils.io import dump_pickle, dump_yaml  # noqa: E402
+from isaaclab.utils.dict import print_dict
+from isaaclab.utils.io import dump_pickle, dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 
-import isaaclab_tasks  # noqa: F401,E402
-from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
-from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
+import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import get_checkpoint_path
+from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -737,7 +788,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # Apply SAFETY PATCH 3: sanitize actions in env.step()
+    # Apply action sanitization patch
     try:
         _orig_step = env.step
 
@@ -772,8 +823,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
+    # -----------------------------------------------------------------
+    # Auto-resume logic:
+    #   - NO smoke test
+    #   - Validate ckpt by:
+    #       * load works
+    #       * finite params/optimizer (best-effort)
+    #       * Mean action noise std >= 0.01
+    #   - Bad ckpts are deleted and we keep going older
+    # -----------------------------------------------------------------
     if args_cli.auto_resume:
-        # Prefer newest, but walk back until a loadable + numerically sane checkpoint is found.
         ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
         if ckpt_candidates:
             if _is_rank0():
@@ -784,7 +843,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             loaded = _try_load_checkpoints(runner, ckpt_candidates)
             if loaded is not None:
                 if _is_rank0():
+                    mstd = _mean_action_noise_std_from_runner(runner)
                     print(f"[INFO] Auto-resume: loaded checkpoint: {loaded}", flush=True)
+                    print(f"[INFO] Loaded mean action noise std: {mstd}", flush=True)
             else:
                 if _is_rank0():
                     print(
@@ -802,10 +863,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
         try:
             runner.load(resume_path)
-            if _runner_has_nonfinite_params(runner):
-                raise RuntimeError("Loaded requested checkpoint contains NaN/Inf parameters.")
-            if _is_rank0():
-                print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
+            if not _checkpoint_is_usable(runner):
+                if _is_rank0():
+                    mstd = _mean_action_noise_std_from_runner(runner)
+                    print(
+                        f"[WARN] Requested checkpoint rejected by validity check (mean_action_noise_std>=0.01). "
+                        f"mean_action_noise_std={mstd}.",
+                        flush=True,
+                    )
+                if args_cli.auto_resume:
+                    ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
+                    loaded = _try_load_checkpoints(runner, ckpt_candidates)
+                    if loaded is not None and _is_rank0():
+                        mstd = _mean_action_noise_std_from_runner(runner)
+                        print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
+                        print(f"[INFO] Loaded mean action noise std: {mstd}", flush=True)
+            else:
+                if _is_rank0():
+                    print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
         except Exception as exc:
             if _is_rank0():
                 print(
@@ -815,22 +890,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 )
             if args_cli.auto_resume:
                 ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
-                if ckpt_candidates:
-                    if _is_rank0():
-                        print(
-                            f"[INFO] Fallback auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
-                            flush=True,
-                        )
-                    loaded = _try_load_checkpoints(runner, ckpt_candidates)
-                    if loaded is not None:
-                        if _is_rank0():
-                            print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
-                    else:
-                        if _is_rank0():
-                            print(
-                                "[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.",
-                                flush=True,
-                            )
+                loaded = _try_load_checkpoints(runner, ckpt_candidates)
+                if loaded is not None and _is_rank0():
+                    mstd = _mean_action_noise_std_from_runner(runner)
+                    print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
+                    print(f"[INFO] Loaded mean action noise std: {mstd}", flush=True)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

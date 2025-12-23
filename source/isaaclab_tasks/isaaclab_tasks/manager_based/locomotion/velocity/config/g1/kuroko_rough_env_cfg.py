@@ -442,6 +442,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 body_names=[base_link_name],
             )
 
+        if hasattr(self.terminations, "joint_pos_out_of_limit"):
+            self.terminations.joint_pos_out_of_limit.params["asset_cfg"] = SceneEntityCfg("robot")
         # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------
@@ -513,12 +515,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_r_active",
                 "thigh_l_active",
                 "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
             ],
         )
 
@@ -530,12 +526,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "shin_r_active",
                 "thigh_l_active",
                 "thigh_r_active",
-                # "ankle_l_roll",
-                # "ankle_r_roll",
-                # "hip_l_pitch",
-                # "hip_l_roll",
-                # "hip_r_pitch",
-                # "hip_r_roll",
             ],
         )
         # -----------------------------------------------------------

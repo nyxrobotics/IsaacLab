@@ -50,6 +50,51 @@ def _get_heartbeat_age_s() -> float:
 def _is_rank0() -> bool:
     return int(os.environ.get("RANK", "0")) == 0
 
+# ================================
+# PSAFETY PATCH 0: make Normal(scale) always valid (scale >= 0)
+# This prevents hard-crashes like:
+#   RuntimeError: normal expects all elements of std >= 0.0
+# Root cause is typically an unconstrained or corrupted std parameter in the policy.
+# ================================
+import torch.distributions.normal as _dist_normal
+
+_ORIG_NORMAL_INIT = _dist_normal.Normal.__init__
+_WARNED_NEG_STD = False
+
+def _safe_normal_init(self, loc, scale, validate_args=None, *args, **kwargs):
+    global _WARNED_NEG_STD
+
+    # Convert Python scalars too
+    if torch.is_tensor(scale):
+        # Replace NaN/Inf first to avoid propagating invalid values
+        scale_clean = torch.nan_to_num(scale, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Detect negative values once and print diagnostics
+        if (not _WARNED_NEG_STD) and torch.any(scale_clean < 0):
+            try:
+                mn = float(scale_clean.min().detach().cpu())
+                mx = float(scale_clean.max().detach().cpu())
+                print(f"[WARN] Normal(scale) had negative values. min={mn}, max={mx}. "
+                      f"Applying abs()+clamp_min().", flush=True)
+            except Exception:
+                print("[WARN] Normal(scale) had negative values. Applying abs()+clamp_min().", flush=True)
+            _WARNED_NEG_STD = True
+
+        # Force valid scale
+        scale_safe = scale_clean.abs().clamp_min(1e-6)
+    else:
+        # Python float/int
+        try:
+            scale_val = float(scale)
+        except Exception:
+            scale_val = 0.0
+        scale_safe = max(abs(scale_val), 1e-6)
+
+    return _ORIG_NORMAL_INIT(self, loc, scale_safe, validate_args=validate_args)
+
+# Apply monkey patch once
+_dist_normal.Normal.__init__ = _safe_normal_init
+print("[INFO] Patched torch.distributions.Normal to enforce scale >= 1e-6.", flush=True)
 
 # =====================================================================
 # SAFETY PATCH 1: Clamp policy.log_std after every PPO.update
@@ -179,6 +224,38 @@ def _safe_update_distribution(self, obs):
 
 # Patch ActorCritic._update_distribution
 ActorCritic._update_distribution = _safe_update_distribution
+
+# =====================================================================
+# SAFETY PATCH 3:
+#   Sanitize actions before env.step() to avoid simulator freeze.
+#   - Replace NaN/Inf with 0
+#   - Clamp to action_space bounds (or fallback to [-1, 1])
+# =====================================================================
+import types as _types
+
+def _sanitize_actions_for_env(env, actions: torch.Tensor) -> torch.Tensor:
+    a = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
+
+    low = None
+    high = None
+    try:
+        if hasattr(env, "action_space") and env.action_space is not None:
+            if hasattr(env.action_space, "low") and hasattr(env.action_space, "high"):
+                low = env.action_space.low
+                high = env.action_space.high
+    except Exception:
+        low = None
+        high = None
+
+    if low is not None and high is not None:
+        low_t = torch.as_tensor(low, device=a.device, dtype=a.dtype)
+        high_t = torch.as_tensor(high, device=a.device, dtype=a.dtype)
+        a = torch.max(torch.min(a, high_t), low_t)
+    else:
+        a = a.clamp(-1.0, 1.0)
+
+    return a
+
 
 # Local imports
 import cli_args  # isort: skip
@@ -595,7 +672,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    # -----------------------------------------------------------------
+    # SAFETY PATCH 3 (apply): patch env.step to sanitize actions
+    # -----------------------------------------------------------------
+    try:
+        _orig_step = env.step
 
+        def _step_sanitized(self, actions):
+            actions = _sanitize_actions_for_env(self, actions)
+            return _orig_step(actions)
+
+        env.step = _types.MethodType(_step_sanitized, env)
+        if _is_rank0():
+            print("[INFO] Patched env.step: sanitize actions (nan_to_num + clamp).", flush=True)
+    except Exception as e:
+        if _is_rank0():
+            print(f"[WARN] Failed to patch env.step for action sanitization: {e}", flush=True)
+    # -----------------------------------------------------------------
     _touch_heartbeat("before_runner_init")
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     runner_holder = {"runner": runner}

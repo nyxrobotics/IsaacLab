@@ -149,7 +149,7 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
-        self.terminations.robot_exploded = None
+        self.terminations.robot_illegal_state = None
 
 
 @configclass

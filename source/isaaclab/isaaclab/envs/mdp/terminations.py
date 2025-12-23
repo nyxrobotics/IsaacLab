@@ -158,7 +158,7 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
     )
 
 
-def robot_exploded(
+def robot_illegal_state(
     env: "ManagerBasedRLEnv",
     limit_angle: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

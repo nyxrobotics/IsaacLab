@@ -110,6 +110,7 @@ export TORCH_NCCL_TIMEOUT=15
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
 export CUDA_LAUNCH_BLOCKING=1
 export HYDRA_FULL_ERROR=1
+export TORCH_DISABLE_ADDR2LINE=1
 
 # ============================================================
 # Command setup

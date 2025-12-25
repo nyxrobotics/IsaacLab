@@ -3,7 +3,19 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to train RL agent with RSL-RL."""
+"""Script to train RL agent with RSL-RL.
+
+This version adds:
+  - PPO/ActorCritic safety guards for invalid std/log_std
+  - In-memory heartbeat + hang watchdog
+  - Auto-resume from run_dir without changing the original checkpoint format
+  - Sidecar extras file: "<checkpoint>.extras.pt" (optional)
+      * RNG states (python / numpy / torch cpu / torch cuda)
+      * Runner counters (best-effort)
+      * IsaacLab scene snapshot (best-effort) for env state restore
+  - IMPORTANT: After resume, this script forces a single env.reset() so the pending
+    env snapshot is applied immediately (some runner paths do not reset at start).
+"""
 
 """Launch Isaac Sim Simulator first."""
 
@@ -14,11 +26,13 @@ import importlib.metadata as metadata
 import os
 from pathlib import Path
 import platform
+import random
 import signal
 import sys
 import threading
 import time
 import traceback
+from typing import Any
 
 import torch
 import torch.nn.functional as Functional
@@ -230,9 +244,6 @@ args_cli, hydra_args = parser.parse_known_args()
 
 # ---------------------------------------------------------------------
 # NCCL timeout / watchdog timeout synchronization
-#   - Default watchdog timeout follows TORCH_NCCL_TIMEOUT (if set)
-#   - If user specifies --hang_timeout_s, we also set TORCH_NCCL_TIMEOUT
-#     to the same value so collective timeouts happen within ~that window.
 # ---------------------------------------------------------------------
 _env_torch_nccl_timeout = os.environ.get("TORCH_NCCL_TIMEOUT", "")
 try:
@@ -297,16 +308,27 @@ except Exception:
 # =====================================================================
 faulthandler.enable(all_threads=True)
 
+_EXTRAS_SUFFIX = ".extras.pt"
+
+
+def _is_checkpoint_file(p: Path) -> bool:
+    exts = (".pt", ".pth", ".ckpt")
+    if not (p.is_file() and p.suffix in exts):
+        return False
+    # Never treat sidecar extras as checkpoints.
+    if str(p).endswith(_EXTRAS_SUFFIX):
+        return False
+    return True
+
 
 def _list_checkpoints_sorted(run_dir: str) -> list[str]:
     """Return checkpoint-like files in run_dir sorted by mtime (newest first)."""
-    exts = (".pt", ".pth", ".ckpt")
     root = Path(run_dir)
     if not root.exists():
         return []
     candidates: list[Path] = []
     for p in root.rglob("*"):
-        if p.is_file() and p.suffix in exts:
+        if _is_checkpoint_file(p):
             candidates.append(p)
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return [str(p) for p in candidates]
@@ -338,7 +360,7 @@ def _find_latest_checkpoint_in_tree(root_dir: str) -> tuple[str | None, str | No
     files: list[Path] = []
     for pat in patterns:
         files.extend(root.glob(pat))
-    files = [p for p in files if p.is_file()]
+    files = [p for p in files if _is_checkpoint_file(p)]
     if not files:
         return None, None
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -351,26 +373,443 @@ def _maybe_reuse_existing_run_dir(default_log_dir: str) -> tuple[str | None, str
     return _find_latest_checkpoint_in_tree(parent)
 
 
-def _emergency_save(runner, run_dir: str | None, tag: str) -> None:
-    if run_dir is None or runner is None:
-        return
+def _torch_load_any(path: str, map_location: str = "cpu") -> Any:
+    """torch.load that works across PyTorch versions (weights_only default changed in 2.6)."""
+    try:
+        # PyTorch 2.6+: weights_only defaults True -> we want full pickle for extras.
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        # Older versions: no weights_only argument
+        return torch.load(path, map_location=map_location)
+    except Exception:
+        # Fallback: try with weights_only=False even if it exists but failed due to allowlist.
+        # If this fails too, bubble up.
+        try:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        except Exception:
+            return torch.load(path, map_location=map_location)
+
+
+def _torch_save_any(obj: Any, path: str) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(obj, path)
+
+
+def _extras_path_for_checkpoint(ckpt_path: str) -> str:
+    return f"{ckpt_path}{_EXTRAS_SUFFIX}"
+
+
+def _capture_rng_state() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        out["python_random_state"] = random.getstate()
+    except Exception:
+        pass
+    try:
+        import numpy as np
+
+        out["numpy_random_state"] = np.random.get_state()
+    except Exception:
+        pass
+    try:
+        out["torch_random_state_cpu"] = torch.random.get_rng_state()
+    except Exception:
+        pass
+    try:
+        if torch.cuda.is_available():
+            out["torch_random_state_cuda_all"] = torch.cuda.get_rng_state_all()
+    except Exception:
+        pass
+    return out
+
+
+def _restore_rng_state(state: dict[str, Any]) -> None:
+    try:
+        if "python_random_state" in state:
+            random.setstate(state["python_random_state"])
+    except Exception:
+        pass
+    try:
+        import numpy as np
+
+        if "numpy_random_state" in state:
+            np.random.set_state(state["numpy_random_state"])
+    except Exception:
+        pass
+    try:
+        if "torch_random_state_cpu" in state:
+            torch.random.set_rng_state(state["torch_random_state_cpu"])
+    except Exception:
+        pass
+    try:
+        if torch.cuda.is_available() and "torch_random_state_cuda_all" in state:
+            torch.cuda.set_rng_state_all(state["torch_random_state_cuda_all"])
+    except Exception:
+        pass
+
+
+def _get_completed_learning_iterations(runner) -> int:
+    """Try to infer how many learning iterations were already completed."""
+    if runner is None:
+        return 0
+
+    for attr in (
+        "current_learning_iteration",
+        "current_iteration",
+        "learning_iteration",
+        "iteration",
+        "it",
+    ):
+        v = getattr(runner, attr, None)
+        if isinstance(v, int) and v >= 0:
+            return v
+
+    state = getattr(runner, "state_dict", None)
+    if callable(state):
+        try:
+            sd = state()
+            if isinstance(sd, dict):
+                for k in ("current_learning_iteration", "current_iteration", "iteration", "it"):
+                    v = sd.get(k, None)
+                    if isinstance(v, int) and v >= 0:
+                        return v
+        except Exception:
+            pass
+
+    return 0
+
+
+def _capture_runner_counters(runner) -> dict[str, Any]:
+    """Best-effort capture of runner counters that influence scheduling."""
+    out: dict[str, Any] = {}
+    if runner is None:
+        return out
+
+    for k in (
+        "current_learning_iteration",
+        "current_iteration",
+        "learning_iteration",
+        "iteration",
+        "it",
+        "total_timesteps",
+        "tot_timesteps",
+        "num_timesteps",
+    ):
+        v = getattr(runner, k, None)
+        if isinstance(v, int):
+            out[k] = int(v)
+
+    # Sometimes stored inside runner.writer or runner.logger; skip (too version-specific).
+    return out
+
+
+def _restore_runner_counters(runner, counters: dict[str, Any]) -> int:
+    """Restore any runner counter attributes that exist. Return how many were restored."""
+    if runner is None or not isinstance(counters, dict):
+        return 0
+    restored = 0
+    for k, v in counters.items():
+        if not isinstance(v, int):
+            continue
+        if hasattr(runner, k):
+            try:
+                setattr(runner, k, int(v))
+                restored += 1
+            except Exception:
+                pass
+    return restored
+
+
+def _capture_isaaclab_scene_snapshot(env) -> dict[str, Any] | None:
+    """Best-effort IsaacLab scene snapshot.
+
+    This intentionally avoids relying on task-specific env.state_dict() since many
+    IsaacLab envs do not implement it. Instead, it tries to capture the scene's
+    articulations/rigid bodies state tensors and later write them back to sim.
+
+    Returns a CPU-only dict, or None if it could not capture anything meaningful.
+    """
+    try:
+        unwrapped = env.unwrapped
+    except Exception:
+        return None
+
+    scene = getattr(unwrapped, "scene", None)
+    if scene is None:
+        return None
+
+    snap: dict[str, Any] = {"_kind": "isaaclab_scene_v1", "articulations": {}, "rigid_objects": {}}
+
+    # Articulations
+    arts = getattr(scene, "articulations", None)
+    if isinstance(arts, dict):
+        for name, art in arts.items():
+            data = getattr(art, "data", None)
+            if data is None:
+                continue
+            # Common IsaacLab tensors: root_state_w, joint_pos, joint_vel
+            root_state = getattr(data, "root_state_w", None)
+            joint_pos = getattr(data, "joint_pos", None)
+            joint_vel = getattr(data, "joint_vel", None)
+
+            # Some tasks use different names; try a couple more
+            if root_state is None:
+                root_state = getattr(data, "root_state", None)
+            if joint_pos is None:
+                joint_pos = getattr(data, "joint_pos_w", None)
+            if joint_vel is None:
+                joint_vel = getattr(data, "joint_vel_w", None)
+
+            if root_state is None and joint_pos is None and joint_vel is None:
+                continue
+
+            entry: dict[str, Any] = {}
+            try:
+                if torch.is_tensor(root_state):
+                    entry["root_state"] = root_state.detach().clone().cpu()
+            except Exception:
+                pass
+            try:
+                if torch.is_tensor(joint_pos):
+                    entry["joint_pos"] = joint_pos.detach().clone().cpu()
+            except Exception:
+                pass
+            try:
+                if torch.is_tensor(joint_vel):
+                    entry["joint_vel"] = joint_vel.detach().clone().cpu()
+            except Exception:
+                pass
+
+            if entry:
+                snap["articulations"][str(name)] = entry
+
+    # Rigid objects (optional)
+    rigs = getattr(scene, "rigid_objects", None)
+    if isinstance(rigs, dict):
+        for name, robj in rigs.items():
+            data = getattr(robj, "data", None)
+            if data is None:
+                continue
+            root_state = getattr(data, "root_state_w", None)
+            if root_state is None:
+                root_state = getattr(data, "root_state", None)
+            if root_state is None:
+                continue
+            entry = {}
+            try:
+                if torch.is_tensor(root_state):
+                    entry["root_state"] = root_state.detach().clone().cpu()
+            except Exception:
+                pass
+            if entry:
+                snap["rigid_objects"][str(name)] = entry
+
+    n_art = len(snap["articulations"])
+    n_rig = len(snap["rigid_objects"])
+    if n_art == 0 and n_rig == 0:
+        return None
+
+    if _is_rank0():
+        print(f"[INFO] Captured IsaacLab scene snapshot (articulations={n_art}, rigid_objects={n_rig}).", flush=True)
+    return snap
+
+
+def _apply_isaaclab_scene_snapshot(env, snap: dict[str, Any]) -> bool:
+    """Best-effort apply IsaacLab scene snapshot to sim."""
+    if not isinstance(snap, dict) or snap.get("_kind") != "isaaclab_scene_v1":
+        return False
+
+    try:
+        unwrapped = env.unwrapped
+    except Exception:
+        return False
+
+    scene = getattr(unwrapped, "scene", None)
+    if scene is None:
+        return False
+
+    ok_any = False
+
+    # Articulations
+    arts = getattr(scene, "articulations", None)
+    if isinstance(arts, dict):
+        for name, payload in snap.get("articulations", {}).items():
+            art = arts.get(name, None)
+            if art is None or not isinstance(payload, dict):
+                continue
+            data = getattr(art, "data", None)
+            if data is None:
+                continue
+
+            # Move tensors to env device
+            device = getattr(unwrapped, "device", None)
+            if device is None:
+                # Many IsaacLab envs store tensors on cuda:0 but do not expose device; infer from existing buffers.
+                cur = getattr(data, "joint_pos", None)
+                if torch.is_tensor(cur):
+                    device = cur.device
+                else:
+                    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+            root_state = payload.get("root_state", None)
+            joint_pos = payload.get("joint_pos", None)
+            joint_vel = payload.get("joint_vel", None)
+
+            try:
+                if torch.is_tensor(root_state):
+                    rs = root_state.to(device=device)
+                    # Write into buffers if present
+                    if hasattr(data, "root_state_w") and torch.is_tensor(getattr(data, "root_state_w")):
+                        getattr(data, "root_state_w").copy_(rs)
+                    elif hasattr(data, "root_state") and torch.is_tensor(getattr(data, "root_state")):
+                        getattr(data, "root_state").copy_(rs)
+
+                    # Write to sim if method exists
+                    if hasattr(art, "write_root_state_to_sim"):
+                        art.write_root_state_to_sim(rs)
+                    else:
+                        # Some versions split pose/vel; try best-effort
+                        if hasattr(art, "write_root_pose_to_sim") and rs.shape[-1] >= 7:
+                            art.write_root_pose_to_sim(rs[..., 0:7])
+                        if hasattr(art, "write_root_velocity_to_sim") and rs.shape[-1] >= 13:
+                            art.write_root_velocity_to_sim(rs[..., 7:13])
+                    ok_any = True
+            except Exception:
+                pass
+
+            try:
+                if torch.is_tensor(joint_pos) or torch.is_tensor(joint_vel):
+                    jp = joint_pos.to(device=device) if torch.is_tensor(joint_pos) else None
+                    jv = joint_vel.to(device=device) if torch.is_tensor(joint_vel) else None
+
+                    if jp is not None and hasattr(data, "joint_pos") and torch.is_tensor(getattr(data, "joint_pos")):
+                        getattr(data, "joint_pos").copy_(jp)
+                    if jv is not None and hasattr(data, "joint_vel") and torch.is_tensor(getattr(data, "joint_vel")):
+                        getattr(data, "joint_vel").copy_(jv)
+
+                    if hasattr(art, "write_joint_state_to_sim"):
+                        # IsaacLab typically expects (joint_pos, joint_vel)
+                        art.write_joint_state_to_sim(jp, jv)
+                    else:
+                        if jp is not None and hasattr(art, "write_joint_pos_to_sim"):
+                            art.write_joint_pos_to_sim(jp)
+                        if jv is not None and hasattr(art, "write_joint_vel_to_sim"):
+                            art.write_joint_vel_to_sim(jv)
+                    ok_any = True
+            except Exception:
+                pass
+
+    # Rigid objects
+    rigs = getattr(scene, "rigid_objects", None)
+    if isinstance(rigs, dict):
+        for name, payload in snap.get("rigid_objects", {}).items():
+            robj = rigs.get(name, None)
+            if robj is None or not isinstance(payload, dict):
+                continue
+            data = getattr(robj, "data", None)
+            if data is None:
+                continue
+
+            device = getattr(unwrapped, "device", None)
+            if device is None:
+                cur = getattr(data, "root_state_w", None)
+                if torch.is_tensor(cur):
+                    device = cur.device
+                else:
+                    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+            root_state = payload.get("root_state", None)
+            if not torch.is_tensor(root_state):
+                continue
+
+            try:
+                rs = root_state.to(device=device)
+                if hasattr(data, "root_state_w") and torch.is_tensor(getattr(data, "root_state_w")):
+                    getattr(data, "root_state_w").copy_(rs)
+                elif hasattr(data, "root_state") and torch.is_tensor(getattr(data, "root_state")):
+                    getattr(data, "root_state").copy_(rs)
+
+                if hasattr(robj, "write_root_state_to_sim"):
+                    robj.write_root_state_to_sim(rs)
+                else:
+                    if hasattr(robj, "write_root_pose_to_sim") and rs.shape[-1] >= 7:
+                        robj.write_root_pose_to_sim(rs[..., 0:7])
+                    if hasattr(robj, "write_root_velocity_to_sim") and rs.shape[-1] >= 13:
+                        robj.write_root_velocity_to_sim(rs[..., 7:13])
+                ok_any = True
+            except Exception:
+                pass
+
+    if _is_rank0():
+        print(f"[INFO] Restore IsaacLab scene snapshot: ok_any={ok_any}.", flush=True)
+    return ok_any
+
+
+def _save_extras_sidecar(env, runner, checkpoint_path: str) -> None:
+    """Save sidecar extras file next to the original checkpoint."""
     if not _is_rank0():
         return
+
+    extras: dict[str, Any] = {"_kind": "rslrl_extras_v1"}
+
+    # RNG
+    extras["rng"] = _capture_rng_state()
+
+    # Runner counters (best-effort)
+    extras["runner_counters"] = _capture_runner_counters(runner)
+
+    # Env snapshot (best-effort)
+    snap = _capture_isaaclab_scene_snapshot(env)
+    if snap is not None:
+        extras["env_scene_snapshot"] = snap
+    else:
+        extras["env_scene_snapshot"] = None
+        print("[INFO] No stateful env found (no scene snapshot captured).", flush=True)
+
+    out_path = _extras_path_for_checkpoint(checkpoint_path)
     try:
-        Path(run_dir).mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        out = str(Path(run_dir) / f"emergency_{tag}_{ts}.pt")
-        if hasattr(runner, "save"):
-            runner.save(out)
-        elif hasattr(runner, "save_checkpoint"):
-            runner.save_checkpoint(out)
-        else:
-            print("[WARN] Runner has no save/save_checkpoint. Skipping emergency checkpoint.", flush=True)
-            return
-        print(f"[INFO] Emergency checkpoint saved: {out}", flush=True)
-    except Exception:
-        print("[ERROR] Emergency checkpoint failed.", flush=True)
+        _torch_save_any(extras, out_path)
+        print(f"[INFO] Saved extras sidecar: {out_path}", flush=True)
+    except Exception as exc:
+        print(f"[WARN] Failed to save extras sidecar: {type(exc).__name__}: {exc}", flush=True)
         traceback.print_exc()
+
+
+def _load_extras_sidecar(env, runner, checkpoint_path: str) -> dict[str, Any] | None:
+    """Load sidecar extras file if present. Returns pending env snapshot dict or None."""
+    path = _extras_path_for_checkpoint(checkpoint_path)
+    if not Path(path).exists():
+        return None
+
+    try:
+        extras = _torch_load_any(path, map_location="cpu")
+    except Exception as exc:
+        print(f"[WARN] Failed to load extras sidecar: {type(exc).__name__}: {exc}", flush=True)
+        return None
+
+    if not isinstance(extras, dict):
+        return None
+
+    # RNG
+    rng = extras.get("rng", None)
+    if isinstance(rng, dict):
+        _restore_rng_state(rng)
+        if _is_rank0():
+            print("[INFO] Restored RNG state from sidecar.", flush=True)
+
+    # Runner counters
+    counters = extras.get("runner_counters", None)
+    if isinstance(counters, dict):
+        n = _restore_runner_counters(runner, counters)
+        if _is_rank0() and n > 0:
+            print(f"[INFO] Restored {n} runner counters from sidecar.", flush=True)
+
+    # Env snapshot is applied after a reset (or forced reset).
+    snap = extras.get("env_scene_snapshot", None)
+    if isinstance(snap, dict) and snap.get("_kind") == "isaaclab_scene_v1":
+        return snap
+
+    return None
 
 
 def _start_hang_watchdog(
@@ -414,8 +853,7 @@ def _start_hang_watchdog(
                 except Exception:
                     runner = None
 
-                _emergency_save(runner, run_dir, tag=f"hang_{phase}")
-
+                # Emergency save handled by caller via signal or exception path in learn().
                 try:
                     os.killpg(os.getpgid(0), signal.SIGTERM)
                 except Exception:
@@ -431,35 +869,33 @@ def _start_hang_watchdog(
     )
 
 
-def _get_completed_learning_iterations(runner) -> int:
-    """Try to infer how many learning iterations were already completed."""
-    if runner is None:
-        return 0
+def _emergency_save(env, runner, run_dir: str | None, tag: str) -> None:
+    if run_dir is None or runner is None:
+        return
+    if not _is_rank0():
+        return
+    try:
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out = str(Path(run_dir) / f"emergency_{tag}_{ts}.pt")
 
-    for attr in (
-        "current_learning_iteration",
-        "current_iteration",
-        "learning_iteration",
-        "iteration",
-        "it",
-    ):
-        v = getattr(runner, attr, None)
-        if isinstance(v, int) and v >= 0:
-            return v
+        # Save sidecar first (so even if main save crashes, we still keep env/rng hints).
+        _save_extras_sidecar(env, runner, out)
 
-    state = getattr(runner, "state_dict", None)
-    if callable(state):
-        try:
-            sd = state()
-            if isinstance(sd, dict):
-                for k in ("current_learning_iteration", "current_iteration", "iteration", "it"):
-                    v = sd.get(k, None)
-                    if isinstance(v, int) and v >= 0:
-                        return v
-        except Exception:
-            pass
+        if hasattr(runner, "save_checkpoint"):
+            runner.save_checkpoint(out)
+            print("[INFO] runner.save_checkpoint", flush=True)
+        elif hasattr(runner, "save"):
+            runner.save(out)
+            print("[INFO] runner.save", flush=True)
+        else:
+            print("[WARN] Runner has no save/save_checkpoint. Skipping emergency checkpoint.", flush=True)
+            return
 
-    return 0
+        print(f"[INFO] Emergency checkpoint saved: {out}", flush=True)
+    except Exception:
+        print("[ERROR] Emergency checkpoint failed.", flush=True)
+        traceback.print_exc()
 
 
 # Always enable cameras to record video
@@ -523,6 +959,31 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+# Pending env snapshot holder (applied after reset)
+_resume_env_state_holder: dict[str, Any] = {"pending": None, "applied_once": False}
+
+
+def _maybe_apply_pending_env_state(env) -> None:
+    """Apply pending env snapshot once, after env.reset()."""
+    if _resume_env_state_holder.get("applied_once", False):
+        return
+    snap = _resume_env_state_holder.get("pending", None)
+    if not isinstance(snap, dict):
+        return
+
+    ok = False
+    try:
+        ok = _apply_isaaclab_scene_snapshot(env, snap)
+    except Exception as exc:
+        if _is_rank0():
+            print(f"[WARN] Applying env snapshot failed: {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
+
+    _resume_env_state_holder["applied_once"] = True
+    _resume_env_state_holder["pending"] = None
+    if _is_rank0() and ok:
+        print("[INFO] Applied env state from sidecar after env.reset().", flush=True)
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -594,15 +1055,78 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    # Wrap env for RSL-RL
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    # Patch env.reset to apply pending env snapshot right after reset returns.
+    if not hasattr(env, "_reset_patched_for_resume"):
+        _orig_reset = env.reset
+
+        def _reset_with_resume_apply(*a, **kw):
+            obs = _orig_reset(*a, **kw)
+            _maybe_apply_pending_env_state(env)
+            return obs
+
+        env.reset = _reset_with_resume_apply  # type: ignore[assignment]
+        env._reset_patched_for_resume = True  # type: ignore[attr-defined]
 
     _touch_heartbeat("before_runner_init")
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     runner_holder = {"runner": runner}
 
+    # Patch runner.save (and save_checkpoint if exists) to also write sidecar.
+    if not hasattr(runner, "_save_patched_for_extras"):
+        if hasattr(runner, "save") and callable(getattr(runner, "save")):
+            _orig_save = runner.save
+
+            def _save_wrapped(path: str, *a, **kw):
+                _save_extras_sidecar(env, runner, path)
+                return _orig_save(path, *a, **kw)
+
+            runner.save = _save_wrapped  # type: ignore[assignment]
+
+        if hasattr(runner, "save_checkpoint") and callable(getattr(runner, "save_checkpoint")):
+            _orig_save_ckpt = runner.save_checkpoint
+
+            def _save_ckpt_wrapped(path: str, *a, **kw):
+                _save_extras_sidecar(env, runner, path)
+                return _orig_save_ckpt(path, *a, **kw)
+
+            runner.save_checkpoint = _save_ckpt_wrapped  # type: ignore[assignment]
+
+        runner._save_patched_for_extras = True  # type: ignore[attr-defined]
+
+    # Patch runner.load to also load sidecar and then FORCE one env.reset() so it is applied immediately.
+    if not hasattr(runner, "_load_patched_for_extras"):
+        if hasattr(runner, "load") and callable(getattr(runner, "load")):
+            _orig_load = runner.load
+
+            def _load_wrapped(path: str, *a, **kw):
+                ret = _orig_load(path, *a, **kw)
+
+                pending = _load_extras_sidecar(env, runner, path)
+                if pending is not None:
+                    _resume_env_state_holder["pending"] = pending
+                    _resume_env_state_holder["applied_once"] = False
+                    if _is_rank0():
+                        print("[INFO] Resume: env state is pending and will be applied after env.reset().", flush=True)
+
+                    # Force a reset now: some runner paths do not call reset on resume.
+                    try:
+                        env.reset()
+                    except Exception as exc:
+                        if _is_rank0():
+                            print(f"[WARN] Forced env.reset() after resume failed: {type(exc).__name__}: {exc}", flush=True)
+
+                return ret
+
+            runner.load = _load_wrapped  # type: ignore[assignment]
+
+        runner._load_patched_for_extras = True  # type: ignore[attr-defined]
+
     def _handle_signal(sig: int, _frame) -> None:
         print(f"[WARN] Received signal {sig}. Attempting emergency checkpoint then exiting.", flush=True)
-        _emergency_save(runner_holder.get("runner"), effective_run_dir, tag=f"signal{sig}")
+        _emergency_save(env, runner_holder.get("runner"), effective_run_dir, tag=f"signal{sig}")
         os._exit(128 + int(sig))
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -616,7 +1140,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         distributed=args_cli.distributed,
     )
 
-    
+    # -----------------------------------------------------------------
+    # Auto-resume: scan run_dir and load newest usable checkpoint.
+    # -----------------------------------------------------------------
+    loaded_ckpt: str | None = None
     if args_cli.auto_resume:
         ckpt_candidates = _list_checkpoints_sorted(effective_run_dir)
         if ckpt_candidates:
@@ -625,10 +1152,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     f"[INFO] Auto-resume: probing {len(ckpt_candidates)} checkpoint(s) in run_dir={effective_run_dir}",
                     flush=True,
                 )
-            loaded = _try_load_checkpoints(runner, ckpt_candidates)
-            if loaded is not None:
+            loaded_ckpt = _try_load_checkpoints(runner, ckpt_candidates)
+            if loaded_ckpt is not None:
                 if _is_rank0():
-                    print(f"[INFO] Auto-resume: loaded checkpoint: {loaded}", flush=True)
+                    print(f"[INFO] Auto-resume: loaded checkpoint: {loaded_ckpt}", flush=True)
             else:
                 if _is_rank0():
                     print(
@@ -641,12 +1168,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         runner.add_git_repo_to_log(__file__)
 
-        
+    # -----------------------------------------------------------------
+    # If Hydra resume path is requested, try it after auto-resume.
+    # -----------------------------------------------------------------
     if resume_path is not None:
         if _is_rank0():
             print(f"[INFO] Loading model checkpoint from: {resume_path}", flush=True)
         try:
             runner.load(resume_path)
+            loaded_ckpt = resume_path
             if _is_rank0():
                 print(f"[INFO] Loaded checkpoint: {resume_path}", flush=True)
         except Exception as exc:
@@ -656,7 +1186,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     f"({type(exc).__name__}: {exc}).",
                     flush=True,
                 )
-            # Optional fallback: walk back through run_dir checkpoints if enabled
             if args_cli.auto_resume:
                 ckpt_candidates = [p for p in _list_checkpoints_sorted(effective_run_dir) if p != resume_path]
                 if ckpt_candidates:
@@ -667,12 +1196,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         )
                     loaded = _try_load_checkpoints(runner, ckpt_candidates)
                     if loaded is not None:
+                        loaded_ckpt = loaded
                         if _is_rank0():
                             print(f"[INFO] Fallback auto-resume: loaded checkpoint: {loaded}", flush=True)
                     else:
                         if _is_rank0():
                             print("[WARN] Fallback auto-resume: no usable checkpoint found. Starting from scratch.", flush=True)
 
+    # Dump configs
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
@@ -697,9 +1228,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         return
 
     try:
-        runner.learn(num_learning_iterations=remaining, init_at_random_ep_len=True)
+        runner.learn(num_learning_iterations=remaining, init_at_random_ep_len=(completed == 0))
     except BaseException:
-        _emergency_save(runner, effective_run_dir, tag="exception")
+        _emergency_save(env, runner, effective_run_dir, tag="exception")
         raise
 
     env.close()

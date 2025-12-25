@@ -15,6 +15,11 @@ RESTART_SLEEP_S=15
 
 EXTRA_ARGS=()
 
+# If set, start the *first* launch from scratch (auto-resume disabled once).
+# After the first launch, auto-resume is enabled so restarts resume from the latest checkpoint.
+FRESH_RUN=0
+FIRST_LAUNCH=1
+
 # ============================================================
 # Helpers
 # ============================================================
@@ -29,6 +34,7 @@ Options:
       --max_iterations <int>  max_iterations (default: 100000)
       --hang_timeout_s <int>  hang timeout seconds (default: 15)
       --restart_sleep_s <int> Restart delay after crash (default: 15)
+      --fresh                 Start from scratch on the first launch (no auto-resume once)
   -h, --help                  Show this help
 
 Notes:
@@ -69,6 +75,8 @@ while [[ $# -gt 0 ]]; do
       HANG_TIMEOUT_S="$2"; shift 2 ;;
     --restart_sleep_s)
       RESTART_SLEEP_S="$2"; shift 2 ;;
+    --fresh)
+      FRESH_RUN=1; shift ;;
     -h|--help)
       usage; exit 0 ;;
     --)
@@ -120,9 +128,12 @@ BASE_ARGS=(
   --task "$TASK"
   --headless
   --max_iterations "$MAX_ITERATIONS"
-  --auto_resume
   --hang_timeout_s "$HANG_TIMEOUT_S"
 )
+
+if [[ "$FRESH_RUN" -eq 1 ]]; then
+  echo "[INFO] --fresh enabled: first launch will start from scratch (no auto-resume)"
+fi
 
 echo "[INFO] task=$TASK headless=true nproc_per_node=$NPROC_PER_NODE"
 
@@ -130,22 +141,38 @@ echo "[INFO] task=$TASK headless=true nproc_per_node=$NPROC_PER_NODE"
 # Training loop
 # ============================================================
 while true; do
+  # Compose args per launch.
+  # - Default: always enable auto-resume.
+  # - With --fresh: disable auto-resume only for the very first launch, then enable it for restarts.
+  RUN_ARGS=("${BASE_ARGS[@]}")
+  if [[ "$FRESH_RUN" -eq 1 ]]; then
+    if [[ "$FIRST_LAUNCH" -eq 0 ]]; then
+      RUN_ARGS+=(--auto_resume)
+    else
+      echo "[INFO] --fresh: first launch starts from scratch (auto_resume disabled for this launch)"
+    fi
+  else
+    RUN_ARGS+=(--auto_resume)
+  fi
+
   set +e
   if [[ "$NPROC_PER_NODE" -eq 1 ]]; then
     ./isaaclab.sh -p "$TRAIN_SCRIPT" \
-      "${BASE_ARGS[@]}" \
+      "${RUN_ARGS[@]}" \
       "${EXTRA_ARGS[@]}"
   else
     ./isaaclab.sh -p -m torch.distributed.run \
       --nnodes=1 \
       --nproc_per_node="$NPROC_PER_NODE" \
       "$TRAIN_SCRIPT" \
-      "${BASE_ARGS[@]}" \
+      "${RUN_ARGS[@]}" \
       --distributed \
       "${EXTRA_ARGS[@]}"
   fi
   exit_code=$?
   set -e
+
+  FIRST_LAUNCH=0
 
   echo "[INFO] Training exited with code: $exit_code"
 

@@ -78,7 +78,7 @@ class KurokoRewards(RewardsCfg):
     )
 
     feet_slide = RewTerm(
-        func=mdp.feet_slide_with_yaw,
+        func=mdp.feet_slide,
         weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -91,7 +91,6 @@ class KurokoRewards(RewardsCfg):
             ]),
         },
     )
-
 
     joint_deviation_shoulders = RewTerm(
         func=mdp.joint_deviation_l1,
@@ -113,19 +112,9 @@ class KurokoRewards(RewardsCfg):
                 "elbow_r_rear"])},
     )
 
-    joint_acc_elbows = RewTerm(
-        func=mdp.joint_acc_l2,
-        weight=-1e-7,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "elbow_l_front",
-                "elbow_l_rear",
-                "elbow_r_front",
-                "elbow_r_rear"])},
-    )
-
     joint_deviation_ankle_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.02,
+        weight=-0.01,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_yaw",
                 "ankle_r_yaw"])},
@@ -133,7 +122,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-4.0,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch"])},
@@ -141,13 +130,13 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-4.0,
+        weight=-10.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll",])},
     )
 
-    joint_deviation_torso_yaw = RewTerm(
+    joint_deviation_chest = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", 
@@ -178,7 +167,7 @@ class KurokoRewards(RewardsCfg):
                     "ankle_r_yaw_link",
                 ],
             ),
-            "target_height": 0.31,
+            "target_height": 0.32,
             "margin": 0.0,
             "gain": 100.0,
         },
@@ -279,8 +268,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 body_names=[base_link_name],
             )
 
-        if hasattr(self.terminations, "joint_pos_out_of_limit"):
-            self.terminations.joint_pos_out_of_limit.params["asset_cfg"] = SceneEntityCfg("robot")
         # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------

@@ -272,11 +272,11 @@ class TerminationsCfg:
         },
         time_out=False,
     )
-    joint_pos_out_of_limit = DoneTerm(
-        func=mdp.joint_pos_out_of_limit,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-        time_out=False,
-    )
+    # joint_pos_out_of_limit = DoneTerm(
+    #     func=mdp.joint_pos_out_of_limit,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    #     time_out=False,
+    # )
 
 @configclass
 class CurriculumCfg:

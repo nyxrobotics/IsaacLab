@@ -125,7 +125,7 @@ def feet_slide_with_yaw(
     grounded_by_force = force_norm > 1e-6
 
     # 両条件を満たした場合のみ接地
-    in_contact = grounded_by_air | grounded_by_force    # (N, F)
+    in_contact = grounded_by_air & grounded_by_force    # (N, F)
 
     # --------------------------------------------------------
     # 2) Foot linear & angular velocities

@@ -78,7 +78,7 @@ class KurokoRewards(RewardsCfg):
     )
 
     feet_slide = RewTerm(
-        func=mdp.feet_slide,
+        func=mdp.feet_slide_with_yaw,
         weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[

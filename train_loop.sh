@@ -4,7 +4,7 @@ set -euo pipefail
 # ============================================================
 # Defaults
 # ============================================================
-TASK="Isaac-Velocity-Flat-Kuroko-v0"
+TASK="Isaac-Velocity-Rough-Kuroko-v0"
 
 # If empty -> auto-detect by nvidia-smi
 NPROC_PER_NODE=""

@@ -6,6 +6,7 @@
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
@@ -246,12 +247,28 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 4. Disable synthetic height scanner and its observation.
         # -----------------------------------------------------------
         self.scene.height_scanner = None
-        if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "base_lin_vel"):
-            self.observations.policy.base_lin_vel = None
-        if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "height_scan"):
-            self.observations.policy.height_scan = None
-        if hasattr(self.observations.policy, "contact_forces"):
-            self.observations.policy.contact_forces = None
+
+        if hasattr(self.observations, "policy"):
+            if hasattr(self.observations.policy, "base_lin_vel"):
+                self.observations.policy.base_lin_vel = None
+
+            if hasattr(self.observations.policy, "projected_gravity"):
+                self.observations.policy.projected_gravity = None
+
+            if hasattr(self.observations.policy, "height_scan"):
+                self.observations.policy.height_scan = None
+
+            if hasattr(self.observations.policy, "contact_forces"):
+                self.observations.policy.contact_forces = None
+
+            # Add accelerometer-like linear acceleration (IMU-style)
+            self.observations.policy.base_lin_acc_sens = ObsTerm(
+                func=mdp.base_lin_acc_sens,
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "gravity_mag": 9.81,
+                },
+            )
 
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only

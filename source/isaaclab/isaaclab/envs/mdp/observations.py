@@ -44,6 +44,32 @@ def base_lin_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCf
     return asset.data.root_lin_vel_b
 
 
+def base_lin_acc_sens(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    gravity_mag: float = 9.81,
+) -> torch.Tensor:
+    """Accelerometer-like linear acceleration in the asset's root frame.
+
+    Returns specific force (a - g) expressed in the root (base) frame.
+    Shape: (num_envs, 3)
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # 1) Root linear acceleration in world frame (take first body == root)
+    # body_acc_w is (N, num_bodies, 6) for rigid objects; root is body index 0
+    a_w = asset.data.body_acc_w[:, 0, 0:3]
+
+    # 2) Rotate into base frame
+    a_b = math_utils.quat_rotate_inverse(asset.data.root_quat_w, a_w)
+
+    # 3) Subtract gravity expressed in base frame
+    # projected_gravity_b is unit gravity direction in base frame
+    g_b = asset.data.projected_gravity_b * gravity_mag
+
+    return a_b - g_b
+
+
 def base_ang_vel(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Root angular velocity in the asset's root frame."""
     # extract the used quantities (to enable type-hinting)

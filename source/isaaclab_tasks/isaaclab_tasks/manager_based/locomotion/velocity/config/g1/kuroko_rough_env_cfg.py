@@ -7,6 +7,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
@@ -261,13 +262,17 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             if hasattr(self.observations.policy, "contact_forces"):
                 self.observations.policy.contact_forces = None
 
-            # Add accelerometer-like linear acceleration (IMU-style)
+            # Add accelerometer-like linear acceleration (IMU-style) with uniform noise
             self.observations.policy.base_lin_acc_sens = ObsTerm(
                 func=mdp.base_lin_acc_sens,
                 params={
                     "asset_cfg": SceneEntityCfg("robot"),
                     "gravity_mag": 9.81,
                 },
+                noise=Unoise(
+                    n_min=-0.05,
+                    n_max=0.05,
+                ),
             )
 
         # -----------------------------------------------------------

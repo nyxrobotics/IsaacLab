@@ -246,6 +246,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 4. Disable synthetic height scanner and its observation.
         # -----------------------------------------------------------
         self.scene.height_scanner = None
+        if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "base_lin_vel"):
+            self.observations.policy.base_lin_vel = None
         if hasattr(self.observations, "policy") and hasattr(self.observations.policy, "height_scan"):
             self.observations.policy.height_scan = None
         if hasattr(self.observations.policy, "contact_forces"):

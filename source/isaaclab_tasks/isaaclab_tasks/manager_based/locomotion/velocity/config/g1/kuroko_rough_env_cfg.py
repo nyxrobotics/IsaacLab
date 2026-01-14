@@ -275,6 +275,62 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 ),
             )
 
+
+        # -----------------------------------------------------------
+        # 4b. Restrict action/observation joints to actuated joints only
+        # -----------------------------------------------------------
+        # Collect actuated joint names from the configured actuators.
+        actuated_joint_names: list[str] = []
+        try:
+            for actuator_cfg in self.scene.robot.actuators.values():
+                actuated_joint_names.extend(list(actuator_cfg.joint_names_expr))
+        except Exception as e:
+            print("[DEBUG] Failed to collect actuated joints from self.scene.robot.actuators:", e)
+
+        # De-duplicate while preserving order
+        _seen = set()
+        actuated_joint_names = [j for j in actuated_joint_names if not (j in _seen or _seen.add(j))]
+
+        print("[DEBUG] Actuated joint names count:", len(actuated_joint_names))
+        print("[DEBUG] Actuated joint names:", actuated_joint_names)
+
+        # Build an asset cfg that only exposes actuated joints.
+        # Important: explicitly clear joint_ids. Isaac Lab errors if both joint_names and joint_ids
+        # are set but not consistent (order-sensitive).
+        def _make_actuated_asset_cfg() -> SceneEntityCfg:
+            return SceneEntityCfg(
+                "robot",
+                joint_names=actuated_joint_names,
+                joint_ids=slice(None),
+                preserve_order=True,
+            )
+
+        # ---- Actions: override the joint selection of the joint position action term
+        if hasattr(self, "actions") and hasattr(self.actions, "joint_pos"):
+            action_term = self.actions.joint_pos
+            if hasattr(action_term, "joint_names"):
+                action_term.joint_names = actuated_joint_names
+                print("[DEBUG] Restricted action term 'joint_pos' via joint_names")
+            elif hasattr(action_term, "joint_names_expr"):
+                action_term.joint_names_expr = actuated_joint_names
+                print("[DEBUG] Restricted action term 'joint_pos' via joint_names_expr")
+            else:
+                print("[DEBUG] Action term 'joint_pos' has no joint_names/joint_names_expr field; cannot restrict.")
+        else:
+            print("[DEBUG] No actions.joint_pos term found; cannot restrict action dimension.")
+
+        # ---- Observations: force-inject asset_cfg into joint_pos/joint_vel terms
+        if hasattr(self.observations, "policy"):
+            for obs_name in ("joint_pos", "joint_vel"):
+                obs_term = getattr(self.observations.policy, obs_name, None)
+                if obs_term is None or not hasattr(obs_term, "params"):
+                    continue
+                if obs_term.params is None:
+                    obs_term.params = {}
+                # Use a fresh cfg per term to avoid cross-term mutation during resolve.
+                obs_term.params["asset_cfg"] = _make_actuated_asset_cfg()
+                print(f"[DEBUG] Injected actuated asset_cfg into observation term '{obs_name}'")
+
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------

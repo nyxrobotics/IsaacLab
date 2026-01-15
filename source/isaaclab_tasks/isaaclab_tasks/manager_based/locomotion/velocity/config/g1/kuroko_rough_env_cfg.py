@@ -362,9 +362,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         if self.scene.terrain.terrain_generator is not None:
             tg = self.scene.terrain.terrain_generator
             tg.difficulty_range = (0, 1.0)
-            terrain_scale = 0.1
+            terrain_scale = 0.01
 
-            # ★ 全ての段差の高さを 0.1 倍にスケールする処理 ★
+            # ★ 全ての段差の高さをスケールする処理 ★
             tg.vertical_scale *= terrain_scale
 
             for cfg in tg.sub_terrains.values():

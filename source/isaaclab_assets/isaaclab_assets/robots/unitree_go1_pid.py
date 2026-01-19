@@ -21,17 +21,17 @@ GO1_PID_ACTUATOR_CFG = PIDActuatorCfg(
     # PID gains (example values – tune as needed)
     kp=60.0,
     ki=0.0,
-    kd=2.0,
+    kd=0.0,
 
     # Motor limits (Unitree GO1 nominal values, SI units)
     # Hip / thigh / calf motors are typically similar
-    effort_limit=33.5,          # [N*m] stall torque
-    velocity_limit=21.0,        # [rad/s] no-load speed (~200 rpm)
+    effort_limit=23.7,          # [N*m] stall torque
+    velocity_limit=30.0,        # [rad/s] no-load speed (~200 rpm)
 
     # Damping behavior
     # True  : use PhysX viscous damping
     # False : internal torque-speed saturation
-    use_physx_damping=False,
+    use_physx_damping=True,
 )
 
 ##

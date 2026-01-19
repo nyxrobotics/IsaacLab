@@ -18,6 +18,14 @@ from .actuator_base import ActuatorBase
 if TYPE_CHECKING:
     from .actuator_pid_cfg import PIDActuatorCfg
 
+# --------------------------------------------------------------------------------------
+# Debug toggles
+# --------------------------------------------------------------------------------------
+# If True, the PhysX articulation joint-velocity limit (velocity_limit_sim) is released.
+# This helps isolate whether a slowdown comes from the physics solver's speed limit
+# (hard clamp/brake) or from the actuator's own torque-speed saturation (back-emf-like).
+RELEASE_SPEED_LIMIT: bool = False
+# --------------------------------------------------------------------------------------
 
 class PIDActuator(ActuatorBase):
     """Explicit PID position controller actuator (goal position -> effort output).
@@ -138,7 +146,20 @@ class PIDActuator(ActuatorBase):
             eff_lim,
             vel_lim,
         )
-        
+
+        # Optionally release the PhysX solver velocity limit (joint property), while keeping
+        # the motor's own no-load speed (self.velocity_limit) intact. This allows debugging
+        # whether a slowdown is caused by PhysX braking vs. torque-speed saturation.
+        if RELEASE_SPEED_LIMIT:
+            self.velocity_limit_sim = torch.full_like(self.velocity_limit_sim, float("inf"))
+            # Keep cfg in sync for downstream logging/inspection.
+            try:
+                self.cfg.velocity_limit_sim = float("inf")
+            except Exception:
+                # cfg may be a structured config; ignore if write fails.
+                pass
+
+        # If using PhysX damping mode, set the viscous friction now.
         if self._use_physx_damping:
             self._viscous_friction = torch.as_tensor(derived_viscous, device=self._device)
             self._viscous_friction = self._expand_to_shape(self._viscous_friction, self.computed_effort.shape)

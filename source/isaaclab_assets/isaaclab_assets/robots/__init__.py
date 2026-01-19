@@ -26,4 +26,5 @@ from .sawyer import *
 from .shadow_hand import *
 from .spot import *
 from .unitree import *
+from .unitree_go1_pid import *
 from .universal_robots import *

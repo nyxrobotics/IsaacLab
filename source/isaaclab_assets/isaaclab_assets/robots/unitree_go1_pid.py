@@ -39,6 +39,7 @@ GO1_PID_ACTUATOR_CFG = PIDActuatorCfg(
 ##
 
 UNITREE_GO1_PID_CFG = ArticulationCfg(
+    prim_path="/World/Go1",
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Unitree/Go1/go1.usd",
         activate_contact_sensors=True,

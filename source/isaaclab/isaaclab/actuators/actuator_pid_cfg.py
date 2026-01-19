@@ -8,6 +8,8 @@ from __future__ import annotations
 from typing import Sequence
 
 from isaaclab.utils import configclass
+from .actuator_base import ActuatorBase
+from .actuator_pid import PIDActuator
 
 @configclass
 class PIDActuatorCfg:
@@ -16,9 +18,11 @@ class PIDActuatorCfg:
     This actuator performs explicit PID position control and outputs joint efforts.
     All internal units are SI (rad, rad/s, N*m).
     """
+    # REQUIRED: tells IsaacLab which actuator to instantiate
+    class_type: type[ActuatorBase] = PIDActuator
     # Required by Isaac Lab actuator plumbing to map joints
     joint_names_expr: Sequence[str] = ()
-    
+
     # ---------------------------------------------------------------------
     # PID gains
     # ---------------------------------------------------------------------
@@ -59,3 +63,10 @@ class PIDActuatorCfg:
     # to -joint_velocity.
     # ---------------------------------------------------------------------
     dt: float | None = None
+    # --- IsaacLab ActuatorBase compatibility fields (not used by PIDActuator) ---
+    stiffness: float | Sequence[float] = 0.0
+    damping: float | Sequence[float] = 0.0
+    armature: float | Sequence[float] = 0.0
+    friction: float | Sequence[float] = 0.0
+    dynamic_friction: float | Sequence[float] = 0.0
+    viscous_friction: float | Sequence[float] = 0.0

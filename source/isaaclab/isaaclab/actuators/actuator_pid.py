@@ -138,6 +138,12 @@ class PIDActuator(ActuatorBase):
             eff_lim,
             vel_lim,
         )
+        
+        if self._use_physx_damping:
+            self._viscous_friction = torch.as_tensor(derived_viscous, device=self._device)
+            self._viscous_friction = self._expand_to_shape(self._viscous_friction, self.computed_effort.shape)
+            # Set the viscous friction into the articulation
+            self.viscous_friction = self._viscous_friction
 
         # Gains (broadcasting-friendly): shape (num_envs, num_joints) via ActuatorBase helpers if needed.
         # We keep them as tensors on device for fast compute.

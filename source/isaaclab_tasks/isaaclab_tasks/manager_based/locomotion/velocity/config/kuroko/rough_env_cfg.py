@@ -332,6 +332,44 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 obs_term.params["asset_cfg"] = _make_actuated_asset_cfg()
                 print(f"[DEBUG] Injected actuated asset_cfg into observation term '{obs_name}'")
 
+        # --- Fix: base_com observation expects 'base' in parent cfg, but Kuroko uses 'body_link'
+        if hasattr(self.observations, "policy"):
+            base_com_term = getattr(self.observations.policy, "base_com", None)
+            if base_com_term is not None and hasattr(base_com_term, "params"):
+                if base_com_term.params is None:
+                    base_com_term.params = {}
+                base_com_term.params["asset_cfg"] = SceneEntityCfg(
+                    "robot",
+                    body_names=[base_link_name],
+                    preserve_order=True,
+                )
+                print(f"[DEBUG] Patched observation term 'base_com' to use body '{base_link_name}'")
+
+        # --- Fix: base_com STARTUP EVENT expects 'base' in parent cfg, but Kuroko uses 'body_link'
+        if hasattr(self, "events") and getattr(self, "events", None) is not None:
+            event_base_com = getattr(self.events, "base_com", None)
+            if event_base_com is not None and hasattr(event_base_com, "params"):
+                if event_base_com.params is None:
+                    event_base_com.params = {}
+                # Some configs use key 'asset_cfg' (not nested in params for events); unify here.
+                if "asset_cfg" in event_base_com.params and event_base_com.params["asset_cfg"] is not None:
+                    try:
+                        event_base_com.params["asset_cfg"].body_names = [base_link_name]
+                        event_base_com.params["asset_cfg"].preserve_order = True
+                    except Exception:
+                        event_base_com.params["asset_cfg"] = SceneEntityCfg(
+                            "robot",
+                            body_names=[base_link_name],
+                            preserve_order=True,
+                        )
+                else:
+                    event_base_com.params["asset_cfg"] = SceneEntityCfg(
+                        "robot",
+                        body_names=[base_link_name],
+                        preserve_order=True,
+                    )
+                print(f"[DEBUG] Patched startup event term 'base_com' to use body '{base_link_name}'")
+
         # -----------------------------------------------------------
         # 5. Rewards & terminations use short names only
         # -----------------------------------------------------------

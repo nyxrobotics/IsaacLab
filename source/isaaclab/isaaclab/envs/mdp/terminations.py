@@ -159,3 +159,39 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
     return torch.any(
         torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold, dim=1
     )
+
+
+def detect_fall(
+    env: "ManagerBasedRLEnv",
+    limit_angle: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate when robot is clearly in an exploded state.
+
+    - 傾きが大きすぎる
+    - 数値が NaN / Inf になっている
+    """
+    # 公式の bad_orientation / root_height_below_minimum と同じ取り方
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # root pos / projected gravity
+    root_pos = asset.data.root_pos_w          # (num_envs, 3)
+    root_quat = asset.data.root_link_quat_w
+    root_lin_vel = asset.data.root_vel_w
+    root_ang_vel =  asset.data.root_link_ang_vel_w
+    proj_g   = asset.data.projected_gravity_b # (num_envs, 3)
+
+    # 1) 数値が壊れている (NaN / Inf)
+    bad_numeric = (~torch.isfinite(root_pos).all(dim=-1)) \
+        | (~torch.isfinite(proj_g).all(dim=-1)) \
+        | (~torch.isfinite(root_quat).all(dim=-1)) \
+        | (~torch.isfinite(root_lin_vel).all(dim=-1)) \
+        | (~torch.isfinite(root_ang_vel).all(dim=-1))
+        
+
+    # 2) 傾きが limit_angle を超える
+    #    bad_orientation と同じく projected_gravity_b を使う
+    tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
+    bad_tilt = tilt > limit_angle
+
+    return bad_numeric | bad_tilt

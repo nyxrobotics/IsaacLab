@@ -5,6 +5,7 @@
 
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -338,7 +339,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact = None
+        self.terminations.base_contact = None # type: ignore
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [
         #     "chest_link",
         #     "hip_r_pitch_link",
@@ -350,12 +351,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         # 6. Explosion termination: use base_link as reference body
         # -----------------------------------------------------------
-        if hasattr(self.terminations, "robot_illegal_state"):
-            self.terminations.robot_illegal_state.params["asset_cfg"] = SceneEntityCfg(
-                "robot",
-                body_names=[base_link_name],
-            )
-
+        self.terminations.detect_fall = DoneTerm( # type: ignore
+            func=mdp.detect_fall,
+            params={
+                "limit_angle": 1.2,
+                "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name],),
+            },
+            time_out=False,
+        )
         # -----------------------------------------------------------
         # Remaining default settings
         # -----------------------------------------------------------

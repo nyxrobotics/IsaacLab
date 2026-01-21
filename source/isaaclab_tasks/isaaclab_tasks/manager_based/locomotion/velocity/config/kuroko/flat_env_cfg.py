@@ -5,7 +5,7 @@
 
 from isaaclab.utils import configclass
 
-from .kuroko_rough_env_cfg import KurokoRoughEnvCfg
+from .rough_env_cfg import KurokoRoughEnvCfg
 
 @configclass
 class KurokoFlatEnvCfg(KurokoRoughEnvCfg):

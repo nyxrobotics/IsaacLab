@@ -161,3 +161,80 @@ def torso_height_penalty(
 
     penalty = -gain * excess
     return penalty
+
+
+def feet_slide_with_yaw(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    lin_weight: float = 1.0,
+    yaw_weight: float = 1.0,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Penalize feet sliding (XY) and twisting (yaw) while in contact.
+
+    接地判定:
+      - current_air_time < 1e-6
+      - force_norm > 1e-6
+
+    返り値は「スリップ量のコスト（正の値）」なので、
+    報酬定義側では weight を負にして使う想定。
+    """
+
+    # --------------------------------------------------------
+    # 1) Contact forces & contact state (same logic as feet_contact_angle_penalty)
+    # --------------------------------------------------------
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    # forces_w_history: (N, history, S, 3)
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # (N, S, 3)
+
+    # foot sensor indices (例: [left, right])
+    sensor_ids = sensor_cfg.body_ids
+
+    # 対象足の力ベクトルのみ取り出し: (N, F, 3)
+    forces_feet = forces_w_last[:, sensor_ids, :]
+
+    # 力のノルム: (N, F)
+    force_norm = torch.norm(forces_feet, dim=-1)
+
+    # air-time: (N, S) から対象足だけ取り出す → (N, F)
+    air_time = contact_sensor.data.current_air_time[:, sensor_ids]
+
+    # 空中でない（地面にいる） & 力がある
+    grounded_by_air = air_time < 1e-6
+    grounded_by_force = force_norm > 1e-6
+
+    # 接地判定
+    in_contact = grounded_by_air & grounded_by_force    # (N, F)
+
+    # --------------------------------------------------------
+    # 2) Foot linear & angular velocities
+    # --------------------------------------------------------
+    asset = env.scene[asset_cfg.name]
+
+    # body indices for the same feet (asset_cfg.body_ids と sensor_cfg.body_ids が対応している前提)
+    body_ids = asset_cfg.body_ids  # (F,)
+
+    # 線形速度（world）: (N, B, 3) → 対象足 (N, F, 3)
+    body_lin_vel_w = asset.data.body_lin_vel_w[:, body_ids, :]  # (N, F, 3)
+    lin_xy = body_lin_vel_w[..., :2]                            # (N, F, 2)
+    lin_speed = lin_xy.norm(dim=-1)                             # (N, F)
+
+    # 角速度（world）: (N, B, 3) → 対象足
+    body_ang_vel_w = asset.data.body_ang_vel_w[:, body_ids, :]  # (N, F, 3)
+    yaw_rate = torch.abs(body_ang_vel_w[..., 2])                # (N, F)  z軸まわり
+
+    # --------------------------------------------------------
+    # 3) Sliding + twisting cost (only when in contact)
+    # --------------------------------------------------------
+    # 基本コスト（接地・非接地に関係なくまず計算）
+    slip_cost_per_foot = lin_weight * lin_speed + yaw_weight * yaw_rate  # (N, F)
+
+    # 接地中だけカウント（bool → float に変換してマスク）
+    slip_cost_per_foot = slip_cost_per_foot * in_contact.float()
+
+    # 足ごとに合計 → (N,)
+    penalty = torch.sum(slip_cost_per_foot, dim=1)
+
+    return penalty

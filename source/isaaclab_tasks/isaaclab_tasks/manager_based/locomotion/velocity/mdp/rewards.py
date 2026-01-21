@@ -114,3 +114,50 @@ def stand_still_joint_deviation_l1(
     command = env.command_manager.get_command(command_name)
     # Penalize motion when command is nearly zero.
     return mdp.joint_deviation_l1(env, asset_cfg) * (torch.norm(command[:, :2], dim=1) < command_threshold)
+
+def torso_height_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    Torso height penalty with margin.
+
+    - rel_height = chest_z - min_ankle_z
+    - If |rel_height - target_height| <= margin → penalty = 0
+    - If above margin → penalty = -gain * (excess amount)
+
+    Parameters
+    ----------
+    target_height : float
+        Desired torso height above lowest ankle.
+    margin : float
+        Allowed deviation without penalty.
+    gain : float
+        Penalty gain applied to the amount exceeding the margin.
+    """
+
+    asset = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    # Heights
+    chest_z = body_pos_w[:, chest_id, 2]
+    ankles_z = body_pos_w[:, ankle_ids, 2]
+    min_ankle_z = ankles_z.min(dim=-1).values
+
+    # Torso height above lowest ankle
+    rel_height = chest_z - min_ankle_z
+
+    # deviation
+    diff = rel_height - target_height
+
+    # margin excess (positive if outside ±margin)
+    excess = torch.relu(torch.abs(diff) - margin)
+
+    penalty = -gain * excess
+    return penalty

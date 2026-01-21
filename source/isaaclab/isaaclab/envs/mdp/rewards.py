@@ -19,7 +19,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import RewardTermCfg
 from isaaclab.sensors import ContactSensor, RayCaster
-from isaaclab.utils.math import quat_rotate_inverse
+from isaaclab.utils.math import quat_apply_inverse
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -345,7 +345,7 @@ def flat_orientation_links_l2(
     g_w[..., 2] = -1.0
 
     # gravity in body frame
-    g_b = quat_rotate_inverse(body_quat_w, g_w)     # (N, B, 3)
+    g_b = quat_apply_inverse(body_quat_w, g_w)     # (N, B, 3)
 
     # select target bodies
     body_ids = asset_cfg.body_ids

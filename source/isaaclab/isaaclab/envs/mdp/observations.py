@@ -56,7 +56,7 @@ def base_lin_acc_sens(
     # body_acc_w is (N, num_bodies, 6) for rigid objects; root is body index 0
     a_w = asset.data.body_acc_w[:, 0, 0:3]
     # 2) Rotate into base frame
-    a_b = math_utils.quat_rotate_inverse(asset.data.root_quat_w, a_w)
+    a_b = math_utils.quat_apply_inverse(asset.data.root_quat_w, a_w)
     # 3) Subtract gravity expressed in base frame
     # projected_gravity_b is unit gravity direction in base frame
     g_b = asset.data.projected_gravity_b * gravity_mag

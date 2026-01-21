@@ -419,12 +419,6 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             params={"asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[
-                "ankle_l_rear_passive",
-                "ankle_r_rear_passive",
-                "shin_l_front_passive",
-                "shin_r_front_passive",
-                "shin_l_rear_passive",
-                "shin_r_rear_passive",
                 "shin_l_active",
                 "shin_r_active",
                 "thigh_l_active",

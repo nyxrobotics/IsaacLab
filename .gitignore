@@ -10,7 +10,7 @@
 
 # No USD files allowed in the repo
 **/*.usd
-**/*.usda
+# **/*.usda
 **/*.usdc
 **/*.usdz
 

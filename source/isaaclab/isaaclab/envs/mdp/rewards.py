@@ -317,3 +317,45 @@ def track_ang_vel_z_exp(
     # compute the error
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_b[:, 2])
     return torch.exp(-ang_vel_error / std**2)
+
+
+def flat_orientation_links_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    margin: float = 0.3,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    Penalize non-flat orientation for multiple links with a tolerance margin.
+
+    - Project gravity into body frames
+    - Compute L2 norm of xy components (tilt magnitude)
+    - If tilt <= margin → penalty = 0
+    - If tilt > margin → penalty = -gain * (tilt - margin)
+    """
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    # body orientations
+    body_quat_w = asset.data.body_quat_w            # (N, B, 4)
+
+    # world gravity expanded to match shape (N, B, 3)
+    g_w = torch.zeros_like(asset.data.body_pos_w)
+    g_w[..., 2] = -1.0
+
+    # gravity in body frame
+    g_b = quat_rotate_inverse(body_quat_w, g_w)     # (N, B, 3)
+
+    # select target bodies
+    body_ids = asset_cfg.body_ids
+    g_sel = g_b[:, body_ids, :2]                    # (N, K, 2)
+
+    # tilt magnitude: L2 norm of xy gravity components
+    l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
+    l2_mean = torch.mean(l2_per_body, dim=1)        # (N,)
+
+    # margin-based penalty
+    excess = torch.relu(l2_mean - margin)
+    penalty = -gain * excess
+
+    return penalty

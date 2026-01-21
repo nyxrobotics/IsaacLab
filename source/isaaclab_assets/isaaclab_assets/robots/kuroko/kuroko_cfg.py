@@ -2,11 +2,31 @@
 
 from isaaclab.assets.articulation import ArticulationCfg
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.actuators import PIDActuatorCfg
 import os
 
 _KUROKO_DIR = os.path.dirname(__file__)
 _KUROKO_USD_PATH = os.path.join(_KUROKO_DIR, "kuroko.usda")
+
+XM540_W150_PID_ACTUATOR_CFG = PIDActuatorCfg(
+    kp=42.41,
+    ki=0.0,
+    kd=0.0,
+    effort_limit=8.9,
+    velocity_limit=6.9,
+    use_physx_damping=True,
+)
+
+XH430_W210_PID_ACTUATOR_CFG = PIDActuatorCfg(
+    kp=16.62,
+    ki=0.0,
+    kd=0.0,
+    effort_limit=3.1,
+    velocity_limit=6.5,
+    use_physx_damping=True,
+)
+
+
 
 # Minimal robot config for kuroko
 KUROKO_MINIMAL_CFG = ArticulationCfg(
@@ -59,7 +79,7 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
 
     actuators={
         # XM540-W150
-        "xm540_w150": ImplicitActuatorCfg(
+        "xm540_w150": XM540_W150_PID_ACTUATOR_CFG.replace(
             joint_names_expr=[
                 "shin_l_active",
                 "shin_r_active",
@@ -68,18 +88,10 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
                 "thigh_l_active",
                 "thigh_r_active",
             ],
-            # Spec: Max Force 8.9 [N·m]
-            effort_limit_sim=8.9,
-            # Spec: Stiffness 889.99994
-            stiffness=889.99994,
-            # Spec: Damping 22.51299
-            damping=22.51299,
-            # Spec: Maximum Joint Velocity 395.0 [deg/s] ≈ 6.89 [rad/s]
-            velocity_limit_sim=6.894050545377602
         ),
 
         # XH430-W210
-        "xh430_w210": ImplicitActuatorCfg(
+        "xh430_w210": XH430_W210_PID_ACTUATOR_CFG.replace(
             joint_names_expr=[
                 "ankle_l_roll",
                 "ankle_l_yaw",
@@ -97,14 +109,6 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
                 "shoulder_l_pitch",
                 "shoulder_r_pitch",
             ],
-            # Spec: Max Force 3.1 [N·m]
-            effort_limit_sim=3.1,
-            # Spec: Stiffness 310.0
-            stiffness=310.0,
-            # Spec: Damping 8.32416
-            damping=8.32416,
-            # Spec: Maximum Joint Velocity 372.0 [deg/s] ≈ 6.49 [rad/s]
-            velocity_limit_sim=6.492624817418905
         ),
     },
 )

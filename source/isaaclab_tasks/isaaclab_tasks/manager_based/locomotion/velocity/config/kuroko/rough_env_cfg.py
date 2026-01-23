@@ -52,7 +52,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-1000.0,
+        weight=-500.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -63,7 +63,7 @@ class KurokoRewards(RewardsCfg):
 
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=30.0,
+        weight=17.0,
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
@@ -141,7 +141,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_torque_hip_roll = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-0.01,
+        weight=-0.04,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll",])},
@@ -469,7 +469,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -30.0
-        self.rewards.action_rate_l2.weight = -0.001
+        self.rewards.action_rate_l2.weight = -0.01
         self.rewards.dof_acc_l2.weight = -1.0e-8
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",

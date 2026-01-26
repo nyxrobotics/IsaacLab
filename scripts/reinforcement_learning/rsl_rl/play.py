@@ -115,6 +115,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
+    # ------------------------------------------------------------
+    # Export IO descriptors into the same exported/ directory as policy.onnx/policy.pt
+    # NOTE: ManagerBasedEnv checks these flags during env initialization.
+    # ------------------------------------------------------------
+    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    os.makedirs(export_model_dir, exist_ok=True)
+
+    # Set flags even if the cfg class doesn't define them (Hydra configclass is permissive)
+    setattr(env_cfg, "export_io_descriptors", True)
+    setattr(env_cfg, "io_descriptors_output_dir", export_model_dir)
+
+    print(f"[INFO] IO descriptors will be exported to: {export_model_dir}")
+    # ------------------------------------------------------------
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -168,7 +182,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         normalizer = None
 
     # export policy to onnx/jit
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
     export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 

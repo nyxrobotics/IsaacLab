@@ -69,20 +69,35 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=1000.0,
+        weight=100.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link",
             ]),
-            "threshold": 0.02,
+            "threshold": 0.04,
         },
     )
 
+    # feet_slide = RewTerm(
+    #     func=mdp.feet_slide_with_yaw,
+    #     weight=-1.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link",
+    #         ]),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link",
+    #         ]),
+    #     },
+    # )
+
     feet_slide = RewTerm(
-        func=mdp.feet_slide_with_yaw,
-        weight=-1.0,
+        func=mdp.feet_slide,
+        weight=-0.1,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
@@ -469,7 +484,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -30.0
-        self.rewards.action_rate_l2.weight = -0.01
+        self.rewards.action_rate_l2.weight = -0.3
         self.rewards.dof_acc_l2.weight = -1.0e-8
         self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",

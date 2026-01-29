@@ -110,65 +110,12 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_shoulders = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-8.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "shoulder_l_pitch",
-                "shoulder_l_roll",
-                "shoulder_r_pitch",
-                "shoulder_r_roll"])},
-    )
-
-    joint_deviation_elbows = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-8.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "elbow_l_front",
-                "elbow_l_rear",
-                "elbow_r_front",
-                "elbow_r_rear"])},
-    )
-
-    joint_deviation_ankle_yaw = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "ankle_l_yaw",
-                "ankle_r_yaw"])},
-    )
-
-    joint_deviation_hip_pitch = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-4.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "hip_l_pitch",
-                "hip_r_pitch",])},
-    )
-
-    joint_deviation_hip_roll = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-16.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "hip_l_roll",
-                "hip_r_roll",])},
-    )
-
     joint_torque_hip_roll = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-0.04,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll",])},
-    )
-
-    joint_deviation_chest = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-4.0,
-        params={"asset_cfg": SceneEntityCfg("robot", 
-            joint_names=[
-                "chest"
-            ])},
     )
 
     flat_toe_penalty = RewTerm(
@@ -182,9 +129,13 @@ class KurokoRewards(RewardsCfg):
     )
 
     torso_height = RewTerm(
-        func=mdp.torso_height_penalty,
-        weight= 1.0,
+        func=mdp.local_torso_height_penalty,
+        weight=1.0,
         params={
+            "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=[
@@ -468,7 +419,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2 = None
+        self.rewards.lin_vel_z_l2.weight = -0.1
         self.rewards.dof_pos_limits = RewTerm(
             func=mdp.joint_pos_limits,
             weight=-1e6,
@@ -482,30 +433,23 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],)},
         )
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2 = None
+        self.rewards.ang_vel_xy_l2.weight = -0.001
         self.rewards.flat_orientation_l2.weight = -30.0
-        self.rewards.action_rate_l2.weight = -0.3
-        self.rewards.dof_acc_l2.weight = -1.0e-8
-        self.rewards.dof_acc_l2.params["asset_cfg"] = SceneEntityCfg(
-            "robot",
-            joint_names=[
-                "shin_l_active",
-                "shin_r_active",
-                "thigh_l_active",
-                "thigh_r_active",
-            ],
+        self.rewards.action_l2 = RewTerm(
+            func=mdp.action_l2,
+            weight=-0.01,
         )
-
-        self.rewards.dof_torques_l2.weight = -1.0e-5
-        self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
-            "robot",
-            joint_names=[
-                "shin_l_active",
-                "shin_r_active",
-                "thigh_l_active",
-                "thigh_r_active",
-            ],
+        self.rewards.action_rate_l2.weight = -0.1
+        self.rewards.action_acceleration_l2 = RewTerm(
+            func=mdp.action_acceleration_l2,
+            weight=-0.01,
         )
+        self.rewards.action_jerk_l2 = RewTerm(
+            func=mdp.action_jerk_l2,
+            weight=-0.001,
+        )
+        self.rewards.dof_acc_l2 = None
+        self.rewards.dof_torques_l2 = None
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------

@@ -108,6 +108,14 @@ class PIDActuator(ActuatorBase):
         # Convert to tensors later; for now keep python-level checks
         self._use_physx_damping = bool(cfg.use_physx_damping)
 
+        # Convert [rad/sec] -> [deg/sec] for velocity limit to match viscous friction units
+        if vel_lim is not None:
+            try:
+                vel_lim = vel_lim * 57.2958  # type: ignore
+            except Exception:
+                # tensor or other types handled after super().__init__
+                pass
+
         # If velocity limit is not provided, we cannot form a slope. We fallback to 0 viscous friction.
         if vel_lim is None:
             omni.log.warn(

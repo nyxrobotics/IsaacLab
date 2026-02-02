@@ -402,6 +402,19 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
 
+        # Set PhysicsScene dt to 500Hz
+        self.sim.dt = 0.002  # Simulation: 500 Hz 
+        self.decimation = 10  # Rendering: 50 Hz
+        self.sim.render_interval = self.decimation
+        self.episode_length_s = 20.0
+        self.sim.physx.max_position_iteration_count = 16
+        self.sim.physx.min_position_iteration_count = 16
+        self.sim.physx.max_velocity_iteration_count = 1
+        self.sim.physx.min_velocity_iteration_count = 1
+        # Slover type: PGS
+        self.sim.physx.solver_type = 0
+        # TODO: enableGPUDynamics = 0, broadphaseType = "MBP"
+
         # Randomize initial joint angles
         self.events.push_robot = None
         self.events.add_base_mass = None

@@ -343,6 +343,71 @@ def _debug_print_action_joint_mapping(env: "ManagerBasedRLEnv") -> None:
     print("")
 
 
+def _debug_print_action_terms(env: "ManagerBasedRLEnv") -> None:
+    """Print detailed info about action terms to figure out joint/action ordering."""
+    print("\n[RewardDebug] ===== Action terms debug =====")
+    try:
+        action_dim_total = int(env.action_manager.action.shape[1])
+        print(f"[RewardDebug] total_action_dim={action_dim_total}")
+    except Exception:
+        pass
+
+    try:
+        term_names = list(env.action_manager.active_terms)
+    except Exception:
+        term_names = []
+    print(f"[RewardDebug] active_terms={term_names}")
+
+    offset = 0
+    for term_name in term_names:
+        term = env.action_manager.get_term(term_name)
+        term_dim = int(getattr(term, "action_dim", -1))
+        cls_name = term.__class__.__name__
+        print(f"\n[RewardDebug] term='{term_name}' class={cls_name} offset={offset} action_dim={term_dim}")
+
+        # Try common places where joint info is stored
+        candidates = [
+            "joint_names", "_joint_names",
+            "joint_ids", "_joint_ids",
+            "dof_names", "_dof_names",
+            "dof_ids", "_dof_ids",
+        ]
+        for key in candidates:
+            if hasattr(term, key):
+                val = getattr(term, key)
+                try:
+                    if isinstance(val, (list, tuple)):
+                        print(f"[RewardDebug]   {key} (len={len(val)}): {val}")
+                    elif hasattr(val, "shape"):
+                        print(f"[RewardDebug]   {key} (tensor shape={tuple(val.shape)}): {val}")
+                    else:
+                        print(f"[RewardDebug]   {key}: {val}")
+                except Exception:
+                    print(f"[RewardDebug]   {key}: <unprintable>")
+
+        # Print cfg / asset_cfg if present
+        if hasattr(term, "cfg"):
+            cfg = getattr(term, "cfg")
+            print(f"[RewardDebug]   has cfg: {type(cfg).__name__}")
+            if hasattr(cfg, "asset_cfg"):
+                ac = getattr(cfg, "asset_cfg")
+                print(f"[RewardDebug]   cfg.asset_cfg: {ac}")
+                for k in ["name", "joint_names", "joint_ids", "body_names", "body_ids"]:
+                    if hasattr(ac, k):
+                        print(f"[RewardDebug]     asset_cfg.{k}: {getattr(ac, k)}")
+
+        # IO descriptor if present
+        if hasattr(term, "IO_descriptor"):
+            iod = getattr(term, "IO_descriptor")
+            print(f"[RewardDebug]   has IO_descriptor: {type(iod).__name__}")
+            extras = getattr(iod, "extras", None)
+            print(f"[RewardDebug]     IO_descriptor.extras: {extras}")
+
+        offset += max(term_dim, 0)
+
+    print("\n[RewardDebug] ===== End action terms debug =====\n")
+
+
 def _resolve_action_indices(
     env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg | None
 ) -> torch.Tensor | None:
@@ -368,11 +433,11 @@ def _resolve_action_indices(
     name_to_action_idx = _build_joint_name_to_action_index(env)
     missing = [jn for jn in target_joint_names if jn not in name_to_action_idx]
     if missing:
-        _debug_print_action_joint_mapping(env)
+        _debug_print_action_terms(env)
         raise KeyError(
             "Some joints in asset_cfg were not found in action joint_names mapping. "
             f"Missing: {missing}. "
-            "Make sure your action term exports IO descriptor extras['joint_names'] and names match articulation joints."
+            "Make sure your action term exports joint names or we extract them from the term."
         )
     return torch.tensor(
         [name_to_action_idx[jn] for jn in target_joint_names],

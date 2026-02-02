@@ -497,23 +497,24 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],)},
         )
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2.weight = -0.001
+        self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -30.0
         self.rewards.action_l2 = RewTerm(
             func=mdp.action_l2,
             weight=-0.01,
         )
-        self.rewards.action_rate_l2.weight = -0.1
-        self.rewards.action_acceleration_l2 = RewTerm(
-            func=mdp.action_acceleration_l2,
-            weight=-0.01,
-        )
-        self.rewards.action_jerk_l2 = RewTerm(
-            func=mdp.action_jerk_l2,
-            weight=-0.001,
-        )
+        self.rewards.action_rate_l2.weight = -0.3
+        # self.rewards.action_jerk_l2 = RewTerm(
+        #     func=mdp.action_jerk_l2,
+        #     weight=-0.001,
+        # )
         self.rewards.dof_acc_l2 = None
-        self.rewards.dof_torques_l2 = None
+        self.rewards.dof_acc_l2 = RewTerm(
+            func=mdp.joint_action_acc_l2,
+            weight=-1.0e-12,
+            params={"dt": self.sim.dt},
+        )
+        self.rewards.dof_torques_l2.weight = -1.0e-5
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------

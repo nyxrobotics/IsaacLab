@@ -279,9 +279,11 @@ def action_jerk_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
 
 
 def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int]:
-    """Build:contentReference[oaicite:2]{index=2}ame -> global action index using action term IO descriptors.
+    """Build mapping from joint name -> global action index.
 
-    This assumes joint-based action terms export `extras["joint_names"]`.
+    Priority:
+      1) term.IO_descriptor.extras["joint_names"] if available
+      2) term._joint_names / term.joint_names if available
     The mapping is cached on the environment instance.
     """
     cache_attr = "_joint_name_to_action_index_cache"
@@ -291,30 +293,39 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
 
     name_to_idx: dict[str, int] = {}
 
-    # Build global index offsets across action terms (in the same order as ActionManager.process_action splits).
     offset = 0
     for term_name in env.action_manager.active_terms:
         term = env.action_manager.get_term(term_name)
+        term_dim = int(getattr(term, "action_dim", 0))
 
-        # Try to read joint_names from IO descriptor extras.
         joint_names = None
+
+        # 1) Try IO descriptor extras
         try:
-            extras = getattr(term.IO_descriptor, "extras", None)
+            iod = getattr(term, "IO_descriptor", None)
+            extras = getattr(iod, "extras", None)
             if isinstance(extras, dict):
                 joint_names = extras.get("joint_names", None)
         except Exception:
             joint_names = None
 
+        # 2) Fallback: term internal fields (e.g., JointPositionAction has _joint_names)
+        if joint_names is None:
+            if hasattr(term, "_joint_names"):
+                joint_names = getattr(term, "_joint_names")
+            elif hasattr(term, "joint_names"):
+                joint_names = getattr(term, "joint_names")
+
+        # Register mapping
         if joint_names is not None:
-            # Map each joint name to its corresponding global action index.
-            # If duplicates appear (multiple terms), later ones overwrite.
-            for local_i, jn in enumerate(joint_names):
+            for local_i, jn in enumerate(list(joint_names)):
                 name_to_idx[str(jn)] = offset + int(local_i)
 
-        offset += int(term.action_dim)
+        offset += term_dim
 
     setattr(env, cache_attr, name_to_idx)
     return name_to_idx
+
 
 
 def _debug_print_action_joint_mapping(env: "ManagerBasedRLEnv") -> None:
@@ -456,6 +467,8 @@ def joint_action_vel_l1(
 
     action = env.action_manager.action
     prev = env.action_manager.prev_action
+    if prev is None:
+        prev = action
 
     if action_ids is not None:
         action = action.index_select(1, action_ids)
@@ -473,6 +486,8 @@ def joint_action_vel_l2(
 
     action = env.action_manager.action
     prev = env.action_manager.prev_action
+    if prev is None:
+        prev = action
 
     if action_ids is not None:
         action = action.index_select(1, action_ids)
@@ -492,6 +507,11 @@ def joint_action_acc_l2(
     prev = env.action_manager.prev_action
     prev_prev = env.action_manager.prev_prev_action
 
+    if prev is None:
+        prev = action
+    if prev_prev is None:
+        prev_prev = prev
+        
     if action_ids is not None:
         action = action.index_select(1, action_ids)
         prev = prev.index_select(1, action_ids)

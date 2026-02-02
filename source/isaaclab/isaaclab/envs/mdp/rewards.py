@@ -317,6 +317,32 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
     return name_to_idx
 
 
+def _debug_print_action_joint_mapping(env: "ManagerBasedRLEnv") -> None:
+    """Print joint-name mapping that exists on the action side for debugging."""
+    name_to_idx = _build_joint_name_to_action_index(env)
+
+    # Print in a stable order (by action index)
+    items = sorted(name_to_idx.items(), key=lambda kv: kv[1])
+    joint_names_sorted = [name for name, _ in items]
+
+    print("\n[RewardDebug] Action joint mapping (extras['joint_names']):")
+    print(f"[RewardDebug] total_mapped_joints={len(joint_names_sorted)}")
+    if joint_names_sorted:
+        print("[RewardDebug] joint_names=")
+        for name in joint_names_sorted:
+            print(f"  - {name}")
+    else:
+        print("[RewardDebug] joint_names is EMPTY. No action term exported extras['joint_names'].")
+
+    # Also show action dimensionality for reference
+    try:
+        total_action_dim = int(env.action_manager.action.shape[1])
+        print(f"[RewardDebug] env.action_manager.action_dim={total_action_dim}")
+    except Exception:
+        pass
+    print("")
+
+
 def _resolve_action_indices(
     env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg | None
 ) -> torch.Tensor | None:
@@ -342,11 +368,12 @@ def _resolve_action_indices(
     name_to_action_idx = _build_joint_name_to_action_index(env)
     missing = [jn for jn in target_joint_names if jn not in name_to_action_idx]
     if missing:
+        _debug_print_action_joint_mapping(env)
         raise KeyError(
-            f"Joints not found in action mapping: {missing}. "
-            "Check action term IO descriptor extras['joint_names']."
+            "Some joints in asset_cfg were not found in action joint_names mapping. "
+            f"Missing: {missing}. "
+            "Make sure your action term exports IO descriptor extras['joint_names'] and names match articulation joints."
         )
-
     return torch.tensor(
         [name_to_action_idx[jn] for jn in target_joint_names],
         device=env.device,

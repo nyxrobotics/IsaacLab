@@ -52,7 +52,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-500.0,
+        weight=-1000.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -148,6 +148,57 @@ class KurokoRewards(RewardsCfg):
             "margin": 0.0,
             "gain": 300.0,
         },
+    )
+
+    joint_deviation_shoulders = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-8.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "shoulder_l_pitch",
+                "shoulder_r_pitch",
+                "shoulder_l_roll",
+                "shoulder_r_roll",
+        ])},
+    )
+
+    joint_deviation_elbows = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-16.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "elbow_l_front",
+                "elbow_l_rear",
+                "elbow_r_front",
+                "elbow_r_rear"])},
+    )
+
+    joint_deviation_chest = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-4.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["chest"])},
+    )
+
+    joint_deviation_hip_pitch = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-4.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "hip_l_pitch",
+                "hip_r_pitch",])},
+    )
+
+    joint_deviation_hip_roll = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-16.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "hip_l_roll",
+                "hip_r_roll",])},
+    )
+
+    joint_deviation_ankles = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "ankle_l_yaw",
+                "ankle_r_yaw",])},
     )
 
 

@@ -317,76 +317,93 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
     return name_to_idx
 
 
-def _resolve_action_indices_for_asset_cfg(env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Resolve action indices corresponding to asset_cfg.joint_ids by matching joint names."""
+def _resolve_action_indices(
+    env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg | None
+) -> torch.Tensor | None:
+    """Resolve action indices.
+    - asset_cfg is None -> use all action dimensions (return None)
+    - asset_cfg is not None -> match joint names and return indices
+    """
+    if asset_cfg is None:
+        return None
+
     asset: Articulation = env.scene[asset_cfg.name]
 
-    # Get all joint names from the articulation (robustly).
+    # get articulation joint names
     if hasattr(asset, "joint_names"):
         all_joint_names = list(asset.joint_names)
-    elif hasattr(asset, "data") and hasattr(asset.data, "joint_names"):
+    elif hasattr(asset.data, "joint_names"):
         all_joint_names = list(asset.data.joint_names)
     else:
-        raise AttributeError(
-            "Cannot access articulation joint names. Expected `asset.joint_names` or `asset.data.joint_names`."
-        )
+        raise AttributeError("Cannot access articulation joint names.")
 
-    # Joint names requested by asset_cfg
     target_joint_names = [str(all_joint_names[jid]) for jid in asset_cfg.joint_ids]
 
-    # Map to action indices
     name_to_action_idx = _build_joint_name_to_action_index(env)
     missing = [jn for jn in target_joint_names if jn not in name_to_action_idx]
     if missing:
         raise KeyError(
-            "Some joints in asset_cfg were not found in action joint_names mapping. "
-            f"Missing: {missing}. "
-            "Make sure your action term exports IO descriptor extras['joint_names'] and names match articulation joints."
+            f"Joints not found in action mapping: {missing}. "
+            "Check action term IO descriptor extras['joint_names']."
         )
 
-    action_ids = torch.tensor([name_to_action_idx[jn] for jn in target_joint_names], device=env.device, dtype=torch.long)
-    return action_ids
+    return torch.tensor(
+        [name_to_action_idx[jn] for jn in target_joint_names],
+        device=env.device,
+        dtype=torch.long,
+    )
 
 
-def joint_action_vel_l1(env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Penalize joint-action velocity (selected joints, matched by names) using L1-kernel.
-    Approximated by finite difference: (a_t - a_{t-1}) / dt
+def joint_action_vel_l1(
+    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
+) -> torch.Tensor:
+    """Penalize action velocity using L1-kernel.
+    If asset_cfg is None, all action dimensions are used.
     """
-    action_ids = _resolve_action_indices_for_asset_cfg(env, asset_cfg)
-    action = env.action_manager.action.index_select(1, action_ids)
-    prev_action = env.action_manager.prev_action.index_select(1, action_ids)
-    action_vel = (action - prev_action) / dt
+    action_ids = _resolve_action_indices(env, asset_cfg)
+
+    action = env.action_manager.action
+    prev = env.action_manager.prev_action
+
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
+        prev = prev.index_select(1, action_ids)
+
+    action_vel = (action - prev) / dt
     return torch.sum(torch.abs(action_vel), dim=1)
 
 
 def joint_action_vel_l2(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
 ) -> torch.Tensor:
-    """Penalize joint-action velocity (selected joints, matched by names) using L2 squared kernel.
-    Approximated by finite difference: (a_t - a_{t-1}) / dt
-    """
-    action_ids = _resolve_action_indices_for_asset_cfg(env, asset_cfg)
-    action = env.action_manager.action.index_select(1, action_ids)
-    prev_action = env.action_manager.prev_action.index_select(1, action_ids)
-    action_vel = (action - prev_action) / dt
+    """Penalize action velocity using L2 squared kernel."""
+    action_ids = _resolve_action_indices(env, asset_cfg)
+
+    action = env.action_manager.action
+    prev = env.action_manager.prev_action
+
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
+        prev = prev.index_select(1, action_ids)
+
+    action_vel = (action - prev) / dt
     return torch.sum(torch.square(action_vel), dim=1)
 
 
 def joint_action_acc_l2(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
 ) -> torch.Tensor:
-    """Penalize joint-action acceleration (selected joints, matched by names) using L2 squared kernel.
+    """Penalize action acceleration using L2 squared kernel."""
+    action_ids = _resolve_action_indices(env, asset_cfg)
 
-    Uses second-order finite difference:
-        (a_t - 2 a_{t-1} + a_{t-2}) / dt^2
+    action = env.action_manager.action
+    prev = env.action_manager.prev_action
+    prev_prev = env.action_manager.prev_prev_action
 
-    Note: This requires ActionManager to store prev_prev_action.
-    """
-    action_ids = _resolve_action_indices_for_asset_cfg(env, asset_cfg)
-
-    action = env.action_manager.action.index_select(1, action_ids)
-    prev = env.action_manager.prev_action.index_select(1, action_ids)
-    prev_prev = env.action_manager.prev_prev_action.index_select(1, action_ids)
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
+        prev = prev.index_select(1, action_ids)
+        prev_prev = prev_prev.index_select(1, action_ids)
 
     action_acc = (action - 2.0 * prev + prev_prev) / (dt * dt)
     return torch.sum(torch.square(action_acc), dim=1)
@@ -394,45 +411,44 @@ def joint_action_acc_l2(
 
 def joint_action_deviation_l1(
     env: "ManagerBasedRLEnv",
-    default_action: torch.Tensor,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    asset_cfg: SceneEntityCfg | None = None,
+    default_action: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Penalize joint-action deviation (selected joints, matched by names) using L1-kernel.
-
-    default_action supports:
-      - shape (total_action_dim,) in *action order*  OR
-      - shape (num_selected_joints,) in *joint order* (asset_cfg order)
-      - shape (num_envs, total_action_dim) OR (num_envs, num_selected_joints)
+    """Penalize action deviation using L1-kernel.
+    - default_action is None -> zero action is used as reference
+    - asset_cfg is None -> all action dimensions are used
     """
-    action_ids = _resolve_action_indices_for_asset_cfg(env, asset_cfg)
+    action_ids = _resolve_action_indices(env, asset_cfg)
 
-    action_sel = env.action_manager.action.index_select(1, action_ids)
+    action = env.action_manager.action
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
 
-    # Select default values robustly
-    if default_action.dim() == 1:
-        if default_action.numel() == env.action_manager.action.shape[1]:
-            default_sel = default_action.index_select(0, action_ids).unsqueeze(0)
-        elif default_action.numel() == action_ids.numel():
-            default_sel = default_action.unsqueeze(0)
-        else:
-            raise ValueError(
-                "default_action must have shape (total_action_dim,) in action order "
-                "or (num_selected_joints,) in asset_cfg joint order."
-            )
+    # default_action handling
+    if default_action is None:
+        default_sel = torch.zeros_like(action)
     else:
-        # (num_envs, *)
-        if default_action.shape[1] == env.action_manager.action.shape[1]:
-            default_sel = default_action.index_select(1, action_ids)
-        elif default_action.shape[1] == action_ids.numel():
-            default_sel = default_action
+        if default_action.dim() == 1:
+            if action_ids is None:
+                default_sel = default_action.unsqueeze(0)
+            else:
+                if default_action.numel() == env.action_manager.action.shape[1]:
+                    default_sel = default_action.index_select(0, action_ids).unsqueeze(0)
+                else:
+                    # assume already in selected-joint order
+                    default_sel = default_action.unsqueeze(0)
         else:
-            raise ValueError(
-                "default_action must have shape (num_envs, total_action_dim) in action order "
-                "or (num_envs, num_selected_joints) in asset_cfg joint order."
-            )
+            if action_ids is None:
+                default_sel = default_action
+            else:
+                if default_action.shape[1] == env.action_manager.action.shape[1]:
+                    default_sel = default_action.index_select(1, action_ids)
+                else:
+                    default_sel = default_action
 
-    deviation = action_sel - default_sel
+    deviation = action - default_sel
     return torch.sum(torch.abs(deviation), dim=1)
+
 
 
 """

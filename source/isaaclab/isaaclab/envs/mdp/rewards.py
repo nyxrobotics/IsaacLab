@@ -243,6 +243,11 @@ def applied_torque_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Sc
     return torch.sum(out_of_limits, dim=1)
 
 
+def action_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Penalize the actions using L1 kernel."""
+    return torch.sum(torch.abs(env.action_manager.action), dim=1)
+
+
 def action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the actions using L2 squared kernel."""
     return torch.sum(torch.square(env.action_manager.action), dim=1)

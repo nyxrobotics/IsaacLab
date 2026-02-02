@@ -499,8 +499,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2 = None
         self.rewards.flat_orientation_l2.weight = -30.0
-        self.rewards.action_l2 = RewTerm(
-            func=mdp.action_l2,
+        self.rewards.action_l1 = RewTerm(
+            func=mdp.action_l1,
             weight=-0.01,
         )
         self.rewards.action_rate_l2.weight = -0.01

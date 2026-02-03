@@ -312,3 +312,185 @@ def feet_slide_with_yaw(
     penalty = torch.sum(slip_cost_per_foot, dim=1)
 
     return penalty
+
+
+
+def feet_air_time_balanced_alternating_biped(
+    env,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    *,
+    # command scaling (linear, includes yaw)
+    v_max: float = 1.0,          # m/s where linear scale reaches 1 for XY command
+    yaw_max: float = 1.0,        # rad/s where linear scale reaches 1 for yaw command
+
+    # swing constraints
+    hold_min_air: float = 0.15,  # must stay in air at least this long to get swing credit
+    hold_max_air: float = 0.45,  # if exceeded, apply "too long in air" penalty
+
+    # anti-tap (air/contact)
+    tap_air_threshold: float = 0.10,
+    tap_air_penalty: float = 0.5,
+    tap_contact_threshold: float = 0.10,
+    tap_contact_penalty: float = 0.5,
+
+    # alternation
+    alternation_bonus: float = 0.25,
+
+    # symmetry (EMA balance)
+    ema_alpha: float = 0.02,
+    balance_weight: float = 0.5,
+
+    # avoid double flight
+    double_flight_penalty: float = 1.0,
+
+    # over-hold penalty (prevents "keep one foot up forever")
+    overhold_penalty: float = 0.3,
+    overhold_margin: float = 0.05,  # soft margin for smooth penalty ramp
+
+    # command composition
+    cmd_use_max: bool = True,     # True: max(lin,yaw). False: weighted sum
+    w_lin: float = 1.0,           # used when cmd_use_max=False
+    w_yaw: float = 1.0,           # used when cmd_use_max=False
+
+    # command indices (typical: [vx, vy, yaw_rate])
+    yaw_index: int = 2,
+) -> torch.Tensor:
+    """
+    Balanced & alternating biped step reward.
+
+    Key behavior:
+      - Swing credit becomes ON after hold_min_air and does NOT increase with longer air time.
+      - hold_max_air is used ONLY to penalize over-holding a foot in the air.
+      - Double stance is allowed; double flight is penalized.
+      - Brief air/contact taps are penalized.
+      - Alternation is rewarded.
+      - Long-horizon left/right asymmetry is penalized via EMA statistics.
+      - Reward is linearly scaled by commanded motion magnitude (XY and yaw).
+    """
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    foot_ids = sensor_cfg.body_ids
+    assert len(foot_ids) == 2, "This reward is for bipeds (2 feet)."
+
+    air_time = contact_sensor.data.current_air_time[:, foot_ids]          # (N,2)
+    contact_time = contact_sensor.data.current_contact_time[:, foot_ids]  # (N,2)
+    in_contact = contact_time > 0.0                                       # (N,2)
+
+    n_env = in_contact.shape[0]
+    device = in_contact.device
+
+    # --- persistent buffer ---
+    key = "_feet_balanced_alt_reward_buf"
+    if not hasattr(env, key):
+        buf = {}
+        buf["prev_in_contact"] = in_contact.clone()
+        buf["last_completed_air"] = torch.zeros((n_env, 2), device=device)
+        buf["ema_air"] = torch.zeros((n_env, 2), device=device)
+        buf["ema_contact"] = torch.zeros((n_env, 2), device=device)
+        buf["last_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)
+        setattr(env, key, buf)
+    buf = getattr(env, key)
+
+    prev_in_contact = buf["prev_in_contact"]
+    last_completed_air = buf["last_completed_air"]
+    ema_air = buf["ema_air"]
+    ema_contact = buf["ema_contact"]
+    last_swing_foot = buf["last_swing_foot"]
+
+    # --- transitions ---
+    lift_off = prev_in_contact & (~in_contact)    # contact -> air
+    touch_down = (~prev_in_contact) & in_contact  # air -> contact
+
+    # record completed swing time at touchdown (used for EMA)
+    last_completed_air = torch.where(touch_down, air_time, last_completed_air)
+
+    # --- linear command scaling (XY + yaw) ---
+    cmd = env.command_manager.get_command(command_name)
+    lin = torch.norm(cmd[:, :2], dim=1)  # |v_xy|
+
+    if cmd.shape[1] > yaw_index:
+        yaw = torch.abs(cmd[:, yaw_index])  # |omega_z|
+    else:
+        yaw = torch.zeros_like(lin)
+
+    lin_scale = torch.clamp(lin / max(v_max, 1e-6), 0.0, 1.0)
+    yaw_scale = torch.clamp(yaw / max(yaw_max, 1e-6), 0.0, 1.0)
+
+    if cmd_use_max:
+        cmd_scale = torch.maximum(lin_scale, yaw_scale)
+    else:
+        cmd_scale = torch.clamp(w_lin * lin_scale + w_yaw * yaw_scale, 0.0, 1.0)
+
+    # --- swing credit: ON after hold_min_air, no extra reward for longer air time ---
+    swing_ok = ((air_time >= hold_min_air) & (~in_contact)).float()  # (N,2)
+    swing_reward = torch.sum(swing_ok, dim=1)                        # (N,) 0..2
+
+    # --- over-hold penalty: punish keeping a foot in the air for too long ---
+    # Smooth ramp from hold_max_air to hold_max_air+overhold_margin.
+    if overhold_margin <= 0.0:
+        overhold_amount = ((air_time - hold_max_air) > 0.0).float()
+    else:
+        overhold_amount = torch.clamp(
+            (air_time - hold_max_air) / max(overhold_margin, 1e-6), 0.0, 1.0
+        )
+
+    # only penalize while foot is actually in air
+    overhold_amount = overhold_amount * (~in_contact).float()
+    penalty_overhold = overhold_amount.sum(dim=1) * overhold_penalty
+
+    # --- double flight penalty ---
+    double_flight = (torch.sum(in_contact.int(), dim=1) == 0)
+    penalty_double_flight = double_flight.float() * double_flight_penalty
+
+    # --- anti-tap: air (short swing) ---
+    tap_air = touch_down & (air_time < tap_air_threshold)
+    penalty_tap_air = tap_air.any(dim=1).float() * tap_air_penalty
+
+    # --- anti-tap: contact (short stance) ---
+    tap_contact = lift_off & (contact_time < tap_contact_threshold)
+    penalty_tap_contact = tap_contact.any(dim=1).float() * tap_contact_penalty
+
+    # --- alternation bonus (reward when swing leg alternates) ---
+    lift_count = lift_off.int().sum(dim=1)
+    lifted_foot = torch.where(
+        lift_off[:, 0], 0,
+        torch.where(lift_off[:, 1], 1, -1)
+    ).long()
+
+    valid_single_lift = lift_count == 1
+    alternates = valid_single_lift & (last_swing_foot >= 0) & (lifted_foot != last_swing_foot)
+    bonus_alternation = alternates.float() * alternation_bonus
+
+    last_swing_foot = torch.where(valid_single_lift, lifted_foot, last_swing_foot)
+
+    # --- EMA symmetry (long-horizon left/right balance) ---
+    # EMA_t = (1 - alpha) * EMA_{t-1} + alpha * x_t
+    ema_air = (1.0 - ema_alpha) * ema_air + ema_alpha * last_completed_air
+    ema_contact = (1.0 - ema_alpha) * ema_contact + ema_alpha * contact_time
+
+    air_imbalance = torch.abs(ema_air[:, 0] - ema_air[:, 1])
+    contact_imbalance = torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
+    penalty_balance = balance_weight * (air_imbalance + contact_imbalance)
+
+    # --- total reward ---
+    reward = (
+        swing_reward
+        + bonus_alternation
+        - penalty_overhold
+        - penalty_double_flight
+        - penalty_tap_air
+        - penalty_tap_contact
+        - penalty_balance
+    )
+
+    reward = reward * cmd_scale
+
+    # --- write back buffers ---
+    buf["prev_in_contact"] = in_contact
+    buf["last_completed_air"] = last_completed_air
+    buf["ema_air"] = ema_air
+    buf["ema_contact"] = ema_contact
+    buf["last_swing_foot"] = last_swing_foot
+
+    return reward

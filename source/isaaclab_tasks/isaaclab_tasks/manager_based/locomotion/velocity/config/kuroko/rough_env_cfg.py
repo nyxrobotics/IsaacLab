@@ -95,8 +95,8 @@ class KurokoRewards(RewardsCfg):
             "hold_max_air": 0.5,
             "tap_air_threshold": 0.05,
             "tap_air_penalty": 0.1,
-            "tap_contact_threshold": 0.05,
-            "tap_contact_penalty": 0.1,
+            "tap_contact_threshold": 0.1,
+            "tap_contact_penalty": 0.2,
             "alternation_bonus": 0.5,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
@@ -191,7 +191,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.5,
+        weight=-2.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch",])},

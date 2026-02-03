@@ -132,7 +132,7 @@ class KurokoRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.5,
+        weight=100.0,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
@@ -406,18 +406,15 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        # self.terminations.base_contact = None # type: ignore
+        # self.terminations.base_contact = None  # type: ignore
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "elbow_r_rear_link",
-            "elbow_l_rear_link",
-            "elbow_r_front_link",
-            "elbow_l_front_link",
             "chest_link",
+            "body_link",
             "knee_r_passive_link",
             "knee_l_passive_link",
             "hip_r_pitch_link",
             "hip_l_pitch_link"]
-
+        
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
 

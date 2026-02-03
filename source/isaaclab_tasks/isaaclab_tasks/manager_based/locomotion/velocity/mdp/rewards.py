@@ -115,6 +115,7 @@ def stand_still_joint_deviation_l1(
     # Penalize motion when command is nearly zero.
     return mdp.joint_deviation_l1(env, asset_cfg) * (torch.norm(command[:, :2], dim=1) < command_threshold)
 
+
 def torso_height_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -163,9 +164,9 @@ def torso_height_penalty(
     return penalty
 
 
-
 def _quat_conjugate(q: torch.Tensor) -> torch.Tensor:
     return torch.stack((q[..., 0], -q[..., 1], -q[..., 2], -q[..., 3]), dim=-1)
+
 
 def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
     w1, x1, y1, z1 = q1.unbind(-1)
@@ -180,12 +181,15 @@ def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
         dim=-1,
     )
 
+
 def _quat_rotate(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     qv = torch.cat((torch.zeros_like(v[..., :1]), v), dim=-1)
     return _quat_mul(_quat_mul(q, qv), _quat_conjugate(q))[..., 1:]
 
+
 def _quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return _quat_rotate(_quat_conjugate(q), v)
+
 
 def local_torso_height_penalty(
     env,
@@ -235,6 +239,65 @@ def local_torso_height_penalty(
     excess = torch.relu(torch.abs(diff) - margin)
     return -gain * excess
 
+
+def local_torso_height_penalty_l2(
+    env,
+    asset_cfg,
+    contact_sensor_cfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+    contact_force_threshold: float = 0.01,
+    large_value: float = 1e9,
+) -> torch.Tensor:
+    """
+    L2 version of local_torso_height_penalty.
+
+    - Computes foot depth along the torso local -Z axis (positive means "below the torso").
+    - If any foot is in contact: uses the highest contacting foot (min depth) as support reference.
+    - If in flight: uses the lower foot (max depth) as reference.
+    - Penalizes deviation outside a dead-zone (margin) with a squared (L2) penalty:
+        penalty = -gain * (max(|diff| - margin, 0))^2
+    """
+    asset = env.scene[asset_cfg.name]
+
+    body_pos_w = asset.data.body_pos_w
+    body_quat_w = asset.data.body_quat_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    chest_pos_w = body_pos_w[:, chest_id, :]
+    chest_quat_w = body_quat_w[:, chest_id, :]
+    ankles_pos_w = body_pos_w[:, ankle_ids, :]
+
+    rel_vec_w = ankles_pos_w - chest_pos_w.unsqueeze(1)
+    chest_quat_w_a = chest_quat_w.unsqueeze(1).expand(-1, rel_vec_w.shape[1], -1)
+    rel_vec_b = _quat_rotate_inverse(chest_quat_w_a, rel_vec_w)
+
+    foot_depths = -rel_vec_b[..., 2]  # (N, A) positive along torso -Z
+
+    # Contact detection (use peak force over history)
+    contact_sensor = env.scene.sensors[contact_sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[:, :, contact_sensor_cfg.body_ids, :]  # (N, H, A, 3)
+    in_contact = forces.norm(dim=-1).amax(dim=1) > contact_force_threshold                   # (N, A)
+
+    any_contact = in_contact.any(dim=-1)  # (N,)
+
+    # If contact exists: use "highest foot" among contacting feet => min depth
+    contact_depths = torch.where(in_contact, foot_depths, torch.full_like(foot_depths, large_value))
+    contact_depth = contact_depths.min(dim=-1).values  # (N,)
+
+    # If flight: use lower foot => max depth
+    flight_depth = foot_depths.max(dim=-1).values      # (N,)
+
+    foot_depth = torch.where(any_contact, contact_depth, flight_depth)
+
+    diff = foot_depth - target_height
+    excess = torch.relu(torch.abs(diff) - margin)
+
+    # L2 penalty
+    return -gain * excess * excess
 
 
 def feet_slide_with_yaw(

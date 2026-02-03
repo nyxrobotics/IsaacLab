@@ -314,7 +314,6 @@ def feet_slide_with_yaw(
     return penalty
 
 
-
 def feet_air_time_balanced_alternating_biped(
     env,
     command_name: str,
@@ -367,6 +366,7 @@ def feet_air_time_balanced_alternating_biped(
       - Alternation is rewarded.
       - Long-horizon left/right asymmetry is penalized via EMA statistics.
       - Reward is linearly scaled by commanded motion magnitude (XY and yaw).
+      - Per-env buffers are reset on episode reset (env.reset_buf).
     """
 
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -397,6 +397,23 @@ def feet_air_time_balanced_alternating_biped(
     ema_air = buf["ema_air"]
     ema_contact = buf["ema_contact"]
     last_swing_foot = buf["last_swing_foot"]
+
+    # --- reset per-env buffers on episode reset ---
+    reset_buf = getattr(env, "reset_buf", None)
+    if reset_buf is not None:
+        reset_ids = reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if reset_ids.numel() > 0:
+            buf["ema_air"][reset_ids] = 0.0
+            buf["ema_contact"][reset_ids] = 0.0
+            buf["last_completed_air"][reset_ids] = 0.0
+            buf["last_swing_foot"][reset_ids] = -1
+            buf["prev_in_contact"][reset_ids] = in_contact[reset_ids]
+
+            prev_in_contact = buf["prev_in_contact"]
+            last_completed_air = buf["last_completed_air"]
+            ema_air = buf["ema_air"]
+            ema_contact = buf["ema_contact"]
+            last_swing_foot = buf["last_swing_foot"]
 
     # --- transitions ---
     lift_off = prev_in_contact & (~in_contact)    # contact -> air

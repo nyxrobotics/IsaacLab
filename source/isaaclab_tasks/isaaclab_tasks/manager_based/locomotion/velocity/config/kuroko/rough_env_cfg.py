@@ -97,7 +97,6 @@ class KurokoRewards(RewardsCfg):
             "tap_air_penalty": 0.1,
             "tap_contact_threshold": 0.1,
             "tap_contact_penalty": 0.2,
-            "alternation_bonus": 0.5,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
             "double_flight_penalty": 0.1,

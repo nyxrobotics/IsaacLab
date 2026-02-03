@@ -82,7 +82,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=100.0,
+        weight=10.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -94,14 +94,14 @@ class KurokoRewards(RewardsCfg):
             "hold_min_air": 0.1,
             "hold_max_air": 0.5,
             "tap_air_threshold": 0.05,
-            "tap_air_penalty": 0.05,
+            "tap_air_penalty": 0.1,
             "tap_contact_threshold": 0.05,
-            "tap_contact_penalty": 0.05,
+            "tap_contact_penalty": 0.1,
             "alternation_bonus": 0.5,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
             "double_flight_penalty": 0.1,
-            "overhold_penalty": 0.05,
+            "overhold_penalty": 0.1,
             "overhold_margin": 0.05,
 
         },
@@ -406,17 +406,23 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact = None # type: ignore
-        # self.terminations.base_contact.params["sensor_cfg"].body_names = [
-        #     "chest_link",
-        #     "hip_r_pitch_link",
-        #     "hip_l_pitch_link"]
+        # self.terminations.base_contact = None # type: ignore
+        self.terminations.base_contact.params["sensor_cfg"].body_names = [
+            "elbow_r_rear_link",
+            "elbow_l_rear_link",
+            "elbow_r_front_link",
+            "elbow_l_front_link",
+            "chest_link",
+            "knee_r_passive_link",
+            "knee_l_passive_link",
+            "hip_r_pitch_link",
+            "hip_l_pitch_link"]
 
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
 
         # -----------------------------------------------------------
-        # 6. Explosion termination: use base_link as reference body
+        # 6. Termination: detect_fall based on body_link
         # -----------------------------------------------------------
         self.terminations.detect_fall = DoneTerm( # type: ignore
             func=mdp.detect_fall,

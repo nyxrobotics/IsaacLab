@@ -502,6 +502,30 @@ def joint_action_vel_l2(
     return torch.sum(torch.square(action_vel), dim=1)
 
 
+def joint_action_acc_l1(
+    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
+) -> torch.Tensor:
+    """Penalize action acceleration using L1 kernel."""
+    action_ids = _resolve_action_indices(env, asset_cfg)
+
+    action = env.action_manager.action
+    prev = env.action_manager.prev_action
+    prev_prev = env.action_manager.prev_prev_action
+
+    if prev is None:
+        prev = action
+    if prev_prev is None:
+        prev_prev = prev
+
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
+        prev = prev.index_select(1, action_ids)
+        prev_prev = prev_prev.index_select(1, action_ids)
+
+    action_acc = (action - 2.0 * prev + prev_prev) / (dt * dt)
+    return torch.sum(torch.abs(action_acc), dim=1)
+
+
 def joint_action_acc_l2(
     env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
 ) -> torch.Tensor:

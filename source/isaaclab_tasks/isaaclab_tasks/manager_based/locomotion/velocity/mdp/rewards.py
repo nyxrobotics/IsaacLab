@@ -385,7 +385,7 @@ def feet_air_time_balanced_alternating_biped(
     # gating thresholds (set < 0 to disable each gate)
     linear_cmd_threshold: float = 1.0,    # m/s, |v_xy| where linear gate reaches 1
     angular_cmd_threshold: float = 1.0,   # rad/s, |yaw_rate| where angular gate reaches 1
-    body_tilt_threshold: float = 0.34,    # ~sin(tilt). e.g. 0.34 ≈ 20 deg
+    body_tilt_threshold: float = 0.35,    # rad, torso tilt angle where gate reaches 1
 
     # swing constraints
     hold_min_air: float = 0.15,
@@ -417,15 +417,19 @@ def feet_air_time_balanced_alternating_biped(
     """
     Balanced alternating biped reward.
 
-    Gate (linear, optional):
-      - linear_cmd_threshold >= 0: lin_scale = clamp(|v_xy| / linear_cmd_threshold, 0..1)
-      - angular_cmd_threshold >= 0: yaw_scale = clamp(|yaw_rate| / angular_cmd_threshold, 0..1)
-      - body_tilt_threshold  >= 0: tilt_scale = clamp(sin(tilt) / body_tilt_threshold, 0..1)
-        where sin(tilt) is approximated by ||projected_gravity_b.xy||.
+    Gate logic (linear, optional):
+      - linear_cmd_threshold >= 0:
+          lin_scale = clamp(|v_xy| / linear_cmd_threshold, 0..1)
+      - angular_cmd_threshold >= 0:
+          yaw_scale = clamp(|yaw_rate| / angular_cmd_threshold, 0..1)
+      - body_tilt_threshold >= 0:
+          tilt_angle = asin(||projected_gravity_b.xy||)   [rad]
+          tilt_scale = clamp(tilt_angle / body_tilt_threshold, 0..1)
 
       gate_scale = max(lin_scale, yaw_scale, tilt_scale)
 
-      If all three thresholds are < 0, gating is disabled and gate_scale = 1.0 (reward always active).
+      If all three thresholds are < 0:
+          gate_scale = 1 (reward always enabled).
 
     TRUE swing timeout (hold_max_air):
       - If the active swing exceeds hold_max_air, the swing is latched as timed-out (failed).
@@ -440,6 +444,7 @@ def feet_air_time_balanced_alternating_biped(
     foot_ids = sensor_cfg.body_ids
     assert len(foot_ids) == 2, "This reward is for bipeds (2 feet)."
 
+    # Sensor state
     air_time = contact_sensor.data.current_air_time[:, foot_ids]          # (N,2)
     contact_time = contact_sensor.data.current_contact_time[:, foot_ids]  # (N,2)
     in_contact = contact_time > 0.0                                       # (N,2)
@@ -447,22 +452,21 @@ def feet_air_time_balanced_alternating_biped(
     n_env = in_contact.shape[0]
     device = in_contact.device
 
-    # --- persistent buffer ---
+    # ---------------- Persistent buffers ----------------
     key = "_feet_balanced_alt_reward_buf"
     if not hasattr(env, key):
-        buf = {}
-        buf["prev_in_contact"] = in_contact.clone()
-        buf["last_completed_air"] = torch.zeros((n_env, 2), device=device)
-        buf["ema_air"] = torch.zeros((n_env, 2), device=device)
-        buf["ema_contact"] = torch.zeros((n_env, 2), device=device)
-
-        buf["active_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)        # -1/0/1
-        buf["prev_step_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)     # -1/0/1
-        buf["swing_timed_out"] = torch.zeros((n_env,), device=device, dtype=torch.bool)
-
+        buf = {
+            "prev_in_contact": in_contact.clone(),
+            "last_completed_air": torch.zeros((n_env, 2), device=device),
+            "ema_air": torch.zeros((n_env, 2), device=device),
+            "ema_contact": torch.zeros((n_env, 2), device=device),
+            "active_swing_foot": torch.full((n_env,), -1, device=device, dtype=torch.long),     # -1/0/1
+            "prev_step_swing_foot": torch.full((n_env,), -1, device=device, dtype=torch.long),  # -1/0/1
+            "swing_timed_out": torch.zeros((n_env,), device=device, dtype=torch.bool),
+        }
         setattr(env, key, buf)
-    buf = getattr(env, key)
 
+    buf = getattr(env, key)
     prev_in_contact = buf["prev_in_contact"]
     last_completed_air = buf["last_completed_air"]
     ema_air = buf["ema_air"]
@@ -471,36 +475,27 @@ def feet_air_time_balanced_alternating_biped(
     prev_step_swing_foot = buf["prev_step_swing_foot"]
     swing_timed_out = buf["swing_timed_out"]
 
-    # --- reset per-env buffers on episode reset ---
+    # ---------------- Reset per-env buffers on episode reset ----------------
     reset_buf = getattr(env, "reset_buf", None)
     if reset_buf is not None:
         reset_ids = reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if reset_ids.numel() > 0:
-            buf["ema_air"][reset_ids] = 0.0
-            buf["ema_contact"][reset_ids] = 0.0
-            buf["last_completed_air"][reset_ids] = 0.0
-            buf["active_swing_foot"][reset_ids] = -1
-            buf["prev_step_swing_foot"][reset_ids] = -1
-            buf["swing_timed_out"][reset_ids] = False
-            buf["prev_in_contact"][reset_ids] = in_contact[reset_ids]
+            last_completed_air[reset_ids] = 0.0
+            ema_air[reset_ids] = 0.0
+            ema_contact[reset_ids] = 0.0
+            active_swing_foot[reset_ids] = -1
+            prev_step_swing_foot[reset_ids] = -1
+            swing_timed_out[reset_ids] = False
+            prev_in_contact[reset_ids] = in_contact[reset_ids]
 
-            prev_in_contact = buf["prev_in_contact"]
-            last_completed_air = buf["last_completed_air"]
-            ema_air = buf["ema_air"]
-            ema_contact = buf["ema_contact"]
-            active_swing_foot = buf["active_swing_foot"]
-            prev_step_swing_foot = buf["prev_step_swing_foot"]
-            swing_timed_out = buf["swing_timed_out"]
-
-    # --- transitions ---
+    # ---------------- Transitions ----------------
     lift_off = prev_in_contact & (~in_contact)    # contact -> air
     touch_down = (~prev_in_contact) & in_contact  # air -> contact
 
-    # record completed swing time at touchdown (used for EMA)
+    # Record completed swing time at touchdown (used for EMA)
     last_completed_air = torch.where(touch_down, air_time, last_completed_air)
 
-    # --- gate scales ---
-    # command magnitudes
+    # ---------------- Gate scales ----------------
     cmd = env.command_manager.get_command(command_name)
     lin_mag = torch.norm(cmd[:, :2], dim=1)  # |v_xy|
     yaw_mag = torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)  # |omega_z|
@@ -516,11 +511,12 @@ def feet_air_time_balanced_alternating_biped(
     tilt_scale = torch.zeros_like(lin_mag)
     if body_tilt_threshold >= 0.0:
         # A: using projected_gravity_b
-        # NOTE: Replace "robot" with the correct articulation name if needed.
+        # NOTE: Replace "robot" with your articulation name if needed.
         robot = env.scene.articulations["robot"]
         proj_g = robot.data.projected_gravity_b  # (N,3), gravity direction expressed in base frame
-        tilt_mag = torch.norm(proj_g[:, :2], dim=1)  # ~= sin(tilt), 0 when upright
-        tilt_scale = torch.clamp(tilt_mag / max(body_tilt_threshold, 1e-6), 0.0, 1.0)
+        sin_tilt = torch.norm(proj_g[:, :2], dim=1).clamp(0.0, 1.0)  # ~= sin(tilt)
+        tilt_angle = torch.asin(sin_tilt)  # [rad]
+        tilt_scale = torch.clamp(tilt_angle / max(body_tilt_threshold, 1e-6), 0.0, 1.0)
 
     all_gates_disabled = (linear_cmd_threshold < 0.0) and (angular_cmd_threshold < 0.0) and (body_tilt_threshold < 0.0)
     if all_gates_disabled:
@@ -528,19 +524,19 @@ def feet_air_time_balanced_alternating_biped(
     else:
         gate_scale = torch.maximum(torch.maximum(lin_scale, yaw_scale), tilt_scale)
 
-    # --- contact pattern ---
-    contact_count = in_contact.int().sum(dim=1)  # (N,)
+    # ---------------- Contact pattern ----------------
+    contact_count = in_contact.int().sum(dim=1)
     single_support = contact_count == 1
     double_flight = contact_count == 0
 
-    # --- active swing bookkeeping (liftoff -> touchdown) ---
+    # ---------------- Active swing bookkeeping (liftoff -> touchdown) ----------------
     lift_count = lift_off.int().sum(dim=1)
     lifted_foot = torch.where(lift_off[:, 0], 0, torch.where(lift_off[:, 1], 1, -1)).long()
 
     start_swing = (active_swing_foot < 0) & (lift_count == 1) & single_support & (~swing_timed_out)
     active_swing_foot = torch.where(start_swing, lifted_foot, active_swing_foot)
 
-    # first swing liftoff reward (no extra parameters; uses swing_in_air_reward)
+    # One-time liftoff reward for the very first step (no extra parameters; uses swing_in_air_reward)
     first_step = prev_step_swing_foot < 0
     reward_first_liftoff = (start_swing & first_step).float() * swing_in_air_reward
 
@@ -551,22 +547,29 @@ def feet_air_time_balanced_alternating_biped(
         torch.where(active_swing_foot == 1, air_time[:, 1], torch.zeros_like(lin_mag))
     )
 
-    # --- TRUE swing timeout latch using hold_max_air ---
+    # ---------------- TRUE swing timeout latch using hold_max_air ----------------
     timeout_now = (active_swing_foot >= 0) & (active_air > hold_max_air)
     swing_timed_out = swing_timed_out | timeout_now
     swing_timed_out = torch.where(end_swing, torch.zeros_like(swing_timed_out), swing_timed_out)
 
     valid_swing_end = end_swing & (active_air >= hold_min_air) & (~swing_timed_out)
 
+    # Update prev step only on valid completion (enforces alternation on real steps only)
     prev_step_swing_foot = torch.where(valid_swing_end, active_swing_foot, prev_step_swing_foot)
+
+    # Clear active swing foot on touchdown
     active_swing_foot = torch.where(end_swing, torch.full_like(active_swing_foot, -1), active_swing_foot)
 
-    # --- alternation gating (unknown_prev removed) ---
+    # ---------------- Alternation gating (unknown_prev removed) ----------------
     has_prev_step = prev_step_swing_foot >= 0
-    alternating_now = (active_swing_foot >= 0) & has_prev_step & (active_swing_foot != prev_step_swing_foot)
-    step_reward_enabled = alternating_now & (~swing_timed_out)
+    step_reward_enabled = (
+        (active_swing_foot >= 0)
+        & has_prev_step
+        & (active_swing_foot != prev_step_swing_foot)
+        & (~swing_timed_out)
+    )
 
-    # --- swing shaping rewards (small, during swing) ---
+    # ---------------- Swing shaping rewards (small, during swing) ----------------
     swing_air_ok = torch.zeros((n_env,), device=device)
     swing_air_ok = torch.where((active_swing_foot == 0) & (air_time[:, 0] >= hold_min_air), 1.0, swing_air_ok)
     swing_air_ok = torch.where((active_swing_foot == 1) & (air_time[:, 1] >= hold_min_air), 1.0, swing_air_ok)
@@ -574,21 +577,22 @@ def feet_air_time_balanced_alternating_biped(
     reward_swing_air = swing_in_air_reward * swing_air_ok * step_reward_enabled.float() * single_support.float()
     reward_support_contact = support_in_contact_reward * step_reward_enabled.float() * single_support.float()
 
-    # --- touchdown bonus ---
+    # Touchdown bonus
     reward_step_complete = valid_swing_end.float() * step_complete_bonus
 
-    # --- penalties ---
+    # ---------------- Penalties ----------------
     penalty_double_flight = double_flight.float() * double_flight_penalty
+    penalty_timeout = swing_timed_out.float() * swing_timeout_penalty
 
+    # Penalize short air-time (touchdown immediately after liftoff)
     tap_air = touch_down & (air_time < tap_air_threshold)
     penalty_tap_air = tap_air.any(dim=1).float() * tap_air_penalty
 
+    # Penalize short contact-time (liftoff immediately after touchdown)
     tap_contact = lift_off & (contact_time < tap_contact_threshold)
     penalty_tap_contact = tap_contact.any(dim=1).float() * tap_contact_penalty
 
-    penalty_timeout = swing_timed_out.float() * swing_timeout_penalty
-
-    # --- EMA symmetry ---
+    # ---------------- EMA symmetry ----------------
     # EMA = Exponential Moving Average.
     # EMA_t = (1 - alpha) * EMA_{t-1} + alpha * x_t
     ema_air = (1.0 - ema_alpha) * ema_air + ema_alpha * last_completed_air
@@ -598,21 +602,22 @@ def feet_air_time_balanced_alternating_biped(
     contact_imbalance = torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
     penalty_balance = balance_weight * (air_imbalance + contact_imbalance)
 
+    # ---------------- Total reward ----------------
     reward = (
         reward_first_liftoff
         + reward_swing_air
         + reward_support_contact
         + reward_step_complete
         - penalty_double_flight
+        - penalty_timeout
         - penalty_tap_air
         - penalty_tap_contact
-        - penalty_timeout
         - penalty_balance
     )
 
     reward = reward * gate_scale
 
-    # --- write back buffers ---
+    # ---------------- Write back buffers ----------------
     buf["prev_in_contact"] = in_contact
     buf["last_completed_air"] = last_completed_air
     buf["ema_air"] = ema_air

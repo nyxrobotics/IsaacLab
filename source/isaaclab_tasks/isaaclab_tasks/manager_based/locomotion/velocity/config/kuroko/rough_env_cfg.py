@@ -94,13 +94,13 @@ class KurokoRewards(RewardsCfg):
             "body_tilt_threshold": 0.3,
             "hold_min_air": 0.04,
             "hold_max_air": 0.8,
-            "tap_air_threshold": 0.02,
-            "tap_air_penalty": 0.04,
-            "tap_contact_threshold": 0.04,
-            "tap_contact_penalty": 0.04,
+            "hold_min_contact": 0.08,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
+            "air_timeout_penalty": 1.0,
             "double_flight_penalty": 0.1,
+            "air_hold_reward": 1.0,
+            "contact_hold_reward": 1.0,
         },
     )
 
@@ -138,8 +138,8 @@ class KurokoRewards(RewardsCfg):
     # )
 
     torso_height = RewTerm(
-        func=mdp.local_torso_height_penalty,
-        weight=150.0,
+        func=mdp.local_torso_height_penalty_l2,
+        weight=1000.0,
         params={
             "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",

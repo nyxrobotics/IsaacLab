@@ -537,13 +537,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-0.001,
         )
         self.rewards.action_rate_l2.weight = -0.005
-        self.rewards.action_rate_l1 = RewTerm(
-            func=mdp.action_rate_l1,
-            weight=-0.1,
-        )
-        # self.rewards.action_jerk_l2 = RewTerm(
-        #     func=mdp.action_jerk_l2,
-        #     weight=-0.001,
+        # self.rewards.action_rate_l1 = RewTerm(
+        #     func=mdp.action_rate_l1,
+        #     weight=-0.1,
         # )
         self.rewards.dof_acc_l2 = None
         self.rewards.dof_acc_l2 = RewTerm(

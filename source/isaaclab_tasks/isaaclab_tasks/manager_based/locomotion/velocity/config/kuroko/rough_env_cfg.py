@@ -127,15 +127,15 @@ class KurokoRewards(RewardsCfg):
     #             "hip_r_roll",])},
     # )
 
-    # flat_toe_penalty = RewTerm(
-    #     func=mdp.flat_orientation_links_l2,
-    #     weight=100.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-    #             "ankle_r_yaw_link",
-    #             "ankle_l_yaw_link"]),
-    #             "margin": 0.0,
-    #             "gain": 1.0,},
-    # )
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=15.0,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+                "ankle_r_yaw_link",
+                "ankle_l_yaw_link"]),
+                "margin": 0.0,
+                "gain": 1.0,},
+    )
 
     torso_height = RewTerm(
         func=mdp.local_torso_height_penalty_l2,
@@ -230,7 +230,6 @@ class KurokoRewards(RewardsCfg):
             "nonfoot_contact_penalty": 10.0,
         },
     )
-
 
 # ---------------------------------------------------------------------
 # Main environment config

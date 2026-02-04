@@ -172,18 +172,20 @@ def detect_fall(
 ) -> torch.Tensor:
     """Terminate when the robot is in an unstable or exploded state.
 
-    Rules:
-    - Tilt is evaluated only using the first link (root) via projected_gravity_b.
-    - Numeric checks (NaN/Inf) for position/orientation/velocity/acceleration are done using body_* tensors
-      (i.e., over all bodies/components available).
-    - Magnitude checks for velocity/acceleration are done over all bodies.
+    Policy:
+    - Tilt is evaluated only from the first link (root) using projected_gravity_b.
+    - bad_numeric checks NaN/Inf on:
+        - all-link pose/velocity/acceleration tensors (body_*)
+        - root_link_pose_w and root_link_vel_w
+        - projected_gravity_b (used for tilt, and also numeric-critical)
+    - Magnitude checks (velocity/acceleration) are done over all links, and root is explicitly included.
     """
     asset: RigidObject = env.scene[asset_cfg.name]
 
     # -----------------------------
     # Tilt (root-only)
     # -----------------------------
-    proj_g = asset.data.projected_gravity_b  # (num_envs, 3)
+    proj_g = asset.data.projected_gravity_b  # (N, 3)
     tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
     bad_tilt = tilt > limit_angle
 
@@ -195,25 +197,34 @@ def detect_fall(
         return ~torch.isfinite(x).all(dim=reduce_dims)
 
     # -----------------------------
-    # bad_numeric: position/orientation/gravity/velocity/acceleration
-    # - Use only body_* tensors for pose/vel/acc (no root_* duplication).
-    # - Gravity check uses projected_gravity_b (the only field available here).
+    # All-link tensors
     # -----------------------------
-    body_pos = asset.data.body_pos_w     # (num_envs, num_bodies, 3)
-    body_quat = asset.data.body_quat_w   # (num_envs, num_bodies, 4)
-    body_vel = asset.data.body_vel_w     # (num_envs, num_bodies, 6)  [lin_vel, ang_vel]
-    body_acc = asset.data.body_acc_w     # (num_envs, num_bodies, 6)  [lin_acc, ang_acc]
+    body_pos = asset.data.body_pos_w      # (N, B, 3)
+    body_quat = asset.data.body_quat_w    # (N, B, 4)
+    body_vel = asset.data.body_vel_w      # (N, B, 6) [lin_vel(3), ang_vel(3)]
+    body_acc = asset.data.body_acc_w      # (N, B, 6) [lin_acc(3), ang_acc(3)]
 
+    # -----------------------------
+    # Root tensors (explicitly included)
+    # -----------------------------
+    root_pose = asset.data.root_link_pose_w  # (N, 7) [pos(3), quat(4)]
+    root_vel = asset.data.root_link_vel_w    # (N, 6) [lin_vel(3), ang_vel(3)]
+
+    # -----------------------------
+    # bad_numeric: NaN / Inf checks
+    # -----------------------------
     bad_numeric = (
         _has_non_finite(body_pos)
         | _has_non_finite(body_quat)
         | _has_non_finite(body_vel)
         | _has_non_finite(body_acc)
-        | _has_non_finite(proj_g)  # gravity projection (root-derived, but numeric-critical)
+        | _has_non_finite(root_pose)
+        | _has_non_finite(root_vel)
+        | _has_non_finite(proj_g)
     )
 
     # -----------------------------
-    # Magnitude checks (all bodies)
+    # Magnitude checks (all links)
     # -----------------------------
     lin_vel = body_vel[..., 0:3]
     ang_vel = body_vel[..., 3:6]
@@ -224,9 +235,17 @@ def detect_fall(
         torch.any(torch.norm(lin_vel, dim=-1) > max_lin_vel, dim=1)
         | torch.any(torch.norm(ang_vel, dim=-1) > max_ang_vel, dim=1)
     )
+
     bad_acceleration = (
         torch.any(torch.norm(lin_acc, dim=-1) > max_lin_acc, dim=1)
         | torch.any(torch.norm(ang_acc, dim=-1) > max_ang_acc, dim=1)
     )
+
+    # Root velocity magnitude (explicitly included)
+    bad_velocity = bad_velocity | (torch.norm(root_vel[:, 0:3], dim=-1) > max_lin_vel) | (
+        torch.norm(root_vel[:, 3:6], dim=-1) > max_ang_vel
+    )
+
+    # Note: root acceleration is not available in this data interface, so acceleration stays body_acc_w-based.
 
     return bad_tilt | bad_numeric | bad_velocity | bad_acceleration

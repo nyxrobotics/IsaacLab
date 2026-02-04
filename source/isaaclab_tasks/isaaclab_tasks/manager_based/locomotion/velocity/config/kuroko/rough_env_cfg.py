@@ -119,23 +119,23 @@ class KurokoRewards(RewardsCfg):
         },
     )
 
-    joint_torque_hip_roll = RewTerm(
-        func=mdp.joint_torques_l2,
-        weight=-0.02,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "hip_l_roll",
-                "hip_r_roll",])},
-    )
+    # joint_torque_hip_roll = RewTerm(
+    #     func=mdp.joint_torques_l2,
+    #     weight=-0.02,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
+    #             "hip_l_roll",
+    #             "hip_r_roll",])},
+    # )
 
-    flat_toe_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=100.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-                "ankle_r_yaw_link",
-                "ankle_l_yaw_link"]),
-                "margin": 0.0,
-                "gain": 1.0,},
-    )
+    # flat_toe_penalty = RewTerm(
+    #     func=mdp.flat_orientation_links_l2,
+    #     weight=100.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot", body_names=[
+    #             "ankle_r_yaw_link",
+    #             "ankle_l_yaw_link"]),
+    #             "margin": 0.0,
+    #             "gain": 1.0,},
+    # )
 
     torso_height = RewTerm(
         func=mdp.local_torso_height_penalty,
@@ -166,8 +166,7 @@ class KurokoRewards(RewardsCfg):
                 "shoulder_l_pitch",
                 "shoulder_r_pitch",
                 "shoulder_l_roll",
-                "shoulder_r_roll",
-        ])},
+                "shoulder_r_roll",])},
     )
 
     joint_deviation_elbows = RewTerm(
@@ -537,7 +536,11 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             func=mdp.action_l1,
             weight=-0.001,
         )
-        self.rewards.action_rate_l2.weight = -0.01
+        self.rewards.action_rate_l2.weight = -0.005
+        self.rewards.action_rate_l1 = RewTerm(
+            func=mdp.action_rate_l1,
+            weight=-0.1,
+        )
         # self.rewards.action_jerk_l2 = RewTerm(
         #     func=mdp.action_jerk_l2,
         #     weight=-0.001,
@@ -548,7 +551,13 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-1.0e-14,
             params={"dt": self.sim.dt},
         )
-        self.rewards.dof_torques_l2.weight = -1.0e-5
+        self.rewards.action_acceleration_l1 = RewTerm(
+            func=mdp.joint_action_acc_l1,
+            weight=-1.0e-7,
+            params={"dt": self.sim.dt},
+        )
+        self.rewards.dof_torques_l2 = None
+        # self.rewards.dof_torques_l2.weight = -1.0e-5
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------

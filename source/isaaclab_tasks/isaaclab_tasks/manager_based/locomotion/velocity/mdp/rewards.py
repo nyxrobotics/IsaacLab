@@ -687,3 +687,52 @@ def prefer_foot_contact_only(
     reward -= any_nonfoot_contact.float() * nonfoot_contact_penalty
 
     return reward
+
+
+def links_z_axis_parallel_penalty_relative(
+    env,
+    asset_cfg: "SceneEntityCfg",
+) -> "torch.Tensor":
+    """Penalize squared misalignment angles of multiple link Z-axes
+    relative to the first link.
+
+    The penalty is the sum of squared tilt angles (in radians^2) between
+    each link's local +Z axis and the first link's local +Z axis.
+    Only relative alignment is evaluated; the world frame orientation is irrelevant.
+
+    Returns
+    -------
+    torch.Tensor
+        Positive penalty (sum of squared angles in radians^2).
+    """
+    asset = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids
+    if len(body_ids) < 2:
+        raise ValueError("asset_cfg.body_ids must contain at least 2 links.")
+
+    # (N, K, 4)
+    body_quat_w = asset.data.body_quat_w[:, body_ids, :]
+
+    # Local +Z axis
+    z_local = torch.zeros(
+        (body_quat_w.shape[0], body_quat_w.shape[1], 3),
+        device=body_quat_w.device,
+        dtype=body_quat_w.dtype,
+    )
+    z_local[..., 2] = 1.0
+
+    # Rotate local Z axes into world frame
+    z_w = _quat_rotate(body_quat_w, z_local)  # (N, K, 3)
+
+    z0 = z_w[:, 0, :].unsqueeze(1)  # (N, 1, 3)
+    zi = z_w[:, 1:, :]              # (N, K-1, 3)
+
+    # Cosine between axes
+    cos_theta = torch.sum(zi * z0, dim=-1)  # (N, K-1)
+    cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+
+    # Angle in radians
+    angles = torch.acos(cos_theta)  # (N, K-1)
+
+    # Squared-angle penalty
+    return torch.sum(angles * angles, dim=1)

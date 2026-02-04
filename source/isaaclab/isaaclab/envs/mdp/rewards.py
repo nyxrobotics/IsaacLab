@@ -252,11 +252,24 @@ def action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the actions using L2 squared kernel."""
     return torch.sum(torch.square(env.action_manager.action), dim=1)
 
+def action_rate_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Penalize the rate of change of the actions using L1 kernel."""
+    return torch.sum(torch.abs(env.action_manager.action - env.action_manager.prev_action), dim=1)
 
 def action_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the rate of change of the actions using L2 squared kernel."""
     return torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
 
+def action_acceleration_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Penalize the acceleration of the actions using L1 kernel."""
+    return torch.sum(
+        torch.abs(
+            env.action_manager.action
+            - 2 * env.action_manager.prev_action
+            + env.action_manager.prev_prev_action
+        ),
+        dim=1,
+    )
 
 def action_acceleration_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the acceleration of the actions using L2 squared kernel."""

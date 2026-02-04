@@ -164,34 +164,69 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
 def detect_fall(
     env: "ManagerBasedRLEnv",
     limit_angle: float,
+    max_lin_vel: float = 1e6,
+    max_ang_vel: float = 1e6,
+    max_lin_acc: float = 1e6,
+    max_ang_acc: float = 1e6,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Terminate when robot is clearly in an exploded state.
+    """Terminate when the robot is in an unstable or exploded state.
 
-    - 傾きが大きすぎる
-    - 数値が NaN / Inf になっている
+    Rules:
+    - Tilt is evaluated only using the first link (root) via projected_gravity_b.
+    - Numeric checks (NaN/Inf) for position/orientation/velocity/acceleration are done using body_* tensors
+      (i.e., over all bodies/components available).
+    - Magnitude checks for velocity/acceleration are done over all bodies.
     """
-    # 公式の bad_orientation / root_height_below_minimum と同じ取り方
     asset: RigidObject = env.scene[asset_cfg.name]
 
-    # root pos / projected gravity
-    root_pos = asset.data.root_pos_w          # (num_envs, 3)
-    root_quat = asset.data.root_link_quat_w
-    root_lin_vel = asset.data.root_vel_w
-    root_ang_vel =  asset.data.root_link_ang_vel_w
-    proj_g   = asset.data.projected_gravity_b # (num_envs, 3)
-
-    # 1) 数値が壊れている (NaN / Inf)
-    bad_numeric = (~torch.isfinite(root_pos).all(dim=-1)) \
-        | (~torch.isfinite(proj_g).all(dim=-1)) \
-        | (~torch.isfinite(root_quat).all(dim=-1)) \
-        | (~torch.isfinite(root_lin_vel).all(dim=-1)) \
-        | (~torch.isfinite(root_ang_vel).all(dim=-1))
-        
-
-    # 2) 傾きが limit_angle を超える
-    #    bad_orientation と同じく projected_gravity_b を使う
+    # -----------------------------
+    # Tilt (root-only)
+    # -----------------------------
+    proj_g = asset.data.projected_gravity_b  # (num_envs, 3)
     tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
     bad_tilt = tilt > limit_angle
 
-    return bad_numeric | bad_tilt
+    # -----------------------------
+    # Helper: "any NaN/Inf" over all non-env dimensions
+    # -----------------------------
+    def _has_non_finite(x: torch.Tensor) -> torch.Tensor:
+        reduce_dims = tuple(range(1, x.ndim))
+        return ~torch.isfinite(x).all(dim=reduce_dims)
+
+    # -----------------------------
+    # bad_numeric: position/orientation/gravity/velocity/acceleration
+    # - Use only body_* tensors for pose/vel/acc (no root_* duplication).
+    # - Gravity check uses projected_gravity_b (the only field available here).
+    # -----------------------------
+    body_pos = asset.data.body_pos_w     # (num_envs, num_bodies, 3)
+    body_quat = asset.data.body_quat_w   # (num_envs, num_bodies, 4)
+    body_vel = asset.data.body_vel_w     # (num_envs, num_bodies, 6)  [lin_vel, ang_vel]
+    body_acc = asset.data.body_acc_w     # (num_envs, num_bodies, 6)  [lin_acc, ang_acc]
+
+    bad_numeric = (
+        _has_non_finite(body_pos)
+        | _has_non_finite(body_quat)
+        | _has_non_finite(body_vel)
+        | _has_non_finite(body_acc)
+        | _has_non_finite(proj_g)  # gravity projection (root-derived, but numeric-critical)
+    )
+
+    # -----------------------------
+    # Magnitude checks (all bodies)
+    # -----------------------------
+    lin_vel = body_vel[..., 0:3]
+    ang_vel = body_vel[..., 3:6]
+    lin_acc = body_acc[..., 0:3]
+    ang_acc = body_acc[..., 3:6]
+
+    bad_velocity = (
+        torch.any(torch.norm(lin_vel, dim=-1) > max_lin_vel, dim=1)
+        | torch.any(torch.norm(ang_vel, dim=-1) > max_ang_vel, dim=1)
+    )
+    bad_acceleration = (
+        torch.any(torch.norm(lin_acc, dim=-1) > max_lin_acc, dim=1)
+        | torch.any(torch.norm(ang_acc, dim=-1) > max_ang_acc, dim=1)
+    )
+
+    return bad_tilt | bad_numeric | bad_velocity | bad_acceleration

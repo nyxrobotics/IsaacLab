@@ -164,8 +164,8 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
 def detect_fall(
     env: "ManagerBasedRLEnv",
     limit_angle: float,
-    max_lin_vel: float = 1e6,
-    max_ang_vel: float = 1e6,
+    max_lin_vel: float = 1e3,
+    max_ang_vel: float = 1e3,
     max_lin_acc: float = 1e6,
     max_ang_acc: float = 1e6,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

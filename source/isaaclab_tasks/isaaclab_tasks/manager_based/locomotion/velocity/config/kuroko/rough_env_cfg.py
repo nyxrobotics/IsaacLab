@@ -52,7 +52,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-1000.0,
+        weight=-2000.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -97,7 +97,7 @@ class KurokoRewards(RewardsCfg):
             "hold_min_contact": 0.08,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
-            "air_timeout_penalty": 1.0,
+            "air_timeout_penalty": 0.1,
             "double_flight_penalty": 0.1,
             "air_hold_reward": 1.0,
             "contact_hold_reward": 1.0,
@@ -129,7 +129,7 @@ class KurokoRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=15.0,
+        weight=10.0,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=[
                 "ankle_r_yaw_link",
                 "ankle_l_yaw_link"]),
@@ -211,7 +211,7 @@ class KurokoRewards(RewardsCfg):
 
     prefer_foot_contact = RewTerm(
         func=mdp.prefer_foot_contact_only,
-        weight=10.0,
+        weight=1.0,
         params={
             "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
@@ -226,7 +226,7 @@ class KurokoRewards(RewardsCfg):
                 "hip_l_pitch_link",
             ]),
             "contact_force_threshold": 0.01,
-            "foot_contact_reward": 1.0,
+            "foot_contact_reward": 0.0,
             "nonfoot_contact_penalty": 10.0,
         },
     )
@@ -423,7 +423,10 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        self.terminations.base_contact = None  # type: ignore
+        # self.terminations.base_contact = None  # type: ignore
+        self.terminations.base_contact.params["sensor_cfg"].body_names = [
+            "chest_link",
+            "body_link"]
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [
         #     "chest_link",
         #     "body_link",

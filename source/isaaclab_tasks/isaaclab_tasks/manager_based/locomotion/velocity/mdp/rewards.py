@@ -423,10 +423,16 @@ def feet_air_time_balanced_alternating_biped(
       - Prevent "hold one foot up forever" via TRUE swing timeout.
       - Encourage completing steps via touchdown bonus.
 
+    Additional behavior (first step only, no new parameters):
+      - The first swing (before any valid completed step exists) gets a one-time liftoff reward
+        using swing_in_air_reward. This encourages "lift the foot" without enabling per-step
+        reward farming (it's an event, not a time-integrated reward).
+
     Reward structure:
       - During an active swing, provide small positive shaping when:
           * the swing foot is in the air for at least hold_min_air
           * the other foot is in contact (single support)
+        AND the swing alternates relative to the previous valid completed step.
       - At touchdown, provide a step completion bonus for valid swings.
       - Penalize double flight anytime.
       - Penalize air/contact taps on transitions.
@@ -530,6 +536,10 @@ def feet_air_time_balanced_alternating_biped(
     start_swing = (active_swing_foot < 0) & (lift_count == 1) & single_support & (~swing_timed_out)
     active_swing_foot = torch.where(start_swing, lifted_foot, active_swing_foot)
 
+    # one-time liftoff reward for the very first step (no extra parameters; uses swing_in_air_reward)
+    first_step = prev_step_swing_foot < 0
+    reward_first_liftoff = (start_swing & first_step).float() * swing_in_air_reward
+
     # touchdown ends the active swing (regardless of valid/invalid)
     end_swing = ((active_swing_foot == 0) & touch_down[:, 0]) | ((active_swing_foot == 1) & touch_down[:, 1])
 
@@ -540,7 +550,6 @@ def feet_air_time_balanced_alternating_biped(
     )
 
     # --- TRUE swing timeout latch using hold_max_air ---
-    # Timeout is latched once exceeded, cleared only when the swing foot touches down.
     timeout_now = (active_swing_foot >= 0) & (active_air > hold_max_air)
     swing_timed_out = swing_timed_out | timeout_now
     swing_timed_out = torch.where(end_swing, torch.zeros_like(swing_timed_out), swing_timed_out)
@@ -558,10 +567,6 @@ def feet_air_time_balanced_alternating_biped(
     active_swing_foot = torch.where(end_swing, torch.full_like(active_swing_foot, -1), active_swing_foot)
 
     # --- alternation gating (unknown_prev removed) ---
-    # Step rewards during swing require:
-    #   - we are in an active swing
-    #   - we have at least one previously completed step
-    #   - current swing foot differs from the previous completed step's swing foot
     has_prev_step = prev_step_swing_foot >= 0
     alternating_now = (active_swing_foot >= 0) & has_prev_step & (active_swing_foot != prev_step_swing_foot)
     step_reward_enabled = alternating_now & (~swing_timed_out)
@@ -571,7 +576,6 @@ def feet_air_time_balanced_alternating_biped(
     swing_air_ok = torch.where((active_swing_foot == 0) & (air_time[:, 0] >= hold_min_air), 1.0, swing_air_ok)
     swing_air_ok = torch.where((active_swing_foot == 1) & (air_time[:, 1] >= hold_min_air), 1.0, swing_air_ok)
 
-    # In single support, the support foot is in contact by definition.
     support_contact_ok = single_support.float()
 
     reward_swing_air = swing_in_air_reward * swing_air_ok * step_reward_enabled.float() * single_support.float()
@@ -589,7 +593,6 @@ def feet_air_time_balanced_alternating_biped(
     tap_contact = lift_off & (contact_time < tap_contact_threshold)
     penalty_tap_contact = tap_contact.any(dim=1).float() * tap_contact_penalty
 
-    # Timeout penalty while timed out (discourages "hold in air forever" even before touchdown).
     penalty_timeout = swing_timed_out.float() * swing_timeout_penalty
 
     # --- EMA symmetry (long-horizon left/right balance) ---
@@ -604,7 +607,8 @@ def feet_air_time_balanced_alternating_biped(
 
     # --- total ---
     reward = (
-        reward_swing_air
+        reward_first_liftoff
+        + reward_swing_air
         + reward_support_contact
         + reward_step_complete
         - penalty_double_flight
@@ -624,5 +628,65 @@ def feet_air_time_balanced_alternating_biped(
     buf["active_swing_foot"] = active_swing_foot
     buf["prev_step_swing_foot"] = prev_step_swing_foot
     buf["swing_timed_out"] = swing_timed_out
+
+    return reward
+
+
+def prefer_foot_contact_only(
+    env,
+    foot_sensor_cfg: SceneEntityCfg,
+    other_sensor_cfg: SceneEntityCfg,
+    *,
+    contact_force_threshold: float = 0.01,
+    foot_contact_reward: float = 1.0,
+    nonfoot_contact_penalty: float = 1.0,
+) -> torch.Tensor:
+    """
+    Encourage states where at least one foot link is in contact with the ground,
+    and discourage states where any non-foot link is in contact.
+
+    - Reward if ANY foot link is in contact.
+    - Penalize if ANY non-foot link is in contact.
+    - Contact counts do NOT matter (existence check only).
+
+    Contact detection logic follows other reward functions in this file:
+      - Uses peak contact force over history from ContactSensor.
+    """
+
+    # --------------------------------------------------------
+    # Foot contact detection
+    # --------------------------------------------------------
+    foot_sensor: ContactSensor = env.scene.sensors[foot_sensor_cfg.name]
+    foot_forces = foot_sensor.data.net_forces_w_history[
+        :, :, foot_sensor_cfg.body_ids, :
+    ]  # (N, H, F, 3)
+
+    foot_in_contact = (
+        foot_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold
+    )  # (N, F)
+
+    any_foot_contact = foot_in_contact.any(dim=1)  # (N,)
+
+    # --------------------------------------------------------
+    # Non-foot contact detection
+    # --------------------------------------------------------
+    other_sensor: ContactSensor = env.scene.sensors[other_sensor_cfg.name]
+    other_forces = other_sensor.data.net_forces_w_history[
+        :, :, other_sensor_cfg.body_ids, :
+    ]  # (N, H, K, 3)
+
+    other_in_contact = (
+        other_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold
+    )  # (N, K)
+
+    any_nonfoot_contact = other_in_contact.any(dim=1)  # (N,)
+
+    # --------------------------------------------------------
+    # Reward composition
+    # --------------------------------------------------------
+    reward = torch.zeros_like(any_foot_contact, dtype=torch.float)
+
+    reward += any_foot_contact.float() * foot_contact_reward
+    reward -= any_nonfoot_contact.float() * nonfoot_contact_penalty
 
     return reward

@@ -82,7 +82,7 @@ class KurokoRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=10.0,
+        weight=100.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -91,12 +91,12 @@ class KurokoRewards(RewardsCfg):
             ]),
             "v_max": 0.1,
             "yaw_max": 0.3,
-            "hold_min_air": 0.1,
-            "hold_max_air": 0.5,
-            "tap_air_threshold": 0.05,
-            "tap_air_penalty": 0.1,
-            "tap_contact_threshold": 0.1,
-            "tap_contact_penalty": 0.2,
+            "hold_min_air": 0.04,
+            "hold_max_air": 0.8,
+            "tap_air_threshold": 0.02,
+            "tap_air_penalty": 0.04,
+            "tap_contact_threshold": 0.04,
+            "tap_contact_penalty": 0.04,
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
             "double_flight_penalty": 0.1,
@@ -207,6 +207,28 @@ class KurokoRewards(RewardsCfg):
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "ankle_l_yaw",
                 "ankle_r_yaw",])},
+    )
+
+    prefer_foot_contact = RewTerm(
+        func=mdp.prefer_foot_contact_only,
+        weight=10.0,
+        params={
+            "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
+            "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "chest_link",
+                "body_link",
+                "knee_r_passive_link",
+                "knee_l_passive_link",
+                "hip_r_pitch_link",
+                "hip_l_pitch_link",
+            ]),
+            "contact_force_threshold": 0.01,
+            "foot_contact_reward": 1.0,
+            "nonfoot_contact_penalty": 10.0,
+        },
     )
 
 
@@ -402,14 +424,14 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        # self.terminations.base_contact = None  # type: ignore
-        self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "chest_link",
-            "body_link",
-            "knee_r_passive_link",
-            "knee_l_passive_link",
-            "hip_r_pitch_link",
-            "hip_l_pitch_link"]
+        self.terminations.base_contact = None  # type: ignore
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = [
+        #     "chest_link",
+        #     "body_link",
+        #     "knee_r_passive_link",
+        #     "knee_l_passive_link",
+        #     "hip_r_pitch_link",
+        #     "hip_l_pitch_link"]
         
         print("[DEBUG] Feet link names for reward:", ankle_names)
         print("[DEBUG] Base contact link:", base_link_name)
@@ -420,7 +442,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.detect_fall = DoneTerm( # type: ignore
             func=mdp.detect_fall,
             params={
-                "limit_angle": 1.2,
+                "limit_angle": 1.5,
                 "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name],),
             },
             time_out=False,

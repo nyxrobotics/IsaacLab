@@ -100,9 +100,6 @@ class KurokoRewards(RewardsCfg):
             "ema_alpha": 0.02,
             "balance_weight": 0.5,
             "double_flight_penalty": 0.1,
-            "overhold_penalty": 0.1,
-            "overhold_margin": 0.05,
-
         },
     )
 

@@ -388,7 +388,13 @@ def feet_air_time_balanced_alternating_biped(
 
     # swing constraints
     hold_min_air: float = 0.15,
-    hold_max_air: float = 0.45,
+    hold_max_air: float = 0.45,  # TRUE swing timeout: beyond this, the current swing is treated as failed
+
+    # timeout penalty (applied while a swing is timed out and the foot is still in the air)
+    swing_timeout_penalty: float = 1.0,
+
+    # step completion bonus (reward at touchdown for a valid step)
+    step_complete_bonus: float = 1.0,
 
     # anti-tap (air/contact)
     tap_air_threshold: float = 0.10,
@@ -401,27 +407,36 @@ def feet_air_time_balanced_alternating_biped(
     balance_weight: float = 0.5,
 
     # avoid double flight
-    double_flight_penalty: float = 2.0,
+    double_flight_penalty: float = 1.0,
 
-    # over-hold penalty
-    overhold_penalty: float = 0.3,
-    overhold_margin: float = 0.05,
-
-    # positive shaping weights
+    # positive shaping weights during swing (keep modest if you want completion to dominate)
     swing_in_air_reward: float = 1.0,
     support_in_contact_reward: float = 1.0,
 ) -> torch.Tensor:
     """
-    Balanced alternating biped reward.
+    Balanced alternating biped reward (full version).
 
-    - Positive reward when exactly one foot is in air (after hold_min_air) AND the other is in contact.
-    - Step reward is gated by alternation: consecutive steps must alternate swing feet.
-      This prevents "one-foot fixed, other-foot tapping" solutions.
-    - Double stance allowed but yields no swing/support reward.
-    - Double flight penalized.
-    - Brief air/contact taps penalized.
-    - Left/right asymmetry penalized via EMA statistics.
-    - Reward is linearly scaled by commanded motion magnitude (XY + yaw).
+    Core goals:
+      - Alternate swing feet (no one-foot-fixed tapping).
+      - Avoid double flight.
+      - Avoid brief air/contact taps.
+      - Prevent "hold one foot up forever" via TRUE swing timeout.
+      - Encourage completing steps via touchdown bonus.
+
+    Reward structure:
+      - During an active swing, provide small positive shaping when:
+          * the swing foot is in the air for at least hold_min_air
+          * the other foot is in contact (single support)
+      - At touchdown, provide a step completion bonus for valid swings.
+      - Penalize double flight anytime.
+      - Penalize air/contact taps on transitions.
+      - Penalize long-horizon left/right asymmetry using EMA statistics.
+
+    TRUE swing timeout (hold_max_air):
+      - If the active swing exceeds hold_max_air, the swing is latched as timed-out (failed).
+      - While timed out: step rewards are disabled and a timeout penalty is applied.
+      - The timed-out swing is not counted as a valid step (no completion bonus, no prev-step update).
+      - The latch clears only when the swing foot touches down.
 
     EMA = Exponential Moving Average.
     """
@@ -430,6 +445,7 @@ def feet_air_time_balanced_alternating_biped(
     foot_ids = sensor_cfg.body_ids
     assert len(foot_ids) == 2, "This reward is for bipeds (2 feet)."
 
+    # sensor state
     air_time = contact_sensor.data.current_air_time[:, foot_ids]          # (N,2)
     contact_time = contact_sensor.data.current_contact_time[:, foot_ids]  # (N,2)
     in_contact = contact_time > 0.0                                       # (N,2)
@@ -447,8 +463,11 @@ def feet_air_time_balanced_alternating_biped(
         buf["ema_contact"] = torch.zeros((n_env, 2), device=device)
 
         # Step bookkeeping for enforcing alternation
-        buf["active_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)      # -1/0/1
-        buf["prev_step_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)   # -1/0/1
+        buf["active_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)        # -1/0/1
+        buf["prev_step_swing_foot"] = torch.full((n_env,), -1, device=device, dtype=torch.long)     # -1/0/1
+
+        # TRUE timeout latch for the currently active swing
+        buf["swing_timed_out"] = torch.zeros((n_env,), device=device, dtype=torch.bool)
 
         setattr(env, key, buf)
     buf = getattr(env, key)
@@ -459,6 +478,7 @@ def feet_air_time_balanced_alternating_biped(
     ema_contact = buf["ema_contact"]
     active_swing_foot = buf["active_swing_foot"]
     prev_step_swing_foot = buf["prev_step_swing_foot"]
+    swing_timed_out = buf["swing_timed_out"]
 
     # --- reset per-env buffers on episode reset ---
     reset_buf = getattr(env, "reset_buf", None)
@@ -470,6 +490,7 @@ def feet_air_time_balanced_alternating_biped(
             buf["last_completed_air"][reset_ids] = 0.0
             buf["active_swing_foot"][reset_ids] = -1
             buf["prev_step_swing_foot"][reset_ids] = -1
+            buf["swing_timed_out"][reset_ids] = False
             buf["prev_in_contact"][reset_ids] = in_contact[reset_ids]
 
             prev_in_contact = buf["prev_in_contact"]
@@ -478,6 +499,7 @@ def feet_air_time_balanced_alternating_biped(
             ema_contact = buf["ema_contact"]
             active_swing_foot = buf["active_swing_foot"]
             prev_step_swing_foot = buf["prev_step_swing_foot"]
+            swing_timed_out = buf["swing_timed_out"]
 
     # --- transitions ---
     lift_off = prev_in_contact & (~in_contact)    # contact -> air
@@ -493,8 +515,6 @@ def feet_air_time_balanced_alternating_biped(
 
     lin_scale = torch.clamp(lin / max(v_max, 1e-6), 0.0, 1.0)
     yaw_scale = torch.clamp(yaw / max(yaw_max, 1e-6), 0.0, 1.0)
-
-    # Always additive composition (clamped): encourages walking for translation and/or yaw commands.
     cmd_scale = torch.clamp(lin_scale + yaw_scale, 0.0, 1.0)
 
     # --- contact pattern ---
@@ -502,56 +522,63 @@ def feet_air_time_balanced_alternating_biped(
     single_support = contact_count == 1
     double_flight = contact_count == 0
 
-    # --- determine swing foot in single support (NOT in contact) ---
-    swing_foot = torch.where(in_contact[:, 0], 1, torch.where(in_contact[:, 1], 0, -1)).long()  # -1/0/1
-
-    # --- step bookkeeping: define an "active swing" segment from liftoff to touchdown ---
-    # Start active swing when we enter single support and exactly one foot lifted off.
+    # --- active swing bookkeeping (liftoff -> touchdown) ---
     lift_count = lift_off.int().sum(dim=1)
-    start_swing = (active_swing_foot < 0) & (lift_count == 1) & single_support
     lifted_foot = torch.where(lift_off[:, 0], 0, torch.where(lift_off[:, 1], 1, -1)).long()
+
+    # start a swing only when we are not already in swing and exactly one foot lifted off into single support
+    start_swing = (active_swing_foot < 0) & (lift_count == 1) & single_support & (~swing_timed_out)
     active_swing_foot = torch.where(start_swing, lifted_foot, active_swing_foot)
 
-    # End active swing when that same foot touches down.
+    # touchdown ends the active swing (regardless of valid/invalid)
     end_swing = ((active_swing_foot == 0) & touch_down[:, 0]) | ((active_swing_foot == 1) & touch_down[:, 1])
 
-    # Check if this swing was valid (held in air long enough).
-    active_air_at_end = torch.where(
+    # current active swing air time (0 if none)
+    active_air = torch.where(
         active_swing_foot == 0, air_time[:, 0],
         torch.where(active_swing_foot == 1, air_time[:, 1], torch.zeros_like(lin))
     )
-    valid_swing_end = end_swing & (active_air_at_end >= hold_min_air)
 
-    # Update prev_step_swing_foot only on valid swing completion.
+    # --- TRUE swing timeout latch using hold_max_air ---
+    # Timeout is latched once exceeded, cleared only when the swing foot touches down.
+    timeout_now = (active_swing_foot >= 0) & (active_air > hold_max_air)
+    swing_timed_out = swing_timed_out | timeout_now
+    swing_timed_out = torch.where(end_swing, torch.zeros_like(swing_timed_out), swing_timed_out)
+
+    # A valid swing completion must:
+    #  - end by touchdown
+    #  - hold in air long enough
+    #  - NOT be timed out
+    valid_swing_end = end_swing & (active_air >= hold_min_air) & (~swing_timed_out)
+
+    # Update prev step only on valid completion (this enforces alternation on real steps only)
     prev_step_swing_foot = torch.where(valid_swing_end, active_swing_foot, prev_step_swing_foot)
+
+    # Clear active swing foot on touchdown
     active_swing_foot = torch.where(end_swing, torch.full_like(active_swing_foot, -1), active_swing_foot)
 
-    # --- alternation gating (always enabled) ---
-    # Step reward only if the current active swing foot differs from the previous completed step.
-    alternating_now = (active_swing_foot >= 0) & (prev_step_swing_foot >= 0) & (active_swing_foot != prev_step_swing_foot)
-    unknown_prev = prev_step_swing_foot < 0  # first step
-    step_reward_enabled = (active_swing_foot >= 0) & (alternating_now | unknown_prev)
+    # --- alternation gating (unknown_prev removed) ---
+    # Step rewards during swing require:
+    #   - we are in an active swing
+    #   - we have at least one previously completed step
+    #   - current swing foot differs from the previous completed step's swing foot
+    has_prev_step = prev_step_swing_foot >= 0
+    alternating_now = (active_swing_foot >= 0) & has_prev_step & (active_swing_foot != prev_step_swing_foot)
+    step_reward_enabled = alternating_now & (~swing_timed_out)
 
-    # --- positive rewards (only during an active, enabled swing segment) ---
+    # --- swing shaping rewards (small, during swing) ---
     swing_air_ok = torch.zeros((n_env,), device=device)
     swing_air_ok = torch.where((active_swing_foot == 0) & (air_time[:, 0] >= hold_min_air), 1.0, swing_air_ok)
     swing_air_ok = torch.where((active_swing_foot == 1) & (air_time[:, 1] >= hold_min_air), 1.0, swing_air_ok)
 
+    # In single support, the support foot is in contact by definition.
     support_contact_ok = single_support.float()
 
     reward_swing_air = swing_in_air_reward * swing_air_ok * step_reward_enabled.float() * single_support.float()
     reward_support_contact = support_in_contact_reward * support_contact_ok * step_reward_enabled.float() * single_support.float()
 
-    # --- over-hold penalty (applies to the active swing foot only) ---
-    if overhold_margin <= 0.0:
-        overhold_amount = ((air_time - hold_max_air) > 0.0).float()
-    else:
-        overhold_amount = torch.clamp((air_time - hold_max_air) / max(overhold_margin, 1e-6), 0.0, 1.0)
-
-    overhold_active = torch.zeros((n_env,), device=device)
-    overhold_active = torch.where(active_swing_foot == 0, overhold_amount[:, 0], overhold_active)
-    overhold_active = torch.where(active_swing_foot == 1, overhold_amount[:, 1], overhold_active)
-    penalty_overhold = overhold_active * overhold_penalty * (active_swing_foot >= 0).float()
+    # --- touchdown bonus (reward step completion at touchdown) ---
+    reward_step_complete = valid_swing_end.float() * step_complete_bonus
 
     # --- penalties ---
     penalty_double_flight = double_flight.float() * double_flight_penalty
@@ -561,6 +588,9 @@ def feet_air_time_balanced_alternating_biped(
 
     tap_contact = lift_off & (contact_time < tap_contact_threshold)
     penalty_tap_contact = tap_contact.any(dim=1).float() * tap_contact_penalty
+
+    # Timeout penalty while timed out (discourages "hold in air forever" even before touchdown).
+    penalty_timeout = swing_timed_out.float() * swing_timeout_penalty
 
     # --- EMA symmetry (long-horizon left/right balance) ---
     # EMA = Exponential Moving Average.
@@ -572,13 +602,15 @@ def feet_air_time_balanced_alternating_biped(
     contact_imbalance = torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
     penalty_balance = balance_weight * (air_imbalance + contact_imbalance)
 
+    # --- total ---
     reward = (
         reward_swing_air
         + reward_support_contact
-        - penalty_overhold
+        + reward_step_complete
         - penalty_double_flight
         - penalty_tap_air
         - penalty_tap_contact
+        - penalty_timeout
         - penalty_balance
     )
 
@@ -591,5 +623,6 @@ def feet_air_time_balanced_alternating_biped(
     buf["ema_contact"] = ema_contact
     buf["active_swing_foot"] = active_swing_foot
     buf["prev_step_swing_foot"] = prev_step_swing_foot
+    buf["swing_timed_out"] = swing_timed_out
 
     return reward

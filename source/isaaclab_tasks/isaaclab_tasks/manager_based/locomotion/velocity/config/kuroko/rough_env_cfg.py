@@ -89,8 +89,8 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link",
             ]),
-            "linear_cmd_threshold": 0.1,
-            "angular_cmd_threshold": 0.3,
+            "linear_cmd_threshold": 0.04,
+            "angular_cmd_threshold": 0.1,
             "body_tilt_threshold": 0.3,
             "hold_min_air": 0.04,
             "hold_max_air": 0.8,
@@ -577,9 +577,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 # body_names は .* に強制上書き（最も安全）
                 self.physics_material.asset_cfg.body_names = [".*"]
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
 # ---------------------------------------------------------------------

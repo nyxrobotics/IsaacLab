@@ -487,14 +487,13 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 lo, hi = val
                                 setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
-
         # Set PhysicsScene dt to 500Hz
         self.sim.dt = 0.002  # Simulation: 500 Hz 
-        self.decimation = 10  # Rendering: 50 Hz
-        self.sim.render_interval = self.decimation
-        self.episode_length_s = 20.0
-        self.sim.physx.max_position_iteration_count = 16
-        self.sim.physx.min_position_iteration_count = 16
+        self.decimation = 10  # Control: 50 Hz
+        self.sim.render_interval = 17  # Rendering: 30Hz
+        self.episode_length_s = 100.0
+        self.sim.physx.max_position_iteration_count = 32
+        self.sim.physx.min_position_iteration_count = 32
         self.sim.physx.max_velocity_iteration_count = 1
         self.sim.physx.min_velocity_iteration_count = 1
         # Slover type: PGS

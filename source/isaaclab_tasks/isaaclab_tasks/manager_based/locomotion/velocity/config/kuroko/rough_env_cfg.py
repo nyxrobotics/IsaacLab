@@ -67,42 +67,42 @@ class KurokoRewards(RewardsCfg):
         params={"command_name": "base_velocity", "std": 0.5}
     )
 
-    # feet_air_time = RewTerm(
-    #     func=mdp.feet_air_time_positive_biped,
-    #     weight=1000.0,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "ankle_l_yaw_link",
-    #             "ankle_r_yaw_link",
-    #         ]),
-    #         "threshold": 0.02,
-    #     },
-    # )
-
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=30.0,
+        func=mdp.feet_air_time_positive_biped,
+        weight=10.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",
                 "ankle_r_yaw_link",
             ]),
-            "linear_cmd_threshold": 0.04,
-            "angular_cmd_threshold": 0.1,
-            "body_tilt_threshold": 0.3,
-            "hold_min_air": 0.04,
-            "hold_max_air": 0.8,
-            "hold_min_contact": 0.08,
-            "ema_alpha": 0.02,
-            "balance_weight": 0.5,
-            "air_timeout_penalty": 0.1,
-            "double_flight_penalty": 0.1,
-            "air_hold_reward": 1.0,
-            "contact_hold_reward": 1.0,
+            "threshold": 0.02,
         },
     )
+
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_balanced_alternating_biped,
+    #     weight=30.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link",
+    #         ]),
+    #         "linear_cmd_threshold": 0.04,
+    #         "angular_cmd_threshold": 0.1,
+    #         "body_tilt_threshold": 0.3,
+    #         "hold_min_air": 0.04,
+    #         "hold_max_air": 0.8,
+    #         "hold_min_contact": 0.08,
+    #         "ema_alpha": 0.02,
+    #         "balance_weight": 0.5,
+    #         "air_timeout_penalty": 0.1,
+    #         "double_flight_penalty": 1.0,
+    #         "air_hold_reward": 1.0,
+    #         "contact_hold_reward": 1.0,
+    #     },
+    # )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
@@ -225,8 +225,8 @@ class KurokoRewards(RewardsCfg):
                 "hip_r_pitch_link",
                 "hip_l_pitch_link",
             ]),
-            "contact_force_threshold": 0.01,
-            "foot_contact_reward": 0.0,
+            "contact_force_threshold": 0.02,
+            "foot_contact_reward": 1.0,
             "nonfoot_contact_penalty": 10.0,
         },
     )
@@ -487,33 +487,49 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 lo, hi = val
                                 setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
-        # Set PhysicsScene dt to 500Hz
-        self.sim.dt = 0.002  # Simulation: 500 Hz 
-        self.decimation = 10  # Control: 50 Hz
-        self.sim.render_interval = 17  # Rendering: 30Hz
-        self.episode_length_s = 100.0
-        self.sim.physx.max_position_iteration_count = 32
-        self.sim.physx.min_position_iteration_count = 32
-        self.sim.physx.max_velocity_iteration_count = 1
-        self.sim.physx.min_velocity_iteration_count = 1
+        # Set PhysicsScene params
+        self.sim.dt = 0.001  # Simulation: 1000 Hz 
+        self.decimation = 5  # Control: 200 Hz
+        self.sim.render_interval = 10  # Rendering: 100Hz
+        self.episode_length_s = 20.0
+        self.sim.physx.max_position_iteration_count = 4
+        self.sim.physx.min_position_iteration_count = 4
+        self.sim.physx.max_velocity_iteration_count = 4
+        self.sim.physx.min_velocity_iteration_count = 4
         # Slover type: PGS
         self.sim.physx.solver_type = 0
         # TODO: enableGPUDynamics = 0, broadphaseType = "MBP"
 
-        # Randomize initial joint angles
-        self.events.push_robot = None
-        self.events.add_base_mass = None
-        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
+        # Randomize events
+        self.events.physics_material.params["asset_cfg"].body_names = ankle_names
+        self.events.physics_material.params["static_friction_range"] = (0.04, 0.4)
+        self.events.physics_material.params["dynamic_friction_range"] = (0.04, 0.4)
+        self.events.add_base_mass.params["asset_cfg"].body_names = [base_link_name]
+        self.events.add_base_mass.params["mass_distribution_params"] = (-0.2, 0.2)
+        self.events.base_com.params["asset_cfg"].body_names = [base_link_name]
+        self.events.base_com.params["com_range"] = {"x": (-0.01, 0.01), "y": (-0.01, 0.01), "z": (-0.01, 0.01)}
         self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
+        self.events.base_external_force_torque.params["force_range"] = (-1.0, 1.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-0.4, 0.4)
+        self.events.push_robot.params["velocity_range"] = {"x": (-0.1, 0.1), "y": (-0.1, 0.1)}
+        self.events.push_robot.interval_range_s = (5.0, 20.0)
+
+        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
         self.events.reset_base.params = {
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            "pose_range": {
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (0.0, 0.05),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.3, 0.3),
+                "pitch": (-0.3, 0.3),
+                "yaw": (-0.3, 0.3),
             },
         }
 
@@ -605,9 +621,9 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
 
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
             "velocity_range": {

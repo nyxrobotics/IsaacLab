@@ -533,7 +533,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2 = None
+        self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.dof_pos_limits = RewTerm(
             func=mdp.joint_pos_limits,
             weight=-1e6,
@@ -547,7 +547,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],)},
         )
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2 = None
+        self.rewards.ang_vel_xy_l2.weight = -0.02
         self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_l1 = RewTerm(
             func=mdp.action_l1,

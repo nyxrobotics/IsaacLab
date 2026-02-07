@@ -138,7 +138,7 @@ class KurokoRewards(RewardsCfg):
     )
 
     torso_height = RewTerm(
-        func=mdp.local_torso_height_penalty_l2,
+        func=mdp.local_torso_height_penalty,
         weight=100.0,
         params={
             "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -209,27 +209,27 @@ class KurokoRewards(RewardsCfg):
                 "ankle_r_yaw",])},
     )
 
-    prefer_foot_contact = RewTerm(
-        func=mdp.prefer_foot_contact_only,
-        weight=1.0,
-        params={
-            "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "ankle_l_yaw_link",
-                "ankle_r_yaw_link",
-            ]),
-            "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "chest_link",
-                "body_link",
-                "knee_r_passive_link",
-                "knee_l_passive_link",
-                "hip_r_pitch_link",
-                "hip_l_pitch_link",
-            ]),
-            "contact_force_threshold": 0.02,
-            "foot_contact_reward": 1.0,
-            "nonfoot_contact_penalty": 10.0,
-        },
-    )
+    # prefer_foot_contact = RewTerm(
+    #     func=mdp.prefer_foot_contact_only,
+    #     weight=1.0,
+    #     params={
+    #         "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "ankle_l_yaw_link",
+    #             "ankle_r_yaw_link",
+    #         ]),
+    #         "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+    #             "chest_link",
+    #             "body_link",
+    #             "knee_r_passive_link",
+    #             "knee_l_passive_link",
+    #             "hip_r_pitch_link",
+    #             "hip_l_pitch_link",
+    #         ]),
+    #         "contact_force_threshold": 0.02,
+    #         "foot_contact_reward": 1.0,
+    #         "nonfoot_contact_penalty": 10.0,
+    #     },
+    # )
 
 # ---------------------------------------------------------------------
 # Main environment config
@@ -423,10 +423,10 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [base_link_name]
-        # self.terminations.base_contact = None  # type: ignore
-        self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "chest_link",
-            "body_link"]
+        self.terminations.base_contact = None  # type: ignore
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = [
+        #     "chest_link",
+        #     "body_link"]
         # self.terminations.base_contact.params["sensor_cfg"].body_names = [
         #     "chest_link",
         #     "body_link",
@@ -444,7 +444,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.detect_fall = DoneTerm( # type: ignore
             func=mdp.detect_fall,
             params={
-                "limit_angle": 1.5,
+                "limit_angle": 1.3,
                 "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name],),
             },
             time_out=False,
@@ -637,8 +637,10 @@ class KurokoRoughEnvCfg_PLAY(KurokoRoughEnvCfg):
         }
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
+
         # disable randomization for play
         self.observations.policy.enable_corruption = False
+
         # remove random pushing
         self.events.base_external_force_torque = None
         self.events.push_robot = None

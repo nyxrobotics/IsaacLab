@@ -209,27 +209,33 @@ class KurokoRewards(RewardsCfg):
                 "ankle_r_yaw",])},
     )
 
-    # prefer_foot_contact = RewTerm(
-    #     func=mdp.prefer_foot_contact_only,
-    #     weight=1.0,
-    #     params={
-    #         "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "ankle_l_yaw_link",
-    #             "ankle_r_yaw_link",
-    #         ]),
-    #         "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-    #             "chest_link",
-    #             "body_link",
-    #             "knee_r_passive_link",
-    #             "knee_l_passive_link",
-    #             "hip_r_pitch_link",
-    #             "hip_l_pitch_link",
-    #         ]),
-    #         "contact_force_threshold": 0.02,
-    #         "foot_contact_reward": 1.0,
-    #         "nonfoot_contact_penalty": 10.0,
-    #     },
-    # )
+    prefer_foot_contact = RewTerm(
+        func=mdp.prefer_foot_contact_only,
+        weight=1.0,
+        params={
+            "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "ankle_l_yaw_link",
+                "ankle_r_yaw_link",
+            ]),
+            "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
+                "chest_link",
+                "body_link",
+                "knee_r_passive_link",
+                "knee_l_passive_link",
+                "hip_r_pitch_link",
+                "hip_l_pitch_link",
+                "shoulder_l_roll_link",
+                "shoulder_r_roll_link",
+                "elbow_l_front_link",
+                "elbow_l_rear_link",
+                "elbow_r_front_link",
+                "elbow_r_rear_link",
+            ]),
+            "contact_force_threshold": 0.02,
+            "foot_contact_reward": 0.0,
+            "nonfoot_contact_penalty": 50.0,
+        },
+    )
 
 # ---------------------------------------------------------------------
 # Main environment config
@@ -536,7 +542,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -1.0
         self.rewards.dof_pos_limits = RewTerm(
             func=mdp.joint_pos_limits,
-            weight=-1e6,
+            weight=-5e5,
             params={"asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[

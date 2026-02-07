@@ -77,6 +77,115 @@ import os
 import torch
 from datetime import datetime
 
+from collections.abc import Mapping, Sequence
+
+
+class TerminateOnNonFiniteWrapper(gym.Wrapper):
+    """Force-terminate envs that output NaN/Inf in obs/reward/done.
+
+    This prevents non-finite values from entering the rollout buffer and
+    crashing PPO updates (e.g., invalid std in Normal distribution).
+    """
+
+    def __init__(self, env, obs_fill_value: float = 0.0, reward_fill_value: float = 0.0):
+        super().__init__(env)
+        self._obs_fill_value = float(obs_fill_value)
+        self._reward_fill_value = float(reward_fill_value)
+
+    @staticmethod
+    def _isfinite_per_env(x: torch.Tensor) -> torch.Tensor:
+        # Returns (num_envs,) mask indicating if all elements are finite for each env.
+        if x.ndim == 0:
+            return torch.isfinite(x).view(1)
+        if x.ndim == 1:
+            return torch.isfinite(x)
+        reduce_dims = tuple(range(1, x.ndim))
+        return torch.isfinite(x).all(dim=reduce_dims)
+
+    def _obs_bad_mask(self, obs, num_envs: int, device=None) -> torch.Tensor:
+        bad = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+        def _acc(o):
+            nonlocal bad
+            if torch.is_tensor(o):
+                fin = self._isfinite_per_env(o)
+                if fin.numel() == num_envs:
+                    bad |= ~fin
+            elif isinstance(o, Mapping):
+                for v in o.values():
+                    _acc(v)
+            elif isinstance(o, Sequence) and not isinstance(o, (str, bytes)):
+                for v in o:
+                    _acc(v)
+
+        _acc(obs)
+        return bad
+
+    def _sanitize_obs(self, obs, bad_envs: torch.Tensor):
+        if torch.is_tensor(obs):
+            out = obs.clone()
+            if out.ndim >= 1:
+                out[bad_envs] = self._obs_fill_value
+            return out
+        if isinstance(obs, Mapping):
+            return {k: self._sanitize_obs(v, bad_envs) for k, v in obs.items()}
+        if isinstance(obs, Sequence) and not isinstance(obs, (str, bytes)):
+            return type(obs)(self._sanitize_obs(v, bad_envs) for v in obs)
+        return obs
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # Determine num_envs and device from reward/terminated or env.
+        device = None
+        num_envs = 1
+        if torch.is_tensor(reward) and reward.ndim >= 1:
+            num_envs = reward.shape[0]
+            device = reward.device
+        elif torch.is_tensor(terminated) and terminated.ndim >= 1:
+            num_envs = terminated.shape[0]
+            device = terminated.device
+        else:
+            if hasattr(self.unwrapped, "device"):
+                device = self.unwrapped.device
+
+        bad_obs = self._obs_bad_mask(obs, num_envs, device=device)
+
+        bad_reward = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        if torch.is_tensor(reward):
+            r = reward if reward.ndim >= 1 else reward.view(1)
+            bad_reward = ~torch.isfinite(r)
+
+        bad_done = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        for d in (terminated, truncated):
+            if torch.is_tensor(d):
+                dd = d if d.ndim >= 1 else d.view(1)
+                bad_done |= ~torch.isfinite(dd.to(torch.float32))
+
+        bad = bad_obs | bad_reward | bad_done
+
+        if torch.any(bad):
+            # Force terminate/truncate the bad envs so the runner resets them.
+            if torch.is_tensor(terminated):
+                terminated = terminated.clone()
+                (terminated if terminated.ndim >= 1 else terminated.view(1))[bad] = True
+            if torch.is_tensor(truncated):
+                truncated = truncated.clone()
+                (truncated if truncated.ndim >= 1 else truncated.view(1))[bad] = True
+
+            # Sanitize outputs so rollouts won't contain NaN/Inf.
+            obs = self._sanitize_obs(obs, bad)
+            if torch.is_tensor(reward):
+                reward = reward.clone()
+                (reward if reward.ndim >= 1 else reward.view(1))[bad] = self._reward_fill_value
+
+            if isinstance(info, dict):
+                info = dict(info)
+                info["nonfinite_terminated"] = bad
+
+        return obs, reward, terminated, truncated, info
+
+
 import omni
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -165,6 +274,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+
+    # terminate envs that produce NaN/Inf to keep rollouts numerically stable
+    env = TerminateOnNonFiniteWrapper(env)
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":

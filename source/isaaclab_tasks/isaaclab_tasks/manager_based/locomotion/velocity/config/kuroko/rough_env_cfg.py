@@ -139,7 +139,7 @@ class KurokoRewards(RewardsCfg):
 
     torso_height = RewTerm(
         func=mdp.local_torso_height_penalty_l2,
-        weight=100.0,
+        weight=1000.0,
         params={
             "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "ankle_l_yaw_link",

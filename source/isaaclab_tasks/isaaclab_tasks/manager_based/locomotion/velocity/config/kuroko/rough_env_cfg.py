@@ -138,7 +138,7 @@ class KurokoRewards(RewardsCfg):
     )
 
     torso_height = RewTerm(
-        func=mdp.local_torso_height_penalty,
+        func=mdp.local_torso_height_penalty_l2,
         weight=100.0,
         params={
             "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
@@ -533,7 +533,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        self.rewards.lin_vel_z_l2.weight = -0.2
+        self.rewards.lin_vel_z_l2.weight = -1.0
         self.rewards.dof_pos_limits = RewTerm(
             func=mdp.joint_pos_limits,
             weight=-1e6,
@@ -547,7 +547,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             ],)},
         )
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2.weight = -0.02
+        self.rewards.ang_vel_xy_l2.weight = -0.01
         self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_l1 = RewTerm(
             func=mdp.action_l1,
@@ -566,7 +566,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         )
         self.rewards.action_acceleration_l1 = RewTerm(
             func=mdp.joint_action_acc_l1,
-            weight=-1.0e-7,
+            weight=-5.0e-8,
             params={"dt": self.sim.dt},
         )
         self.rewards.dof_torques_l2 = None

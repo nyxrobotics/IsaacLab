@@ -52,7 +52,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-1000.0,
+        weight=-2000.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -233,7 +233,7 @@ class KurokoRewards(RewardsCfg):
             ]),
             "contact_force_threshold": 0.02,
             "foot_contact_reward": 0.0,
-            "nonfoot_contact_penalty": 50.0,
+            "nonfoot_contact_penalty": 100.0,
         },
     )
 
@@ -542,7 +542,7 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -1.0
         self.rewards.dof_pos_limits = RewTerm(
             func=mdp.joint_pos_limits,
-            weight=-5e5,
+            weight=-5e4,
             params={"asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=[
@@ -564,10 +564,12 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         #     func=mdp.action_rate_l1,
         #     weight=-0.1,
         # )
+
+        # self.rewards.dof_acc_l2.weight = -1.0e-7
         self.rewards.dof_acc_l2 = None
         self.rewards.dof_acc_l2 = RewTerm(
             func=mdp.joint_action_acc_l2,
-            weight=-1.0e-14,
+            weight=-1.0e-15,
             params={"dt": self.sim.dt},
         )
         self.rewards.action_acceleration_l1 = RewTerm(
@@ -575,8 +577,8 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-5.0e-8,
             params={"dt": self.sim.dt},
         )
-        self.rewards.dof_torques_l2 = None
-        # self.rewards.dof_torques_l2.weight = -1.0e-5
+        # self.rewards.dof_torques_l2 = None
+        self.rewards.dof_torques_l2.weight = -1.0e-5
         # -----------------------------------------------------------
         # FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------

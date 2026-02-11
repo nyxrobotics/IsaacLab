@@ -179,15 +179,10 @@ def detect_fall(
         - root_link_pose_w and root_link_vel_w
         - projected_gravity_b (used for tilt, and also numeric-critical)
     - Magnitude checks (velocity/acceleration) are done over all links, and root is explicitly included.
+    - Additional guards:
+        - non-finite tilt / norm results are treated as terminal
     """
     asset: RigidObject = env.scene[asset_cfg.name]
-
-    # -----------------------------
-    # Tilt (root-only)
-    # -----------------------------
-    proj_g = asset.data.projected_gravity_b  # (N, 3)
-    tilt = torch.acos(torch.clamp(-proj_g[:, 2], -1.0, 1.0)).abs()
-    bad_tilt = tilt > limit_angle
 
     # -----------------------------
     # Helper: "any NaN/Inf" over all non-env dimensions
@@ -195,6 +190,18 @@ def detect_fall(
     def _has_non_finite(x: torch.Tensor) -> torch.Tensor:
         reduce_dims = tuple(range(1, x.ndim))
         return ~torch.isfinite(x).all(dim=reduce_dims)
+
+    # -----------------------------
+    # Tilt (root-only)
+    # -----------------------------
+    proj_g = asset.data.projected_gravity_b  # (N, 3)
+
+    # acos argument should be in [-1, 1], but if proj_g is non-finite, result can be NaN.
+    acos_arg = torch.clamp(-proj_g[:, 2], -1.0, 1.0)
+    tilt = torch.acos(acos_arg).abs()
+
+    # Treat non-finite tilt as a terminal condition as well.
+    bad_tilt = (tilt > limit_angle) | (~torch.isfinite(tilt))
 
     # -----------------------------
     # All-link tensors
@@ -211,7 +218,7 @@ def detect_fall(
     root_vel = asset.data.root_link_vel_w    # (N, 6) [lin_vel(3), ang_vel(3)]
 
     # -----------------------------
-    # bad_numeric: NaN / Inf checks
+    # bad_numeric: NaN / Inf checks (raw tensors)
     # -----------------------------
     bad_numeric = (
         _has_non_finite(body_pos)
@@ -231,21 +238,35 @@ def detect_fall(
     lin_acc = body_acc[..., 0:3]
     ang_acc = body_acc[..., 3:6]
 
+    lin_vel_norm = torch.norm(lin_vel, dim=-1)
+    ang_vel_norm = torch.norm(ang_vel, dim=-1)
+    lin_acc_norm = torch.norm(lin_acc, dim=-1)
+    ang_acc_norm = torch.norm(ang_acc, dim=-1)
+
+    # If norm results are non-finite, terminate as well.
+    bad_norms = (
+        _has_non_finite(lin_vel_norm)
+        | _has_non_finite(ang_vel_norm)
+        | _has_non_finite(lin_acc_norm)
+        | _has_non_finite(ang_acc_norm)
+    )
+
     bad_velocity = (
-        torch.any(torch.norm(lin_vel, dim=-1) > max_lin_vel, dim=1)
-        | torch.any(torch.norm(ang_vel, dim=-1) > max_ang_vel, dim=1)
+        torch.any(lin_vel_norm > max_lin_vel, dim=1)
+        | torch.any(ang_vel_norm > max_ang_vel, dim=1)
     )
 
     bad_acceleration = (
-        torch.any(torch.norm(lin_acc, dim=-1) > max_lin_acc, dim=1)
-        | torch.any(torch.norm(ang_acc, dim=-1) > max_ang_acc, dim=1)
+        torch.any(lin_acc_norm > max_lin_acc, dim=1)
+        | torch.any(ang_acc_norm > max_ang_acc, dim=1)
     )
 
     # Root velocity magnitude (explicitly included)
-    bad_velocity = bad_velocity | (torch.norm(root_vel[:, 0:3], dim=-1) > max_lin_vel) | (
-        torch.norm(root_vel[:, 3:6], dim=-1) > max_ang_vel
-    )
+    root_lin_vel_norm = torch.norm(root_vel[:, 0:3], dim=-1)
+    root_ang_vel_norm = torch.norm(root_vel[:, 3:6], dim=-1)
 
-    # Note: root acceleration is not available in this data interface, so acceleration stays body_acc_w-based.
+    bad_root_norms = (~torch.isfinite(root_lin_vel_norm)) | (~torch.isfinite(root_ang_vel_norm))
 
-    return bad_tilt | bad_numeric | bad_velocity | bad_acceleration
+    bad_velocity = bad_velocity | (root_lin_vel_norm > max_lin_vel) | (root_ang_vel_norm > max_ang_vel)
+
+    return bad_tilt | bad_numeric | bad_norms | bad_root_norms | bad_velocity | bad_acceleration

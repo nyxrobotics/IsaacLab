@@ -647,7 +647,7 @@ def feet_air_time_balanced_alternating_biped(
     return reward
 
 
-def prefer_foot_contact_only(
+def prefer_foot_contact(
     env,
     foot_sensor_cfg: SceneEntityCfg,
     other_sensor_cfg: SceneEntityCfg,
@@ -705,3 +705,139 @@ def prefer_foot_contact_only(
     reward -= any_nonfoot_contact.float() * nonfoot_contact_penalty
 
     return reward
+
+
+
+def both_feet_flight_time_penalty_and_grounded_time_reward(
+    env,
+    foot_sensor_cfg: SceneEntityCfg,
+    *,
+    contact_force_threshold: float = 0.01,
+    penalty_scale: float = 1.0,
+    reward_scale: float = 1.0,
+    max_reward: float = 1.0,
+    dt: float | None = None,
+) -> torch.Tensor:
+    """
+    - Penalty proportional to the continuous duration where BOTH feet are airborne.
+    - If not airborne (i.e., penalty not active), reward proportional to the continuous duration
+      where at least one foot is in contact, clipped to avoid divergence.
+
+    Contact detection matches existing functions in this file:
+      - Uses peak contact force over history from ContactSensor.
+    """
+
+    if dt is None:
+        dt = env.step_dt
+
+    contact_sensor: ContactSensor = env.scene.sensors[foot_sensor_cfg.name]
+    foot_forces = contact_sensor.data.net_forces_w_history[:, :, foot_sensor_cfg.body_ids, :]  # (N, H, F, 3)
+    foot_in_contact = foot_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold          # (N, F)
+
+    any_foot_contact = foot_in_contact.any(dim=1)  # (N,)
+    both_feet_air = ~any_foot_contact              # (N,)
+
+    n_env = both_feet_air.shape[0]
+    device = both_feet_air.device
+
+    # Persistent buffers on env to track continuous durations across steps.
+    key = "_both_feet_flight_time_buf"
+    if not hasattr(env, key):
+        buf = {
+            "flight_time": torch.zeros((n_env,), device=device),
+            "grounded_time": torch.zeros((n_env,), device=device),
+        }
+        setattr(env, key, buf)
+
+    buf = getattr(env, key)
+    flight_time = buf["flight_time"]
+    grounded_time = buf["grounded_time"]
+
+    # Episode reset handling (if available)
+    reset_buf = getattr(env, "reset_buf", None)
+    if reset_buf is not None:
+        reset_ids = reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if reset_ids.numel() > 0:
+            flight_time[reset_ids] = 0.0
+            grounded_time[reset_ids] = 0.0
+
+    # Update continuous duration counters
+    flight_time = torch.where(both_feet_air, flight_time + dt, torch.zeros_like(flight_time))
+    grounded_time = torch.where(~both_feet_air, grounded_time + dt, torch.zeros_like(grounded_time))
+
+    buf["flight_time"] = flight_time
+    buf["grounded_time"] = grounded_time
+
+    # Penalty and reward
+    penalty = -penalty_scale * flight_time
+    max_time = max_reward / max(reward_scale, 1e-6)
+    bonus = reward_scale * torch.clamp(grounded_time, max=max_time)
+
+    return torch.where(both_feet_air, penalty, bonus)
+
+
+def nonfoot_contact_time_penalty_and_clear_time_reward(
+    env,
+    other_sensor_cfg: SceneEntityCfg,
+    *,
+    contact_force_threshold: float = 0.01,
+    penalty_scale: float = 1.0,
+    reward_scale: float = 1.0,
+    max_reward: float = 1.0,
+    dt: float | None = None,
+) -> torch.Tensor:
+    """
+    - Penalty proportional to the continuous duration where ANY non-foot body is in contact.
+    - If no non-foot contact (i.e., penalty not active), reward proportional to the continuous
+      "clear" duration, clipped to avoid divergence.
+
+    Contact detection matches existing functions in this file:
+      - Uses peak contact force over history from ContactSensor.
+    """
+
+    if dt is None:
+        dt = env.step_dt
+
+    contact_sensor: ContactSensor = env.scene.sensors[other_sensor_cfg.name]
+    other_forces = contact_sensor.data.net_forces_w_history[:, :, other_sensor_cfg.body_ids, :]  # (N, H, K, 3)
+    other_in_contact = other_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold          # (N, K)
+
+    any_nonfoot_contact = other_in_contact.any(dim=1)  # (N,)
+
+    n_env = any_nonfoot_contact.shape[0]
+    device = any_nonfoot_contact.device
+
+    # Persistent buffers on env to track continuous durations across steps.
+    key = "_nonfoot_contact_time_buf"
+    if not hasattr(env, key):
+        buf = {
+            "bad_time": torch.zeros((n_env,), device=device),
+            "clear_time": torch.zeros((n_env,), device=device),
+        }
+        setattr(env, key, buf)
+
+    buf = getattr(env, key)
+    bad_time = buf["bad_time"]
+    clear_time = buf["clear_time"]
+
+    # Episode reset handling (if available)
+    reset_buf = getattr(env, "reset_buf", None)
+    if reset_buf is not None:
+        reset_ids = reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if reset_ids.numel() > 0:
+            bad_time[reset_ids] = 0.0
+            clear_time[reset_ids] = 0.0
+
+    # Update continuous duration counters
+    bad_time = torch.where(any_nonfoot_contact, bad_time + dt, torch.zeros_like(bad_time))
+    clear_time = torch.where(~any_nonfoot_contact, clear_time + dt, torch.zeros_like(clear_time))
+
+    buf["bad_time"] = bad_time
+    buf["clear_time"] = clear_time
+
+    # Penalty and reward
+    penalty = -penalty_scale * bad_time
+    max_time = max_reward / max(reward_scale, 1e-6)
+    bonus = reward_scale * torch.clamp(clear_time, max=max_time)
+
+    return torch.where(any_nonfoot_contact, penalty, bonus)

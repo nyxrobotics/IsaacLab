@@ -27,7 +27,6 @@ XH430_W210_PID_ACTUATOR_CFG = PIDActuatorCfg(
 )
 
 
-
 # Minimal robot config for kuroko
 KUROKO_MINIMAL_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
@@ -42,8 +41,8 @@ KUROKO_MINIMAL_CFG = ArticulationCfg(
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
-            solver_position_iteration_count=64,
-            solver_velocity_iteration_count=1,
+            solver_position_iteration_count=4,
+            solver_velocity_iteration_count=4,
             sleep_threshold=0.0005,
             stabilization_threshold=0.0001,
         ),

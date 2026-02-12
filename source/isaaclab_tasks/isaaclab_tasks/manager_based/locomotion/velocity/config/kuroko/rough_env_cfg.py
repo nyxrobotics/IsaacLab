@@ -52,7 +52,7 @@ class KurokoRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-2000.0,
+        weight=-4000.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -161,7 +161,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_shoulders = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.4,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "shoulder_l_pitch",
                 "shoulder_r_pitch",
@@ -187,7 +187,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_pitch = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-1.0,
+        weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_pitch",
                 "hip_r_pitch",])},
@@ -195,7 +195,7 @@ class KurokoRewards(RewardsCfg):
 
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-1.0,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "hip_l_roll",
                 "hip_r_roll",])},
@@ -208,34 +208,53 @@ class KurokoRewards(RewardsCfg):
                 "ankle_l_yaw",
                 "ankle_r_yaw",])},
     )
-
-    prefer_foot_contact = RewTerm(
-        func=mdp.prefer_foot_contact_only,
-        weight=1.0,
+    
+    both_feet_flight_time = RewTerm(
+        func=mdp.both_feet_flight_time_penalty_and_grounded_time_reward,
+        weight=1000.0,
         params={
-            "foot_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "ankle_l_yaw_link",
-                "ankle_r_yaw_link",
-            ]),
-            "other_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "chest_link",
-                "body_link",
-                "knee_r_passive_link",
-                "knee_l_passive_link",
-                "hip_r_pitch_link",
-                "hip_l_pitch_link",
-                "shoulder_l_roll_link",
-                "shoulder_r_roll_link",
-                "elbow_l_front_link",
-                "elbow_l_rear_link",
-                "elbow_r_front_link",
-                "elbow_r_rear_link",
-            ]),
-            "contact_force_threshold": 0.02,
-            "foot_contact_reward": 0.0,
-            "nonfoot_contact_penalty": 100.0,
+            "foot_sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[
+                    "ankle_l_yaw_link",
+                    "ankle_r_yaw_link",
+                ],
+            ),
+            "contact_force_threshold": 0.001,
+            "penalty_scale": 1.0,
+            "reward_scale": 1.0,
+            "max_reward": 10.0,
         },
     )
+
+    nonfoot_contact_time = RewTerm(
+        func=mdp.nonfoot_contact_time_penalty_and_clear_time_reward,
+        weight=1000.0,
+        params={
+            "other_sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[
+                    "chest_link",
+                    "body_link",
+                    "knee_r_passive_link",
+                    "knee_l_passive_link",
+                    "hip_r_pitch_link",
+                    "hip_l_pitch_link",
+                    "shoulder_l_roll_link",
+                    "shoulder_r_roll_link",
+                    "elbow_l_front_link",
+                    "elbow_l_rear_link",
+                    "elbow_r_front_link",
+                    "elbow_r_rear_link",
+                ],
+            ),
+            "contact_force_threshold": 0.02,
+            "penalty_scale": 1.0,
+            "reward_scale": 1.0,
+            "max_reward": 10.0,
+        },
+    )
+
 
 # ---------------------------------------------------------------------
 # Main environment config
@@ -495,9 +514,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # Set PhysicsScene params
         self.sim.dt = 0.001  # Simulation: 1000 Hz 
-        self.decimation = 5  # Control: 200 Hz
+        self.decimation = 10  # Control: 100 Hz
         self.sim.render_interval = 10  # Rendering: 100Hz
-        self.episode_length_s = 20.0
+        self.episode_length_s = 100.0
         self.sim.physx.max_position_iteration_count = 4
         self.sim.physx.min_position_iteration_count = 4
         self.sim.physx.max_velocity_iteration_count = 4

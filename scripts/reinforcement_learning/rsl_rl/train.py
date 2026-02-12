@@ -291,7 +291,6 @@ def patch_rslrl_actor_critic_for_safe_std(min_std: float = 1e-6) -> None:
     ActorCritic._isaaclab_safe_std_patched = True
 
 
-
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Train with RSL-RL agent."""

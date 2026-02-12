@@ -126,6 +126,13 @@ class PIDActuator(ActuatorBase):
                 # tensor or other types handled after super().__init__
                 derived_viscous = eff_lim / vel_lim
 
+        # If viscous_friction is provided by user, use it instead
+        if viscous_friction is not None:
+            vf = torch.as_tensor(viscous_friction)
+            # Only override when at least one entry is non-zero.
+            if torch.any(vf != 0.0).item():
+                derived_viscous = viscous_friction
+
         # ---- IMPORTANT: stiffness/damping are not used (set to zero) ----
         stiffness = 0.0
         damping = 0.0

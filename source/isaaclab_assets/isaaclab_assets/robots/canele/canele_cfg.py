@@ -6,7 +6,7 @@ from isaaclab.actuators import PIDActuatorCfg
 import os
 
 _CANELE_DIR = os.path.dirname(__file__)
-_CANELE_USD_PATH = os.path.join(_CANELE_DIR, "canele.usda")
+_CANELE_USD_PATH = os.path.join(_CANELE_DIR, "canele.usd")
 
 X8_120_PID_ACTUATOR_CFG = PIDActuatorCfg(
     kp=670.0,

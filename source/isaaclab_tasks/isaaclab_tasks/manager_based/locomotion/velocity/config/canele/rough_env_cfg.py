@@ -116,7 +116,7 @@ class CaneleRewards(RewardsCfg):
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=[
-                    "pelvis_link",
+                    "body_link",
                     "right_toe_link",
                     "left_toe_link",
                 ],
@@ -188,14 +188,14 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         usd_path = CANELE_MINIMAL_CFG.spawn.usd_path
         print("[DEBUG] Loading USD:", usd_path)
 
-        base_paths = find_prim_paths(usd_path, "pelvis_link")
+        base_paths = find_prim_paths(usd_path, "body_link")
         print("[DEBUG] Found base_link prims:", base_paths)
 
         if not base_paths:
-            raise RuntimeError("pelvis_link not found in USD!")
+            raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]  # /Root/canele/pelvis_link
-        base_link_name = os.path.basename(base_link_full)  # pelvis_link
+        base_link_full = base_paths[0]  # /Root/canele/body_link
+        base_link_name = os.path.basename(base_link_full)  # body_link
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
@@ -312,7 +312,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 obs_term.params["asset_cfg"] = _make_actuated_asset_cfg()
                 print(f"[DEBUG] Injected actuated asset_cfg into observation term '{obs_name}'")
 
-        # --- Fix: base_com observation expects 'base' in parent cfg, but Canele uses 'pelvis_link'
+        # --- Fix: base_com observation expects 'base' in parent cfg, but Canele uses 'body_link'
         if hasattr(self.observations, "policy"):
             base_com_term = getattr(self.observations.policy, "base_com", None)
             if base_com_term is not None and hasattr(base_com_term, "params"):
@@ -325,7 +325,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 )
                 print(f"[DEBUG] Patched observation term 'base_com' to use body '{base_link_name}'")
 
-        # --- Fix: base_com STARTUP EVENT expects 'base' in parent cfg, but Canele uses 'pelvis_link'
+        # --- Fix: base_com STARTUP EVENT expects 'base' in parent cfg, but Canele uses 'body_link'
         if hasattr(self, "events") and getattr(self, "events", None) is not None:
             event_base_com = getattr(self.events, "base_com", None)
             if event_base_com is not None and hasattr(event_base_com, "params"):
@@ -510,7 +510,8 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
         # terminations
-        self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
+        self.terminations.base_contact = None
+        # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
         self.terminations.detect_fall = DoneTerm( # type: ignore
             func=mdp.detect_fall,
             params={

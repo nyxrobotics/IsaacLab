@@ -52,7 +52,7 @@ class CaneleRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-200.0,
+        weight=-2500.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -95,38 +95,6 @@ class CaneleRewards(RewardsCfg):
         },
     )
 
-    flat_toe_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=[
-                "right_toe_link",
-                "left_toe_link"]),
-                "margin": 0.0,
-                "gain": 1.0, },
-    )
-
-    torso_height = RewTerm(
-        func=mdp.local_torso_height_penalty_l2,
-        weight=1.0,
-        params={
-            "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
-                "right_toe_link",
-                "left_toe_link",
-            ]),
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[
-                    "body_link",
-                    "right_toe_link",
-                    "left_toe_link",
-                ],
-            ),
-            "target_height": 0.8,
-            "margin": 0.0,
-            "gain": 1.0,
-        },
-    )
-
     joint_deviation_arms = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.1,
@@ -156,20 +124,24 @@ class CaneleRewards(RewardsCfg):
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["torso_yaw"])},
     )
 
-    joint_deviation_hip_yaw = RewTerm(
+    joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
                 "right_hip_yaw",
-                "left_hip_yaw",])},
+                "right_hip_roll",
+                "left_hip_yaw",
+                "left_hip_roll",])},
     )
 
-    joint_deviation_hip_roll = RewTerm(
+    joint_deviation_ankle = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[
-                "right_hip_roll",
-                "left_hip_roll",])},
+                "right_ankle_pitch",
+                "right_ankle_roll",
+                "left_ankle_pitch",
+                "left_ankle_roll",])},
     )
 
 # ---------------------------------------------------------------------
@@ -498,12 +470,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-1.0e-15,
             params={"dt": self.sim.dt},
         )
-        
-        # self.rewards.action_acceleration_l1 = RewTerm(
-        #     func=mdp.joint_action_acc_l1,
-        #     weight=-5.0e-8,
-        #     params={"dt": self.sim.dt},
-        # )
 
         # self.rewards.dof_torques_l2 = None
         self.rewards.dof_torques_l2.weight = -1.5e-7

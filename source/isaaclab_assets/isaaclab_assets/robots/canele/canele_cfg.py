@@ -157,8 +157,10 @@ CANELE_MINIMAL_CFG = ArticulationCfg(
                 "torso_yaw",
                 "left_hip_yaw",
                 "left_hip_roll",
+                "left_ankle_roll",
                 "right_hip_yaw",
                 "right_hip_roll",
+                "right_ankle_roll",
             ],
         ),
         "x6_p36": X6_P36_PID_ACTUATOR_CFG.replace(

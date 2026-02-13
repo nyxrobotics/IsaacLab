@@ -495,7 +495,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # terminations
         self.terminations.base_contact = None
         # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
-        self.terminations.detect_fall = DoneTerm( # type: ignore
+        self.terminations.detect_fall = DoneTerm(  # type: ignore
             func=mdp.detect_fall,
             params={
                 "limit_angle": 1.3,
@@ -503,6 +503,27 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
             time_out=False,
         )
+
+        self.terminations.detect_height_too_low = DoneTerm(  # type: ignore
+            func=mdp.detect_height_too_low,
+            params={
+                "min_height": 0.5,
+                "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name],),
+            },
+            time_out=False,
+        )
+
+        body_and_ankle_names = [base_link_name] + ankle_names
+        self.terminations.detect_tilt = DoneTerm(  # type: ignore
+            func=mdp.detect_tilt_too_high_any_link,
+            params={
+                "max_tilt": 1.0,
+                "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names,),
+            },
+            time_out=False,
+        )
+
+
 # ---------------------------------------------------------------------
 # PLAY config
 # ---------------------------------------------------------------------

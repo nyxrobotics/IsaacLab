@@ -322,6 +322,9 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner = None
 
         if hasattr(self.observations, "policy"):
+            if hasattr(self.observations.policy, "base_ang_vel"):
+                self.observations.policy.base_ang_vel = None
+
             if hasattr(self.observations.policy, "base_lin_vel"):
                 self.observations.policy.base_lin_vel = None
 
@@ -335,8 +338,20 @@ class KurokoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 self.observations.policy.contact_forces = None
 
             # Add accelerometer-like linear acceleration (IMU-style) with uniform noise
-            self.observations.policy.base_lin_acc_sens = ObsTerm(
-                func=mdp.base_lin_acc_sens,
+            self.observations.policy.imu_angular_velocity = ObsTerm(
+                func=mdp.imu_angular_velocity,
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                    "gravity_mag": 9.81,
+                },
+                noise=Unoise(
+                    n_min=-0.05,
+                    n_max=0.05,
+                ),
+            )
+            
+            self.observations.policy.imu_linear_acceleration = ObsTerm(
+                func=mdp.imu_linear_acceleration,
                 params={
                     "asset_cfg": SceneEntityCfg("robot"),
                     "gravity_mag": 9.81,

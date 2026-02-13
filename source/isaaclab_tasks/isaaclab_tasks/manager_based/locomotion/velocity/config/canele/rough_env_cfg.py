@@ -238,6 +238,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.height_scanner = None
 
         if hasattr(self.observations, "policy"):
+            if hasattr(self.observations.policy, "base_ang_vel"):
+                self.observations.policy.base_ang_vel = None
+
             if hasattr(self.observations.policy, "base_lin_vel"):
                 self.observations.policy.base_lin_vel = None
 
@@ -248,8 +251,19 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 self.observations.policy.height_scan = None
 
             # Add accelerometer-like linear acceleration (IMU-style) with uniform noise
-            self.observations.policy.base_lin_acc_sens = ObsTerm(
-                func=mdp.base_lin_acc_sens,
+            self.observations.policy.imu_angular_velocity = ObsTerm(
+                func=mdp.imu_angular_velocity,
+                params={
+                    "asset_cfg": SceneEntityCfg("robot"),
+                },
+                noise=Unoise(
+                    n_min=-0.05,
+                    n_max=0.05,
+                ),
+            )
+            
+            self.observations.policy.imu_linear_acceleration = ObsTerm(
+                func=mdp.imu_linear_acceleration,
                 params={
                     "asset_cfg": SceneEntityCfg("robot"),
                     "gravity_mag": 9.81,
@@ -259,6 +273,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                     n_max=0.05,
                 ),
             )
+
 
         # -----------------------------------------------------------
         # 4b. Restrict action/observation joints to actuated joints only
@@ -469,7 +484,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2.weight = -1.0
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.005
         self.rewards.action_l1 = RewTerm(
             func=mdp.action_l1,
@@ -483,11 +498,13 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-1.0e-15,
             params={"dt": self.sim.dt},
         )
-        self.rewards.action_acceleration_l1 = RewTerm(
-            func=mdp.joint_action_acc_l1,
-            weight=-5.0e-8,
-            params={"dt": self.sim.dt},
-        )
+        
+        # self.rewards.action_acceleration_l1 = RewTerm(
+        #     func=mdp.joint_action_acc_l1,
+        #     weight=-5.0e-8,
+        #     params={"dt": self.sim.dt},
+        # )
+
         # self.rewards.dof_torques_l2 = None
         self.rewards.dof_torques_l2.weight = -1.5e-7
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=[

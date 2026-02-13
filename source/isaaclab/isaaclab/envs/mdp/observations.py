@@ -37,30 +37,31 @@ from isaaclab.envs.utils.io_descriptors import (
 """
 Root state.
 """
+@generic_io_descriptor(
+    units="rad/s", axes=["X", "Y", "Z"], observation_type="RootState", on_inspect=[record_shape, record_dtype]
+)
+def imu_angular_velocity(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """IMU-like angular velocity in the asset's root frame computed from body data."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    # 1) Root angular velocity in world frame (take first body == root)
+    w_w = asset.data.body_ang_vel_w[:, 0, :]
+    # 2) Rotate into base frame
+    return math_utils.quat_apply_inverse(asset.data.body_quat_w[:, 0, :], w_w)
+
 
 @generic_io_descriptor(
     units="m/s^2", axes=["X", "Y", "Z"], observation_type="RootState", on_inspect=[record_shape, record_dtype]
 )
-def base_lin_acc_sens(
-    env: ManagerBasedEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    gravity_mag: float = 9.81,
-) -> torch.Tensor:
-    """Accelerometer-like linear acceleration in the asset's root frame.
-
-    Returns specific force (a - g) expressed in the root (base) frame.
-    Shape: (num_envs, 3)
-    """
+def imu_linear_acceleration(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), gravity_mag: float = 9.81) -> torch.Tensor:
+    """IMU-like linear acceleration in the asset's root frame computed from body data."""
     asset: RigidObject = env.scene[asset_cfg.name]
     # 1) Root linear acceleration in world frame (take first body == root)
-    # body_acc_w is (N, num_bodies, 6) for rigid objects; root is body index 0
     a_w = asset.data.body_acc_w[:, 0, 0:3]
-    # 2) Rotate into base frame
-    a_b = math_utils.quat_apply_inverse(asset.data.root_quat_w, a_w)
-    # 3) Subtract gravity expressed in base frame
-    # projected_gravity_b is unit gravity direction in base frame
-    g_b = asset.data.projected_gravity_b * gravity_mag
-    return a_b - g_b
+    # 2) Subtract gravity in world frame
+    g_w = asset.data.GRAVITY_VEC_W * gravity_mag
+    # 3) Rotate into base frame
+    return math_utils.quat_apply_inverse(asset.data.body_quat_w[:, 0, :], a_w - g_w)
+
 
 @generic_io_descriptor(units="m", axes=["Z"], observation_type="RootState", on_inspect=[record_shape, record_dtype])
 def base_pos_z(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

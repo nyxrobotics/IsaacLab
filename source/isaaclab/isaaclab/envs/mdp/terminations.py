@@ -416,3 +416,55 @@ def detect_tilt_too_high_any_link(
     # If any specified link exceeds max_tilt OR becomes non-finite -> terminate.
     bad = (tilt > max_tilt) | (~torch.isfinite(tilt))
     return torch.any(bad, dim=1)
+
+
+def detect_support_plane_tilt_too_high(
+    env: "ManagerBasedRLEnv",
+    max_tilt: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate when support plane tilt becomes too large.
+
+    Definition:
+      - Upright: plane normal is horizontal (parallel to XY plane) -> tilt ≈ 0
+      - Fallen:  plane normal is parallel to Z axis                -> tilt ≈ pi/2
+
+    tilt = asin( |n_z| / ||n|| )
+
+    Terminate if tilt > max_tilt.
+    asset_cfg.body_names must specify exactly:
+      [torso_link, right_foot_tip, left_foot_tip]
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+
+    if asset_cfg.body_ids is None or isinstance(asset_cfg.body_ids, slice):
+        raise ValueError(
+            "Please set asset_cfg.body_names to "
+            "[torso_link, right_foot_tip, left_foot_tip]."
+        )
+
+    if len(asset_cfg.body_ids) != 3:
+        raise ValueError("Exactly 3 body names required: torso, r_foot, l_foot.")
+
+    torso_id, rfoot_id, lfoot_id = asset_cfg.body_ids
+
+    p_t = asset.data.body_pos_w[:, torso_id, :]
+    p_r = asset.data.body_pos_w[:, rfoot_id, :]
+    p_l = asset.data.body_pos_w[:, lfoot_id, :]
+
+    a = p_r - p_t
+    b = p_l - p_t
+
+    n = torch.cross(a, b, dim=-1)
+    n_norm = torch.linalg.norm(n, dim=-1)
+
+    eps = 1e-8
+
+    # tilt = asin(|n_z| / ||n||)
+    sin_theta = torch.abs(n[:, 2]) / torch.clamp(n_norm, min=eps)
+    sin_theta = torch.clamp(sin_theta, -1.0, 1.0)
+
+    tilt = torch.asin(sin_theta)
+
+    bad = (tilt > max_tilt) | (~torch.isfinite(tilt)) | (n_norm < eps)
+    return bad

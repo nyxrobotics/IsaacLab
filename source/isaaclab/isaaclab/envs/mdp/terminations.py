@@ -2,7 +2,6 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
 """Common functions that can be used to activate certain terminations.
 
 The functions can be passed to the :class:`isaaclab.managers.TerminationTermCfg` object to enable
@@ -11,17 +10,17 @@ the termination introduced by the function.
 
 from __future__ import annotations
 
-import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation
+from isaaclab.assets import RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+import torch
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.managers.command_manager import CommandTerm
-
 """
 MDP terminations.
 """
@@ -47,9 +46,8 @@ Root terminations.
 """
 
 
-def bad_orientation(
-    env: ManagerBasedRLEnv, limit_angle: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+def bad_orientation(env: ManagerBasedRLEnv, limit_angle: float,
+                    asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's orientation is too far from the desired orientation limits.
 
     This is computed by checking the angle between the projected gravity vector and the z-axis.
@@ -60,8 +58,8 @@ def bad_orientation(
 
 
 def root_height_below_minimum(
-    env: ManagerBasedRLEnv, minimum_height: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+    env: ManagerBasedRLEnv, minimum_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's root height is below the minimum height.
 
     Note:
@@ -77,7 +75,8 @@ Joint terminations.
 """
 
 
-def joint_pos_out_of_limit(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_pos_out_of_limit(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's joint positions are outside of the soft joint limits."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -91,8 +90,8 @@ def joint_pos_out_of_limit(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = S
 
 
 def joint_pos_out_of_manual_limit(
-    env: ManagerBasedRLEnv, bounds: tuple[float, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+    env: ManagerBasedRLEnv, bounds: tuple[float,
+                                          float], asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's joint positions are outside of the configured bounds.
 
     Note:
@@ -108,7 +107,8 @@ def joint_pos_out_of_manual_limit(
     return torch.logical_or(out_of_upper_limits, out_of_lower_limits)
 
 
-def joint_vel_out_of_limit(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_vel_out_of_limit(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's joint velocities are outside of the soft joint limits."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -118,8 +118,7 @@ def joint_vel_out_of_limit(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = S
 
 
 def joint_vel_out_of_manual_limit(
-    env: ManagerBasedRLEnv, max_velocity: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+    env: ManagerBasedRLEnv, max_velocity: float, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when the asset's joint velocities are outside the provided limits."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -128,8 +127,7 @@ def joint_vel_out_of_manual_limit(
 
 
 def joint_effort_out_of_limit(
-    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Terminate when effort applied on the asset's joints are outside of the soft joint limits.
 
     In the actuators, the applied torque are the efforts applied on the joints. These are computed by clipping
@@ -139,9 +137,8 @@ def joint_effort_out_of_limit(
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     # check if any joint effort is out of limit
-    out_of_limits = ~torch.isclose(
-        asset.data.computed_torque[:, asset_cfg.joint_ids], asset.data.applied_torque[:, asset_cfg.joint_ids]
-    )
+    out_of_limits = ~torch.isclose(asset.data.computed_torque[:, asset_cfg.joint_ids],
+                                   asset.data.applied_torque[:, asset_cfg.joint_ids])
     return torch.any(out_of_limits, dim=1)
 
 
@@ -156,19 +153,19 @@ def illegal_contact(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneE
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     net_contact_forces = contact_sensor.data.net_forces_w_history
     # check if any contact force exceeds the threshold
-    return torch.any(
-        torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold, dim=1
-    )
+    return torch.any(torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0]
+                     > threshold,
+                     dim=1)
 
 
 def detect_fall(
-    env: "ManagerBasedRLEnv",
-    limit_angle: float,
-    max_lin_vel: float = 1e3,
-    max_ang_vel: float = 1e3,
-    max_lin_acc: float = 1e6,
-    max_ang_acc: float = 1e6,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        limit_angle: float,
+        max_lin_vel: float = 1e3,
+        max_ang_vel: float = 1e3,
+        max_lin_acc: float = 1e6,
+        max_ang_acc: float = 1e6,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when the robot is in an unstable or exploded state.
 
@@ -206,29 +203,23 @@ def detect_fall(
     # -----------------------------
     # All-link tensors
     # -----------------------------
-    body_pos = asset.data.body_pos_w      # (N, B, 3)
-    body_quat = asset.data.body_quat_w    # (N, B, 4)
-    body_vel = asset.data.body_vel_w      # (N, B, 6) [lin_vel(3), ang_vel(3)]
-    body_acc = asset.data.body_acc_w      # (N, B, 6) [lin_acc(3), ang_acc(3)]
+    body_pos = asset.data.body_pos_w  # (N, B, 3)
+    body_quat = asset.data.body_quat_w  # (N, B, 4)
+    body_vel = asset.data.body_vel_w  # (N, B, 6) [lin_vel(3), ang_vel(3)]
+    body_acc = asset.data.body_acc_w  # (N, B, 6) [lin_acc(3), ang_acc(3)]
 
     # -----------------------------
     # Root tensors (explicitly included)
     # -----------------------------
     root_pose = asset.data.root_link_pose_w  # (N, 7) [pos(3), quat(4)]
-    root_vel = asset.data.root_link_vel_w    # (N, 6) [lin_vel(3), ang_vel(3)]
+    root_vel = asset.data.root_link_vel_w  # (N, 6) [lin_vel(3), ang_vel(3)]
 
     # -----------------------------
     # bad_numeric: NaN / Inf checks (raw tensors)
     # -----------------------------
-    bad_numeric = (
-        _has_non_finite(body_pos)
-        | _has_non_finite(body_quat)
-        | _has_non_finite(body_vel)
-        | _has_non_finite(body_acc)
-        | _has_non_finite(root_pose)
-        | _has_non_finite(root_vel)
-        | _has_non_finite(proj_g)
-    )
+    bad_numeric = (_has_non_finite(body_pos) | _has_non_finite(body_quat) | _has_non_finite(body_vel) |
+                   _has_non_finite(body_acc) | _has_non_finite(root_pose) | _has_non_finite(root_vel) |
+                   _has_non_finite(proj_g))
 
     # -----------------------------
     # Magnitude checks (all links)
@@ -244,22 +235,12 @@ def detect_fall(
     ang_acc_norm = torch.norm(ang_acc, dim=-1)
 
     # If norm results are non-finite, terminate as well.
-    bad_norms = (
-        _has_non_finite(lin_vel_norm)
-        | _has_non_finite(ang_vel_norm)
-        | _has_non_finite(lin_acc_norm)
-        | _has_non_finite(ang_acc_norm)
-    )
+    bad_norms = (_has_non_finite(lin_vel_norm) | _has_non_finite(ang_vel_norm) | _has_non_finite(lin_acc_norm) |
+                 _has_non_finite(ang_acc_norm))
 
-    bad_velocity = (
-        torch.any(lin_vel_norm > max_lin_vel, dim=1)
-        | torch.any(ang_vel_norm > max_ang_vel, dim=1)
-    )
+    bad_velocity = (torch.any(lin_vel_norm > max_lin_vel, dim=1) | torch.any(ang_vel_norm > max_ang_vel, dim=1))
 
-    bad_acceleration = (
-        torch.any(lin_acc_norm > max_lin_acc, dim=1)
-        | torch.any(ang_acc_norm > max_ang_acc, dim=1)
-    )
+    bad_acceleration = (torch.any(lin_acc_norm > max_lin_acc, dim=1) | torch.any(ang_acc_norm > max_ang_acc, dim=1))
 
     # Root velocity magnitude (explicitly included)
     root_lin_vel_norm = torch.norm(root_vel[:, 0:3], dim=-1)
@@ -273,9 +254,9 @@ def detect_fall(
 
 
 def detect_height_too_low(
-    env: "ManagerBasedRLEnv",
-    min_height: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        min_height: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when the robot's root height is below the minimum height."""
     asset: RigidObject = env.scene[asset_cfg.name]
@@ -284,9 +265,9 @@ def detect_height_too_low(
 
 
 def detect_height_too_low_relative(
-    env: "ManagerBasedRLEnv",
-    min_height: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        min_height: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when the torso is too low relative to the feet.
 
@@ -303,23 +284,17 @@ def detect_height_too_low_relative(
     asset: RigidObject = env.scene[asset_cfg.name]
 
     if asset_cfg.body_ids is None:
-        raise ValueError(
-            "asset_cfg.body_ids is None. Please set asset_cfg.body_names to "
-            "[torso_link, right_foot_tip, left_foot_tip] so body_ids can be resolved."
-        )
+        raise ValueError('asset_cfg.body_ids is None. Please set asset_cfg.body_names to '
+                         '[torso_link, right_foot_tip, left_foot_tip] so body_ids can be resolved.')
 
     # Expect exactly 3 ids: torso, right foot, left foot
     if isinstance(asset_cfg.body_ids, slice):
-        raise ValueError(
-            "detect_height_too_low_relative requires exactly 3 body ids (torso, r_foot, l_foot); "
-            "got slice(None). Please specify asset_cfg.body_names explicitly."
-        )
+        raise ValueError('detect_height_too_low_relative requires exactly 3 body ids (torso, r_foot, l_foot); '
+                         'got slice(None). Please specify asset_cfg.body_names explicitly.')
 
     if len(asset_cfg.body_ids) != 3:
-        raise ValueError(
-            f"detect_height_too_low_relative expects 3 bodies (torso, r_foot, l_foot) "
-            f"but got {len(asset_cfg.body_ids)}."
-        )
+        raise ValueError(f'detect_height_too_low_relative expects 3 bodies (torso, r_foot, l_foot) '
+                         f'but got {len(asset_cfg.body_ids)}.')
 
     torso_id, rfoot_id, lfoot_id = asset_cfg.body_ids
 
@@ -335,9 +310,9 @@ def detect_height_too_low_relative(
 
 
 def detect_tilt_too_high(
-    env: "ManagerBasedRLEnv",
-    max_tilt: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        max_tilt: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when the robot's tilt angle is above the maximum tilt angle."""
     asset: RigidObject = env.scene[asset_cfg.name]
@@ -351,9 +326,9 @@ def detect_tilt_too_high(
 
 
 def detect_tilt_too_high_any_link(
-    env: "ManagerBasedRLEnv",
-    max_tilt: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        max_tilt: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when ANY specified link tilt angle is above max_tilt.
 
@@ -419,9 +394,9 @@ def detect_tilt_too_high_any_link(
 
 
 def detect_support_plane_tilt_too_high(
-    env: "ManagerBasedRLEnv",
-    max_tilt: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: "ManagerBasedRLEnv",
+        max_tilt: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
 ) -> torch.Tensor:
     """Terminate when support plane tilt becomes too large.
 
@@ -438,13 +413,11 @@ def detect_support_plane_tilt_too_high(
     asset: RigidObject = env.scene[asset_cfg.name]
 
     if asset_cfg.body_ids is None or isinstance(asset_cfg.body_ids, slice):
-        raise ValueError(
-            "Please set asset_cfg.body_names to "
-            "[torso_link, right_foot_tip, left_foot_tip]."
-        )
+        raise ValueError('Please set asset_cfg.body_names to '
+                         '[torso_link, right_foot_tip, left_foot_tip].')
 
     if len(asset_cfg.body_ids) != 3:
-        raise ValueError("Exactly 3 body names required: torso, r_foot, l_foot.")
+        raise ValueError('Exactly 3 body names required: torso, r_foot, l_foot.')
 
     torso_id, rfoot_id, lfoot_id = asset_cfg.body_ids
 

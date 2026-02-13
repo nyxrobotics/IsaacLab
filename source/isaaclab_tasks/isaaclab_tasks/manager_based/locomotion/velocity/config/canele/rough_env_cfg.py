@@ -49,7 +49,7 @@ class CaneleRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-2500.0,
+        weight=-400.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
@@ -98,7 +98,7 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
+        weight=-0.01,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -125,13 +125,13 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
+        weight=-0.01,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names=['torso_yaw'])},
     )
 
     joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
+        weight=-0.01,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -146,7 +146,7 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_ankle = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.2,
+        weight=-0.02,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -466,26 +466,34 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 'pitch': (-0.3, 0.3),
                 'yaw': (-0.3, 0.3),
             },
+            'velocity_range': {
+                'x': (-0.1, 0.1),
+                'y': (-0.1, 0.1),
+                'z': (-0.1, 0.1),
+                'roll': (-0.3, 0.3),
+                'pitch': (-0.3, 0.3),
+                'yaw': (-0.3, 0.3),
+            },
         }
 
         self.rewards.lin_vel_z_l2 = None
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
         self.rewards.ang_vel_xy_l2.weight = -1.0
-        self.rewards.flat_orientation_l2.weight = -10.0
+        self.rewards.flat_orientation_l2.weight = -1.0
         self.rewards.action_rate_l2.weight = -0.005
-        self.rewards.action_l1 = RewTerm(
-            func=mdp.action_l1,
-            weight=-0.001,
-        )
+        # self.rewards.action_l1 = RewTerm(
+        #     func=mdp.action_l1,
+        #     weight=-0.001,
+        # )
 
-        # self.rewards.dof_acc_l2.weight = -1.0e-7
-        self.rewards.dof_acc_l2 = None
-        self.rewards.dof_acc_l2 = RewTerm(
-            func=mdp.joint_action_acc_l2,
-            weight=-1.0e-15,
-            params={'dt': self.sim.dt},
-        )
+        self.rewards.dof_acc_l2.weight = -1.25e-7
+        # self.rewards.dof_acc_l2 = None
+        # self.rewards.dof_acc_l2 = RewTerm(
+        #     func=mdp.joint_action_acc_l2,
+        #     weight=-1.0e-15,
+        #     params={"dt": self.sim.dt},
+        # )
 
         # self.rewards.dof_torques_l2 = None
         self.rewards.dof_torques_l2.weight = -1.5e-7
@@ -516,19 +524,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.detect_fall = DoneTerm(  # type: ignore
             func=mdp.detect_fall,
             params={
-                'limit_angle': 1.3,
-                'asset_cfg': SceneEntityCfg(
-                    'robot',
-                    body_names=[base_link_name],
-                ),
-            },
-            time_out=False,
-        )
-
-        self.terminations.detect_height_too_low = DoneTerm(  # type: ignore
-            func=mdp.detect_height_too_low,
-            params={
-                'min_height': 0.5,
+                'limit_angle': 1.5,
                 'asset_cfg': SceneEntityCfg(
                     'robot',
                     body_names=[base_link_name],
@@ -538,8 +534,32 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         )
 
         body_and_ankle_names = [base_link_name] + ankle_names
+        self.terminations.detect_height_too_low_relative = DoneTerm(  # type: ignore
+            func=mdp.detect_height_too_low_relative,
+            params={
+                'min_height': 0.5,
+                'asset_cfg': SceneEntityCfg(
+                    'robot',
+                    body_names=body_and_ankle_names,
+                ),
+            },
+            time_out=False,
+        )
+
         self.terminations.detect_tilt = DoneTerm(  # type: ignore
             func=mdp.detect_tilt_too_high_any_link,
+            params={
+                'max_tilt': 1.0,
+                'asset_cfg': SceneEntityCfg(
+                    'robot',
+                    body_names=body_and_ankle_names,
+                ),
+            },
+            time_out=False,
+        )
+
+        self.terminations.support_plane_tilt = DoneTerm(  # type: ignore
+            func=mdp.detect_support_plane_tilt_too_high,
             params={
                 'max_tilt': 1.0,
                 'asset_cfg': SceneEntityCfg(
@@ -582,6 +602,14 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
                 'x': (0.0, 0.0),
                 'y': (0.0, 0.0),
                 'yaw': (0, 0)
+            },
+            'velocity_range': {
+                'x': (0.0, 0.0),
+                'y': (0.0, 0.0),
+                'z': (0.0, 0.0),
+                'roll': (0.0, 0.0),
+                'pitch': (0.0, 0.0),
+                'yaw': (0.0, 0.0),
             },
             'velocity_range': {
                 'x': (0.0, 0.0),

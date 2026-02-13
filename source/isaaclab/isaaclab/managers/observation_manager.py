@@ -388,6 +388,8 @@ class ObservationManager(ManagerBase):
         for term_name, term_cfg in obs_terms:
             # compute term's value
             obs: torch.Tensor = term_cfg.func(self._env, **term_cfg.params).clone()
+            if self._env.num_envs == 1 and self._env.common_step_counter % 100 == 0:
+                print(f"[{group_name}] {term_name}:", obs[0].detach().cpu().numpy())
             # apply post-processing
             if term_cfg.modifiers is not None:
                 for modifier in term_cfg.modifiers:

@@ -49,12 +49,12 @@ class CaneleRewards(RewardsCfg):
 
     termination_penalty = RewTerm(
         func=mdp.is_terminated,
-        weight=-400.0,
+        weight=-2000.0,
     )
 
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=10.0,
         params={
             'command_name': 'base_velocity',
             'std': 0.5
@@ -62,7 +62,7 @@ class CaneleRewards(RewardsCfg):
     )
 
     track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp,
-                                  weight=2.0,
+                                  weight=20.0,
                                   params={
                                       'command_name': 'base_velocity',
                                       'std': 0.5
@@ -70,7 +70,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.25,
+        weight=25.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -97,8 +97,8 @@ class CaneleRewards(RewardsCfg):
     )
 
     joint_deviation_arms = RewTerm(
-        func=mdp.joint_action_deviation_l1,
-        weight=-0.01,
+        func=mdp.joint_action_deviation_l2,
+        weight=-0.1,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -125,13 +125,13 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_torso = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.01,
+        weight=-0.1,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names=['torso_yaw'])},
     )
 
     joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.01,
+        weight=-0.1,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -144,18 +144,13 @@ class CaneleRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_ankle = RewTerm(
-        func=mdp.joint_action_deviation_l1,
-        weight=-0.02,
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=1.0,
         params={
-            'asset_cfg':
-                SceneEntityCfg('robot',
-                               joint_names=[
-                                   'right_ankle_pitch',
-                                   'right_ankle_roll',
-                                   'left_ankle_pitch',
-                                   'left_ankle_roll',
-                               ])
+            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
+            'margin': 0.0,
+            'gain': 1.0,
         },
     )
 
@@ -479,36 +474,27 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2 = None
         self.rewards.dof_pos_limits = None
         self.rewards.undesired_contacts = None
-        self.rewards.ang_vel_xy_l2.weight = -1.0
-        self.rewards.flat_orientation_l2.weight = -1.0
+        self.rewards.ang_vel_xy_l2 = None
+        self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.005
-        # self.rewards.action_l1 = RewTerm(
-        #     func=mdp.action_l1,
-        #     weight=-0.001,
-        # )
-
-        self.rewards.dof_acc_l2.weight = -1.25e-7
-        # self.rewards.dof_acc_l2 = None
-        # self.rewards.dof_acc_l2 = RewTerm(
-        #     func=mdp.joint_action_acc_l2,
-        #     weight=-1.0e-15,
-        #     params={"dt": self.sim.dt},
-        # )
-
-        # self.rewards.dof_torques_l2 = None
+        self.rewards.dof_acc_l2 = None
+        # TODO: use self.decimation * self.sim.dt for proper scaling, but need to tune the weight accordingly
+        self.rewards.dof_acc_l2 = RewTerm(
+            func=mdp.joint_action_acc_l2,
+            weight=-1.0e-15,
+            params={'dt': self.sim.dt},
+        )
         self.rewards.dof_torques_l2.weight = -1.5e-7
         self.rewards.dof_torques_l2.params['asset_cfg'] = SceneEntityCfg('robot',
                                                                          joint_names=[
                                                                              'left_hip_yaw',
                                                                              'left_hip_roll',
                                                                              'left_hip_pitch',
-                                                                             'left_knee_pitch',
                                                                              'left_ankle_pitch',
                                                                              'left_ankle_roll',
                                                                              'right_hip_yaw',
                                                                              'right_hip_roll',
                                                                              'right_hip_pitch',
-                                                                             'right_knee_pitch',
                                                                              'right_ankle_pitch',
                                                                              'right_ankle_roll',
                                                                          ])
@@ -524,7 +510,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.detect_fall = DoneTerm(  # type: ignore
             func=mdp.detect_fall,
             params={
-                'limit_angle': 1.5,
+                'limit_angle': 1.0,
                 'asset_cfg': SceneEntityCfg(
                     'robot',
                     body_names=[base_link_name],
@@ -549,7 +535,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.detect_tilt = DoneTerm(  # type: ignore
             func=mdp.detect_tilt_too_high_any_link,
             params={
-                'max_tilt': 1.0,
+                'max_tilt': 1.5,
                 'asset_cfg': SceneEntityCfg(
                     'robot',
                     body_names=body_and_ankle_names,

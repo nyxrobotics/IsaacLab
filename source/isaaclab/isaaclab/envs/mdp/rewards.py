@@ -2,7 +2,6 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
 """Common functions that can be used to enable reward functions.
 
 The functions can be passed to the :class:`isaaclab.managers.RewardTermCfg` object to include
@@ -11,19 +10,20 @@ the reward introduced by the function.
 
 from __future__ import annotations
 
-import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.assets import Articulation, RigidObject
+from isaaclab.assets import Articulation
+from isaaclab.assets import RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import RewardTermCfg
-from isaaclab.sensors import ContactSensor, RayCaster
+from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import RayCaster
 from isaaclab.utils.math import quat_apply_inverse
+import torch
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-
 """
 General.
 """
@@ -56,10 +56,10 @@ class is_terminated_term(ManagerTermBase):
         # initialize the base class
         super().__init__(cfg, env)
         # find and store the termination terms
-        term_keys = cfg.params.get("term_keys", ".*")
+        term_keys = cfg.params.get('term_keys', '.*')
         self._term_names = env.termination_manager.find_terms(term_keys)
 
-    def __call__(self, env: ManagerBasedRLEnv, term_keys: str | list[str] = ".*") -> torch.Tensor:
+    def __call__(self, env: ManagerBasedRLEnv, term_keys: str | list[str] = '.*') -> torch.Tensor:
         # Return the unweighted reward for the termination terms
         reset_buf = torch.zeros(env.num_envs, device=env.device)
         for term in self._term_names:
@@ -74,21 +74,21 @@ Root penalties.
 """
 
 
-def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize z-axis base linear velocity using L2 squared kernel."""
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
     return torch.square(asset.data.root_lin_vel_b[:, 2])
 
 
-def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize xy-axis base angular velocity using L2 squared kernel."""
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
     return torch.sum(torch.square(asset.data.root_ang_vel_b[:, :2]), dim=1)
 
 
-def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize non-flat base orientation using L2 squared kernel.
 
     This is computed by penalizing the xy-components of the projected gravity vector.
@@ -99,10 +99,10 @@ def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
 
 
 def base_height_l2(
-    env: ManagerBasedRLEnv,
-    target_height: float,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    sensor_cfg: SceneEntityCfg | None = None,
+        env: ManagerBasedRLEnv,
+        target_height: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+        sensor_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
     """Penalize asset height from its target using L2 squared kernel.
 
@@ -123,7 +123,7 @@ def base_height_l2(
     return torch.square(asset.data.root_pos_w[:, 2] - adjusted_target_height)
 
 
-def body_lin_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def body_lin_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize the linear acceleration of bodies using L2-kernel."""
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.sum(torch.norm(asset.data.body_lin_acc_w[:, asset_cfg.body_ids, :], dim=-1), dim=1)
@@ -134,7 +134,7 @@ Joint penalties.
 """
 
 
-def joint_torques_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_torques_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint torques applied on the articulation using L2 squared kernel.
 
     NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint torques contribute to the term.
@@ -151,7 +151,7 @@ def joint_vel_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Ten
     return torch.sum(torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
 
 
-def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint velocities on the articulation using L2 squared kernel.
 
     NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint velocities contribute to the term.
@@ -161,7 +161,7 @@ def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
     return torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
 
 
-def joint_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint accelerations on the articulation using L2 squared kernel.
 
     NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint accelerations contribute to the term.
@@ -171,7 +171,7 @@ def joint_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntity
     return torch.sum(torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
 
 
-def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint positions that deviate from the default one."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -180,7 +180,7 @@ def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
     return torch.sum(torch.abs(angle), dim=1)
 
 
-def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits.
 
     This is computed as a sum of the absolute value of the difference between the joint position and the soft limits.
@@ -188,18 +188,15 @@ def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEn
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     # compute out of limits constraints
-    out_of_limits = -(
-        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
-    ).clip(max=0.0)
-    out_of_limits += (
-        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]
-    ).clip(min=0.0)
+    out_of_limits = -(asset.data.joint_pos[:, asset_cfg.joint_ids] -
+                      asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]).clip(max=0.0)
+    out_of_limits += (asset.data.joint_pos[:, asset_cfg.joint_ids] -
+                      asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]).clip(min=0.0)
     return torch.sum(out_of_limits, dim=1)
 
 
-def joint_vel_limits(
-    env: ManagerBasedRLEnv, soft_ratio: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+def joint_vel_limits(env: ManagerBasedRLEnv, soft_ratio: float,
+                     asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize joint velocities if they cross the soft limits.
 
     This is computed as a sum of the absolute value of the difference between the joint velocity and the soft limits.
@@ -210,10 +207,8 @@ def joint_vel_limits(
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
     # compute out of limits constraints
-    out_of_limits = (
-        torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids])
-        - asset.data.soft_joint_vel_limits[:, asset_cfg.joint_ids] * soft_ratio
-    )
+    out_of_limits = (torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]) -
+                     asset.data.soft_joint_vel_limits[:, asset_cfg.joint_ids] * soft_ratio)
     # clip to max error = 1 rad/s per joint to avoid huge penalties
     out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)
     return torch.sum(out_of_limits, dim=1)
@@ -224,7 +219,7 @@ Action penalties.
 """
 
 
-def applied_torque_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def applied_torque_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Penalize applied torques if they cross the limits.
 
     This is computed as a sum of the absolute value of the difference between the applied torques and the limits.
@@ -237,9 +232,8 @@ def applied_torque_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Sc
     asset: Articulation = env.scene[asset_cfg.name]
     # compute out of limits constraints
     # TODO: We need to fix this to support implicit joints.
-    out_of_limits = torch.abs(
-        asset.data.applied_torque[:, asset_cfg.joint_ids] - asset.data.computed_torque[:, asset_cfg.joint_ids]
-    )
+    out_of_limits = torch.abs(asset.data.applied_torque[:, asset_cfg.joint_ids] -
+                              asset.data.computed_torque[:, asset_cfg.joint_ids])
     return torch.sum(out_of_limits, dim=1)
 
 
@@ -252,33 +246,31 @@ def action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the actions using L2 squared kernel."""
     return torch.sum(torch.square(env.action_manager.action), dim=1)
 
+
 def action_rate_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the rate of change of the actions using L1 kernel."""
     return torch.sum(torch.abs(env.action_manager.action - env.action_manager.prev_action), dim=1)
+
 
 def action_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the rate of change of the actions using L2 squared kernel."""
     return torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
 
+
 def action_acceleration_l1(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the acceleration of the actions using L1 kernel."""
     return torch.sum(
-        torch.abs(
-            env.action_manager.action
-            - 2 * env.action_manager.prev_action
-            + env.action_manager.prev_prev_action
-        ),
+        torch.abs(env.action_manager.action - 2 * env.action_manager.prev_action +
+                  env.action_manager.prev_prev_action),
         dim=1,
     )
+
 
 def action_acceleration_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the acceleration of the actions using L2 squared kernel."""
     return torch.sum(
-        torch.square(
-            env.action_manager.action
-            - 2 * env.action_manager.prev_action
-            + env.action_manager.prev_prev_action
-        ),
+        torch.square(env.action_manager.action - 2 * env.action_manager.prev_action +
+                     env.action_manager.prev_prev_action),
         dim=1,
     )
 
@@ -286,12 +278,8 @@ def action_acceleration_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
 def action_jerk_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     """Penalize the jerk of the actions using L2 squared kernel."""
     return torch.sum(
-        torch.square(
-            env.action_manager.action
-            - 3 * env.action_manager.prev_action
-            + 3 * env.action_manager.prev_prev_action
-            - env.action_manager.prev_prev_prev_action
-        ),
+        torch.square(env.action_manager.action - 3 * env.action_manager.prev_action +
+                     3 * env.action_manager.prev_prev_action - env.action_manager.prev_prev_prev_action),
         dim=1,
     )
 
@@ -304,7 +292,7 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
       2) term._joint_names / term.joint_names if available
     The mapping is cached on the environment instance.
     """
-    cache_attr = "_joint_name_to_action_index_cache"
+    cache_attr = '_joint_name_to_action_index_cache'
     cached = getattr(env, cache_attr, None)
     if cached is not None:
         return cached
@@ -314,25 +302,25 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
     offset = 0
     for term_name in env.action_manager.active_terms:
         term = env.action_manager.get_term(term_name)
-        term_dim = int(getattr(term, "action_dim", 0))
+        term_dim = int(getattr(term, 'action_dim', 0))
 
         joint_names = None
 
         # 1) Try IO descriptor extras
         try:
-            iod = getattr(term, "IO_descriptor", None)
-            extras = getattr(iod, "extras", None)
+            iod = getattr(term, 'IO_descriptor', None)
+            extras = getattr(iod, 'extras', None)
             if isinstance(extras, dict):
-                joint_names = extras.get("joint_names", None)
+                joint_names = extras.get('joint_names', None)
         except Exception:
             joint_names = None
 
         # 2) Fallback: term internal fields (e.g., JointPositionAction has _joint_names)
         if joint_names is None:
-            if hasattr(term, "_joint_names"):
-                joint_names = getattr(term, "_joint_names")
-            elif hasattr(term, "joint_names"):
-                joint_names = getattr(term, "joint_names")
+            if hasattr(term, '_joint_names'):
+                joint_names = getattr(term, '_joint_names')
+            elif hasattr(term, 'joint_names'):
+                joint_names = getattr(term, 'joint_names')
 
         # Register mapping
         if joint_names is not None:
@@ -345,7 +333,6 @@ def _build_joint_name_to_action_index(env: "ManagerBasedRLEnv") -> dict[str, int
     return name_to_idx
 
 
-
 def _debug_print_action_joint_mapping(env: "ManagerBasedRLEnv") -> None:
     """Print joint-name mapping that exists on the action side for debugging."""
     name_to_idx = _build_joint_name_to_action_index(env)
@@ -355,29 +342,29 @@ def _debug_print_action_joint_mapping(env: "ManagerBasedRLEnv") -> None:
     joint_names_sorted = [name for name, _ in items]
 
     print("\n[RewardDebug] Action joint mapping (extras['joint_names']):")
-    print(f"[RewardDebug] total_mapped_joints={len(joint_names_sorted)}")
+    print(f'[RewardDebug] total_mapped_joints={len(joint_names_sorted)}')
     if joint_names_sorted:
-        print("[RewardDebug] joint_names=")
+        print('[RewardDebug] joint_names=')
         for name in joint_names_sorted:
-            print(f"  - {name}")
+            print(f'  - {name}')
     else:
         print("[RewardDebug] joint_names is EMPTY. No action term exported extras['joint_names'].")
 
     # Also show action dimensionality for reference
     try:
         total_action_dim = int(env.action_manager.action.shape[1])
-        print(f"[RewardDebug] env.action_manager.action_dim={total_action_dim}")
+        print(f'[RewardDebug] env.action_manager.action_dim={total_action_dim}')
     except Exception:
         pass
-    print("")
+    print('')
 
 
 def _debug_print_action_terms(env: "ManagerBasedRLEnv") -> None:
     """Print detailed info about action terms to figure out joint/action ordering."""
-    print("\n[RewardDebug] ===== Action terms debug =====")
+    print('\n[RewardDebug] ===== Action terms debug =====')
     try:
         action_dim_total = int(env.action_manager.action.shape[1])
-        print(f"[RewardDebug] total_action_dim={action_dim_total}")
+        print(f'[RewardDebug] total_action_dim={action_dim_total}')
     except Exception:
         pass
 
@@ -385,61 +372,63 @@ def _debug_print_action_terms(env: "ManagerBasedRLEnv") -> None:
         term_names = list(env.action_manager.active_terms)
     except Exception:
         term_names = []
-    print(f"[RewardDebug] active_terms={term_names}")
+    print(f'[RewardDebug] active_terms={term_names}')
 
     offset = 0
     for term_name in term_names:
         term = env.action_manager.get_term(term_name)
-        term_dim = int(getattr(term, "action_dim", -1))
+        term_dim = int(getattr(term, 'action_dim', -1))
         cls_name = term.__class__.__name__
         print(f"\n[RewardDebug] term='{term_name}' class={cls_name} offset={offset} action_dim={term_dim}")
 
         # Try common places where joint info is stored
         candidates = [
-            "joint_names", "_joint_names",
-            "joint_ids", "_joint_ids",
-            "dof_names", "_dof_names",
-            "dof_ids", "_dof_ids",
+            'joint_names',
+            '_joint_names',
+            'joint_ids',
+            '_joint_ids',
+            'dof_names',
+            '_dof_names',
+            'dof_ids',
+            '_dof_ids',
         ]
         for key in candidates:
             if hasattr(term, key):
                 val = getattr(term, key)
                 try:
                     if isinstance(val, (list, tuple)):
-                        print(f"[RewardDebug]   {key} (len={len(val)}): {val}")
-                    elif hasattr(val, "shape"):
-                        print(f"[RewardDebug]   {key} (tensor shape={tuple(val.shape)}): {val}")
+                        print(f'[RewardDebug]   {key} (len={len(val)}): {val}')
+                    elif hasattr(val, 'shape'):
+                        print(f'[RewardDebug]   {key} (tensor shape={tuple(val.shape)}): {val}')
                     else:
-                        print(f"[RewardDebug]   {key}: {val}")
+                        print(f'[RewardDebug]   {key}: {val}')
                 except Exception:
-                    print(f"[RewardDebug]   {key}: <unprintable>")
+                    print(f'[RewardDebug]   {key}: <unprintable>')
 
         # Print cfg / asset_cfg if present
-        if hasattr(term, "cfg"):
-            cfg = getattr(term, "cfg")
-            print(f"[RewardDebug]   has cfg: {type(cfg).__name__}")
-            if hasattr(cfg, "asset_cfg"):
-                ac = getattr(cfg, "asset_cfg")
-                print(f"[RewardDebug]   cfg.asset_cfg: {ac}")
-                for k in ["name", "joint_names", "joint_ids", "body_names", "body_ids"]:
+        if hasattr(term, 'cfg'):
+            cfg = getattr(term, 'cfg')
+            print(f'[RewardDebug]   has cfg: {type(cfg).__name__}')
+            if hasattr(cfg, 'asset_cfg'):
+                ac = getattr(cfg, 'asset_cfg')
+                print(f'[RewardDebug]   cfg.asset_cfg: {ac}')
+                for k in ['name', 'joint_names', 'joint_ids', 'body_names', 'body_ids']:
                     if hasattr(ac, k):
-                        print(f"[RewardDebug]     asset_cfg.{k}: {getattr(ac, k)}")
+                        print(f'[RewardDebug]     asset_cfg.{k}: {getattr(ac, k)}')
 
         # IO descriptor if present
-        if hasattr(term, "IO_descriptor"):
-            iod = getattr(term, "IO_descriptor")
-            print(f"[RewardDebug]   has IO_descriptor: {type(iod).__name__}")
-            extras = getattr(iod, "extras", None)
-            print(f"[RewardDebug]     IO_descriptor.extras: {extras}")
+        if hasattr(term, 'IO_descriptor'):
+            iod = getattr(term, 'IO_descriptor')
+            print(f'[RewardDebug]   has IO_descriptor: {type(iod).__name__}')
+            extras = getattr(iod, 'extras', None)
+            print(f'[RewardDebug]     IO_descriptor.extras: {extras}')
 
         offset += max(term_dim, 0)
 
-    print("\n[RewardDebug] ===== End action terms debug =====\n")
+    print('\n[RewardDebug] ===== End action terms debug =====\n')
 
 
-def _resolve_action_indices(
-    env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg | None
-) -> torch.Tensor | None:
+def _resolve_action_indices(env: "ManagerBasedRLEnv", asset_cfg: SceneEntityCfg | None) -> torch.Tensor | None:
     """Resolve action indices.
     - asset_cfg is None -> use all action dimensions (return None)
     - asset_cfg is not None -> match joint names and return indices
@@ -450,12 +439,12 @@ def _resolve_action_indices(
     asset: Articulation = env.scene[asset_cfg.name]
 
     # get articulation joint names
-    if hasattr(asset, "joint_names"):
+    if hasattr(asset, 'joint_names'):
         all_joint_names = list(asset.joint_names)
-    elif hasattr(asset.data, "joint_names"):
+    elif hasattr(asset.data, 'joint_names'):
         all_joint_names = list(asset.data.joint_names)
     else:
-        raise AttributeError("Cannot access articulation joint names.")
+        raise AttributeError('Cannot access articulation joint names.')
 
     target_joint_names = [str(all_joint_names[jid]) for jid in asset_cfg.joint_ids]
 
@@ -463,11 +452,9 @@ def _resolve_action_indices(
     missing = [jn for jn in target_joint_names if jn not in name_to_action_idx]
     if missing:
         _debug_print_action_terms(env)
-        raise KeyError(
-            "Some joints in asset_cfg were not found in action joint_names mapping. "
-            f"Missing: {missing}. "
-            "Make sure your action term exports joint names or we extract them from the term."
-        )
+        raise KeyError('Some joints in asset_cfg were not found in action joint_names mapping. '
+                       f'Missing: {missing}. '
+                       'Make sure your action term exports joint names or we extract them from the term.')
     return torch.tensor(
         [name_to_action_idx[jn] for jn in target_joint_names],
         device=env.device,
@@ -475,9 +462,7 @@ def _resolve_action_indices(
     )
 
 
-def joint_action_vel_l1(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
-) -> torch.Tensor:
+def joint_action_vel_l1(env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None) -> torch.Tensor:
     """Penalize action velocity using L1-kernel.
     If asset_cfg is None, all action dimensions are used.
     """
@@ -496,9 +481,7 @@ def joint_action_vel_l1(
     return torch.sum(torch.abs(action_vel), dim=1)
 
 
-def joint_action_vel_l2(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
-) -> torch.Tensor:
+def joint_action_vel_l2(env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None) -> torch.Tensor:
     """Penalize action velocity using L2 squared kernel."""
     action_ids = _resolve_action_indices(env, asset_cfg)
 
@@ -515,9 +498,7 @@ def joint_action_vel_l2(
     return torch.sum(torch.square(action_vel), dim=1)
 
 
-def joint_action_acc_l1(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
-) -> torch.Tensor:
+def joint_action_acc_l1(env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None) -> torch.Tensor:
     """Penalize action acceleration using L1 kernel."""
     action_ids = _resolve_action_indices(env, asset_cfg)
 
@@ -539,9 +520,7 @@ def joint_action_acc_l1(
     return torch.sum(torch.abs(action_acc), dim=1)
 
 
-def joint_action_acc_l2(
-    env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None
-) -> torch.Tensor:
+def joint_action_acc_l2(env: "ManagerBasedRLEnv", dt: float, asset_cfg: SceneEntityCfg | None = None) -> torch.Tensor:
     """Penalize action acceleration using L2 squared kernel."""
     action_ids = _resolve_action_indices(env, asset_cfg)
 
@@ -553,7 +532,7 @@ def joint_action_acc_l2(
         prev = action
     if prev_prev is None:
         prev_prev = prev
-        
+
     if action_ids is not None:
         action = action.index_select(1, action_ids)
         prev = prev.index_select(1, action_ids)
@@ -604,6 +583,43 @@ def joint_action_deviation_l1(
     return torch.sum(torch.abs(deviation), dim=1)
 
 
+def joint_action_deviation_l2(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg | None = None,
+    default_action: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Penalize action deviation using L2 squared kernel."""
+    action_ids = _resolve_action_indices(env, asset_cfg)
+
+    action = env.action_manager.action
+    if action_ids is not None:
+        action = action.index_select(1, action_ids)
+
+    # default_action handling
+    if default_action is None:
+        default_sel = torch.zeros_like(action)
+    else:
+        if default_action.dim() == 1:
+            if action_ids is None:
+                default_sel = default_action.unsqueeze(0)
+            else:
+                if default_action.numel() == env.action_manager.action.shape[1]:
+                    default_sel = default_action.index_select(0, action_ids).unsqueeze(0)
+                else:
+                    # assume already in selected-joint order
+                    default_sel = default_action.unsqueeze(0)
+        else:
+            if action_ids is None:
+                default_sel = default_action
+            else:
+                if default_action.shape[1] == env.action_manager.action.shape[1]:
+                    default_sel = default_action.index_select(1, action_ids)
+                else:
+                    default_sel = default_action
+
+    deviation = action - default_sel
+    return torch.sum(torch.square(deviation), dim=1)
+
 
 """
 Contact sensor.
@@ -624,9 +640,8 @@ def undesired_contacts(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: Sce
 def desired_contacts(env, sensor_cfg: SceneEntityCfg, threshold: float = 1.0) -> torch.Tensor:
     """Penalize if none of the desired contacts are present."""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = (
-        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > threshold
-    )
+    contacts = (contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0]
+                > threshold)
     zero_contact = (~contacts).all(dim=1)
     return 1.0 * zero_contact
 
@@ -647,9 +662,10 @@ Velocity-tracking rewards.
 """
 
 
-def track_lin_vel_xy_exp(
-    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+def track_lin_vel_xy_exp(env: ManagerBasedRLEnv,
+                         std: float,
+                         command_name: str,
+                         asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Reward tracking of linear velocity commands (xy axes) using exponential kernel."""
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
@@ -661,9 +677,10 @@ def track_lin_vel_xy_exp(
     return torch.exp(-lin_vel_error / std**2)
 
 
-def track_ang_vel_z_exp(
-    env: ManagerBasedRLEnv, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
+def track_ang_vel_z_exp(env: ManagerBasedRLEnv,
+                        std: float,
+                        command_name: str,
+                        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
     """Reward tracking of angular velocity commands (yaw) using exponential kernel."""
     # extract the used quantities (to enable type-hinting)
     asset: RigidObject = env.scene[asset_cfg.name]
@@ -673,10 +690,10 @@ def track_ang_vel_z_exp(
 
 
 def flat_orientation_links_l2(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    margin: float = 0.3,
-    gain: float = 1.0,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+        margin: float = 0.3,
+        gain: float = 1.0,
 ) -> torch.Tensor:
     """
     Penalize non-flat orientation for multiple links with a tolerance margin.
@@ -686,26 +703,25 @@ def flat_orientation_links_l2(
     - If tilt <= margin → penalty = 0
     - If tilt > margin → penalty = -gain * (tilt - margin)
     """
-
     asset: RigidObject = env.scene[asset_cfg.name]
 
     # body orientations
-    body_quat_w = asset.data.body_quat_w            # (N, B, 4)
+    body_quat_w = asset.data.body_quat_w  # (N, B, 4)
 
     # world gravity expanded to match shape (N, B, 3)
     g_w = torch.zeros_like(asset.data.body_pos_w)
     g_w[..., 2] = -1.0
 
     # gravity in body frame
-    g_b = quat_apply_inverse(body_quat_w, g_w)     # (N, B, 3)
+    g_b = quat_apply_inverse(body_quat_w, g_w)  # (N, B, 3)
 
     # select target bodies
     body_ids = asset_cfg.body_ids
-    g_sel = g_b[:, body_ids, :2]                    # (N, K, 2)
+    g_sel = g_b[:, body_ids, :2]  # (N, K, 2)
 
     # tilt magnitude: L2 norm of xy gravity components
     l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
-    l2_mean = torch.mean(l2_per_body, dim=1)        # (N,)
+    l2_mean = torch.mean(l2_per_body, dim=1)  # (N,)
 
     # margin-based penalty
     excess = torch.relu(l2_mean - margin)

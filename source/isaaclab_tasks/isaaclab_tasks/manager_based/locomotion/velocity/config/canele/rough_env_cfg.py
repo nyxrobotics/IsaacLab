@@ -68,22 +68,44 @@ class CaneleRewards(RewardsCfg):
                                       'std': 0.5
                                   })
 
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_positive_biped,
+    #     weight=250.0,
+    #     params={
+    #         'command_name': 'base_velocity',
+    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+    #             'right_toe_link',
+    #             'left_toe_link',
+    #         ]),
+    #         'threshold': 0.4,
+    #     },
+    # )
+
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=25.0,
+        func=mdp.feet_air_time_balanced_alternating_biped,
+        weight=100.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
                 'left_toe_link',
             ]),
-            'threshold': 0.4,
+            'linear_cmd_threshold': 0.12,
+            'angular_cmd_threshold': 0.2,
+            'body_tilt_threshold': 0.3,
+            'air_min_time': 0.1,
+            'air_max_time': 1.0,
+            'min_contact_time': 0.1,
+            'ema_alpha': 0.02,
+            'balance_weight': 0.5,
+            'air_reward': 1.0,
+            'contact_reward': 1.0,
         },
     )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-1.0,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
@@ -98,7 +120,7 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_action_deviation_l2,
-        weight=-0.1,
+        weight=-1.6,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -123,23 +145,42 @@ class CaneleRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_torso = RewTerm(
+    joint_deviation_yaw = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
-        params={'asset_cfg': SceneEntityCfg('robot', joint_names=['torso_yaw'])},
+        weight=-0.8,
+        params={'asset_cfg': SceneEntityCfg('robot', joint_names=[
+            'torso_yaw',
+            'right_hip_yaw',
+            'left_hip_yaw',
+        ])},
     )
 
-    joint_deviation_hip = RewTerm(
+    joint_deviation_roll = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.1,
+        weight=-0.4,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
                                joint_names=[
-                                   'right_hip_yaw',
                                    'right_hip_roll',
-                                   'left_hip_yaw',
+                                   'right_ankle_roll',
                                    'left_hip_roll',
+                                   'left_ankle_roll',
+                               ])
+        },
+    )
+
+    joint_deviation_pitch = RewTerm(
+        func=mdp.joint_action_deviation_l1,
+        weight=-0.2,
+        params={
+            'asset_cfg':
+                SceneEntityCfg('robot',
+                               joint_names=[
+                                   'right_hip_pitch',
+                                   'right_ankle_pitch',
+                                   'left_hip_pitch',
+                                   'left_ankle_pitch',
                                ])
         },
     )
@@ -478,13 +519,12 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.flat_orientation_l2.weight = -10.0
         self.rewards.action_rate_l2.weight = -0.005
         self.rewards.dof_acc_l2 = None
-        # TODO: use self.decimation * self.sim.dt for proper scaling, but need to tune the weight accordingly
         self.rewards.dof_acc_l2 = RewTerm(
             func=mdp.joint_action_acc_l2,
-            weight=-1.0e-15,
-            params={'dt': self.sim.dt},
+            weight=-1.0e-10,
+            params={'dt': self.decimation * self.sim.dt},
         )
-        self.rewards.dof_torques_l2.weight = -1.5e-7
+        self.rewards.dof_torques_l2.weight = -1.5e-5
         self.rewards.dof_torques_l2.params['asset_cfg'] = SceneEntityCfg('robot',
                                                                          joint_names=[
                                                                              'left_hip_yaw',

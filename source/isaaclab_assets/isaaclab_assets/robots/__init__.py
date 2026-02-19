@@ -19,6 +19,7 @@ from .humanoid import *
 from .humanoid_28 import *
 from .kinova import *
 from .kuka_allegro import *
+from .kuroko.kuroko_cfg import *
 from .pick_and_place import *
 from .quadcopter import *
 from .ridgeback_franka import *
@@ -26,6 +27,6 @@ from .sawyer import *
 from .shadow_hand import *
 from .spot import *
 from .unitree import *
+from .unitree_g1_pid import *
 from .unitree_go1_pid import *
 from .universal_robots import *
-from .kuroko.kuroko_cfg import *

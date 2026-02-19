@@ -721,10 +721,18 @@ def flat_orientation_links_l2(
 
     # tilt magnitude: L2 norm of xy gravity components
     l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
-    l2_mean = torch.mean(l2_per_body, dim=1)  # (N,)
-
+    excess_per_body = torch.relu(torch.sqrt(l2_per_body) - margin)  # (N, K)
     # margin-based penalty
-    excess = torch.relu(l2_mean - margin)
-    penalty = -gain * excess
+    penalty_per_body = -gain * excess_per_body  # (N, K)
+    penalty_sum = torch.sum(penalty_per_body, dim=1)  # (N
 
-    return penalty
+    return penalty_sum
+
+
+def ang_vel_xy_links_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg('robot')) -> torch.Tensor:
+    """Penalize xy-axis angular velocity for multiple links using L2 squared kernel."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ang_vel_w = asset.data.body_ang_vel_w[:, asset_cfg.body_ids, :2]  # (N, K, 2)
+    l2_per_body = torch.sum(ang_vel_w * ang_vel_w, dim=-1)  # (N, K)
+    l2_sum = torch.sum(l2_per_body, dim=1)  # (N,)
+    return l2_sum

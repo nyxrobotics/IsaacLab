@@ -83,7 +83,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=100.0,
+        weight=200.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -105,7 +105,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-1.0,
+        weight=-0.1,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
@@ -192,6 +192,14 @@ class CaneleRewards(RewardsCfg):
             'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
             'margin': 0.0,
             'gain': 1.0,
+        },
+    )
+
+    ang_vel_xy_toe_penalty = RewTerm(
+        func=mdp.ang_vel_xy_links_l2,
+        weight=-0.01,
+        params={
+            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
         },
     )
 

@@ -15,6 +15,7 @@ Notes:
 
 from __future__ import annotations
 
+from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.actuators import PIDActuatorCfg
 
 from .unitree import G1_MINIMAL_CFG  # isort: skip
@@ -32,7 +33,7 @@ G1_HIP_PID_ACTUATOR_CFG = PIDActuatorCfg(
     velocity_limit=32.0,
     use_physx_damping=True,
     # Default viscous friction consistent with stall/no-load (tau = tau_stall - b*w).
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 G1_KNEE_PID_ACTUATOR_CFG = PIDActuatorCfg(
@@ -42,7 +43,7 @@ G1_KNEE_PID_ACTUATOR_CFG = PIDActuatorCfg(
     effort_limit=139.0,
     velocity_limit=20.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 # Feet
@@ -53,7 +54,7 @@ G1_ANKLE_PITCH_PID_ACTUATOR_CFG = PIDActuatorCfg(
     effort_limit=50.0,
     velocity_limit=37.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 G1_ANKLE_ROLL_PID_ACTUATOR_CFG = PIDActuatorCfg(
@@ -63,7 +64,7 @@ G1_ANKLE_ROLL_PID_ACTUATOR_CFG = PIDActuatorCfg(
     effort_limit=50.0,
     velocity_limit=37.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 # Waist
@@ -74,7 +75,7 @@ G1_WAIST_YAW_PID_ACTUATOR_CFG = PIDActuatorCfg(
     effort_limit=88.0,
     velocity_limit=32.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 G1_WAIST_ROLL_PITCH_PID_ACTUATOR_CFG = PIDActuatorCfg(
@@ -84,28 +85,28 @@ G1_WAIST_ROLL_PITCH_PID_ACTUATOR_CFG = PIDActuatorCfg(
     effort_limit=50.0,
     velocity_limit=37.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 # Arms and hands
 G1_ARMS_PID_ACTUATOR_CFG = PIDActuatorCfg(
-    kp=300.0,
+    kp=100.0,
     ki=0.0,
-    kd=10.0,
-    effort_limit=300.0,
-    velocity_limit=100.0,
+    kd=1.0,
+    effort_limit=30.0,
+    velocity_limit=10.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=0.3,
 )
 
 G1_HANDS_PID_ACTUATOR_CFG = PIDActuatorCfg(
-    kp=200.0,
+    kp=20.0,
     ki=0.0,
     kd=2.0,
-    effort_limit=300.0,
-    velocity_limit=100.0,
+    effort_limit=3.0,
+    velocity_limit=1.0,
     use_physx_damping=True,
-    viscous_friction=0.03,
+    viscous_friction=3.0,
 )
 
 ##
@@ -151,14 +152,38 @@ G1_PID_CFG.actuators = {
             '.*_elbow_roll_joint',
         ],),
     # Hands / fingers
+    # 'hands':
+    #     G1_HANDS_PID_ACTUATOR_CFG.replace(joint_names_expr=[
+    #         '.*_five_joint',
+    #         '.*_three_joint',
+    #         '.*_six_joint',
+    #         '.*_four_joint',
+    #         '.*_zero_joint',
+    #         '.*_one_joint',
+    #         '.*_two_joint',
+    #     ],),
     'hands':
-        G1_HANDS_PID_ACTUATOR_CFG.replace(joint_names_expr=[
-            '.*_five_joint',
-            '.*_three_joint',
-            '.*_six_joint',
-            '.*_four_joint',
-            '.*_zero_joint',
-            '.*_one_joint',
-            '.*_two_joint',
-        ],),
+        ImplicitActuatorCfg(
+            joint_names_expr=[
+                '.*_five_joint',
+                '.*_three_joint',
+                '.*_six_joint',
+                '.*_four_joint',
+                '.*_zero_joint',
+                '.*_one_joint',
+                '.*_two_joint',
+            ],
+            effort_limit_sim=300,
+            stiffness=40.0,
+            damping=10.0,
+            armature={
+                '.*_five_joint': 0.001,
+                '.*_three_joint': 0.001,
+                '.*_six_joint': 0.001,
+                '.*_four_joint': 0.001,
+                '.*_zero_joint': 0.001,
+                '.*_one_joint': 0.001,
+                '.*_two_joint': 0.001,
+            },
+        ),
 }

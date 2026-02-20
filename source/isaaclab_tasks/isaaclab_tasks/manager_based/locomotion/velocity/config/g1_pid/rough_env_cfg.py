@@ -34,15 +34,35 @@ class G1Rewards(RewardsCfg):
                                       'command_name': 'base_velocity',
                                       'std': 0.5
                                   })
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_positive_biped,
+    #     weight=0.75,
+    #     params={
+    #         'command_name': 'base_velocity',
+    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names='.*_ankle_roll_link'),
+    #         'threshold': 0.4,
+    #     },
+    # )
+
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
+        func=mdp.feet_air_time_balanced_alternating_biped,
         weight=0.75,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names='.*_ankle_roll_link'),
-            'threshold': 0.4,
+            'linear_cmd_threshold': 0.1,
+            'angular_cmd_threshold': 0.2,
+            'body_tilt_threshold': 0.3,
+            'air_min_time': 0.1,
+            'air_max_time': 1.0,
+            'min_contact_time': 0.1,
+            'ema_alpha': 0.02,
+            'balance_weight': 0.5,
+            'air_reward': 1.0,
+            'contact_reward': 1.0,
         },
     )
+
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.1,

@@ -68,7 +68,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=1.5,
+        weight=0.75,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[

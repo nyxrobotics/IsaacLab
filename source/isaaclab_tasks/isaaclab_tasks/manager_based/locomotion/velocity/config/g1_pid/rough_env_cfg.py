@@ -126,6 +126,16 @@ class G1Rewards(RewardsCfg):
         params={'asset_cfg': SceneEntityCfg('robot', joint_names='torso_joint')},
     )
 
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=0.1,
+        params={
+            'asset_cfg': SceneEntityCfg('robot', body_names='.*_ankle_roll_link'),
+            'margin': 0.0,
+            'gain': 1.0,
+        },
+    )
+
 
 @configclass
 class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):

@@ -60,7 +60,7 @@ class CaneleRewards(RewardsCfg):
     )
 
     track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp,
-                                  weight=1.0,
+                                  weight=2.0,
                                   params={
                                       'command_name': 'base_velocity',
                                       'std': 0.5
@@ -90,7 +90,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,
+        weight=-0.2,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
@@ -120,7 +120,7 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_action_deviation_l2,
-        weight=-0.01,
+        weight=-0.02,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -153,7 +153,7 @@ class CaneleRewards(RewardsCfg):
 
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.1,
+        weight=0.2,
         params={
             'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
             'margin': 0.0,
@@ -458,20 +458,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             func=mdp.joint_action_acc_l2,
             weight=-1.0e-9,
             params={
-                'dt':
-                    self.decimation * self.sim.dt,
-                'asset_cfg':
-                    SceneEntityCfg('robot',
-                                   joint_names=[
-                                       'left_hip_yaw',
-                                       'left_hip_roll',
-                                       'left_hip_pitch',
-                                       'left_knee_pitch',
-                                       'right_hip_yaw',
-                                       'right_hip_roll',
-                                       'right_hip_pitch',
-                                       'right_knee_pitch',
-                                   ])
+                'dt': self.decimation * self.sim.dt,
             },
         )
         self.rewards.dof_torques_l2.weight = -2.0e-6

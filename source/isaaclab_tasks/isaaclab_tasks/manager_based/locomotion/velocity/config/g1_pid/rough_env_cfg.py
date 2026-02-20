@@ -60,13 +60,13 @@ class G1Rewards(RewardsCfg):
     )
     # Penalize deviation from default of the joints that are not essential for locomotion
     joint_deviation_hip = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        func=mdp.joint_action_deviation_l1,
+        weight=-0.01,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names=['.*_hip_yaw_joint', '.*_hip_roll_joint'])},
     )
     joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        func=mdp.joint_action_deviation_l1,
+        weight=-0.01,
         params={
             'asset_cfg':
                 SceneEntityCfg(
@@ -82,8 +82,8 @@ class G1Rewards(RewardsCfg):
         },
     )
     joint_deviation_fingers = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.05,
+        func=mdp.joint_action_deviation_l1,
+        weight=-0.005,
         params={
             'asset_cfg':
                 SceneEntityCfg(
@@ -101,8 +101,8 @@ class G1Rewards(RewardsCfg):
         },
     )
     joint_deviation_torso = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        func=mdp.joint_action_deviation_l1,
+        weight=-0.01,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names='torso_joint')},
     )
 
@@ -147,9 +147,15 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.undesired_contacts = None
         self.rewards.flat_orientation_l2.weight = -1.0
         self.rewards.action_rate_l2.weight = -0.005
-        self.rewards.dof_acc_l2.weight = -1.0e-7
-        self.rewards.dof_acc_l2.params['asset_cfg'] = SceneEntityCfg('robot',
-                                                                     joint_names=['.*_hip_.*', '.*_knee_joint'])
+        self.rewards.dof_acc_l2 = None
+        self.rewards.dof_acc_l2 = RewTerm(
+            func=mdp.joint_action_acc_l2,
+            weight=-1.0e-9,
+            params={
+                'dt': self.decimation * self.sim.dt,
+                'asset_cfg': SceneEntityCfg('robot', joint_names=['.*_hip_.*', '.*_knee_joint'])
+            },
+        )
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params['asset_cfg'] = SceneEntityCfg('robot',
                                                                          joint_names=['.*_hip_.*', '.*_knee_joint'])

@@ -29,14 +29,14 @@ class G1Rewards(RewardsCfg):
         },
     )
     track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp,
-                                  weight=2.0,
+                                  weight=1.0,
                                   params={
                                       'command_name': 'base_velocity',
                                       'std': 0.5
                                   })
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.25,
+        weight=0.75,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names='.*_ankle_roll_link'),
@@ -116,7 +116,9 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         super().__post_init__()
         # Scene
         self.scene.robot = G1_PID_CFG.replace(prim_path='{ENV_REGEX_NS}/Robot')
-        self.scene.height_scanner.prim_path = '{ENV_REGEX_NS}/Robot/torso_link'
+        # no height scan
+        self.scene.height_scanner = None
+        self.observations.policy.height_scan = None
 
         # Randomization
         self.events.push_robot = None
@@ -141,21 +143,21 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.base_com = None
 
         # Rewards
-        self.rewards.lin_vel_z_l2.weight = 0.0
+        self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.undesired_contacts = None
         self.rewards.flat_orientation_l2.weight = -1.0
         self.rewards.action_rate_l2.weight = -0.005
-        self.rewards.dof_acc_l2.weight = -1.25e-7
+        self.rewards.dof_acc_l2.weight = -1.0e-7
         self.rewards.dof_acc_l2.params['asset_cfg'] = SceneEntityCfg('robot',
                                                                      joint_names=['.*_hip_.*', '.*_knee_joint'])
-        self.rewards.dof_torques_l2.weight = -1.5e-7
-        self.rewards.dof_torques_l2.params['asset_cfg'] = SceneEntityCfg(
-            'robot', joint_names=['.*_hip_.*', '.*_knee_joint', '.*_ankle_.*'])
+        self.rewards.dof_torques_l2.weight = -2.0e-6
+        self.rewards.dof_torques_l2.params['asset_cfg'] = SceneEntityCfg('robot',
+                                                                         joint_names=['.*_hip_.*', '.*_knee_joint'])
 
         # Commands
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.6, 0.6)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.2, 1.2)
 
         # terminations
         self.terminations.base_contact.params['sensor_cfg'].body_names = 'torso_link'

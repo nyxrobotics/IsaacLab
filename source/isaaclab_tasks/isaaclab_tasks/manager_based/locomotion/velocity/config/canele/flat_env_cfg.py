@@ -7,6 +7,7 @@ from isaaclab.utils import configclass
 
 from .rough_env_cfg import CaneleRoughEnvCfg
 
+
 @configclass
 class CaneleFlatEnvCfg(CaneleRoughEnvCfg):
     """Flat-terrain locomotion config for Canele.
@@ -22,22 +23,20 @@ class CaneleFlatEnvCfg(CaneleRoughEnvCfg):
         # ------------------------------------------------------------------
         # Terrain: switch to infinite flat plane, no terrain generator
         # ------------------------------------------------------------------
-        self.scene.terrain.terrain_type = "plane"
+        self.scene.terrain.terrain_type = 'plane'
         self.scene.terrain.terrain_generator = None
 
         # ------------------------------------------------------------------
         # Disable height scanner and height-scan observations
         # ------------------------------------------------------------------
         self.scene.height_scanner = None
-        if hasattr(self.observations, "policy") and hasattr(
-            self.observations.policy, "height_scan"
-        ):
+        if hasattr(self.observations, 'policy') and hasattr(self.observations.policy, 'height_scan'):
             self.observations.policy.height_scan = None
 
         # ------------------------------------------------------------------
         # Disable terrain curriculum (no levels on a flat plane)
         # ------------------------------------------------------------------
-        if hasattr(self, "curriculum") and hasattr(self.curriculum, "terrain_levels"):
+        if hasattr(self, 'curriculum') and hasattr(self.curriculum, 'terrain_levels'):
             self.curriculum.terrain_levels = None
 
         # ------------------------------------------------------------------
@@ -48,7 +47,7 @@ class CaneleFlatEnvCfg(CaneleRoughEnvCfg):
         # Change the command range
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.6, 0.6)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.2, 1.2)
 
 
 @configclass
@@ -67,22 +66,26 @@ class CaneleFlatEnvCfg_PLAY(CaneleFlatEnvCfg):
         self.episode_length_s = 40.0
 
         # Disable observation corruption for clean visuals
-        if hasattr(self.observations, "policy"):
+        if hasattr(self.observations, 'policy'):
             self.observations.policy.enable_corruption = False
 
         # Disable resampling (effectively never resample within an episode)
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.6, 0.6)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)     
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.2, 1.2)
         self.events.reset_base.params = {
-            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
+            'pose_range': {
+                'x': (0.0, 0.0),
+                'y': (0.0, 0.0),
+                'yaw': (0, 0)
+            },
+            'velocity_range': {
+                'x': (0.0, 0.0),
+                'y': (0.0, 0.0),
+                'z': (0.0, 0.0),
+                'roll': (0.0, 0.0),
+                'pitch': (0.0, 0.0),
+                'yaw': (0.0, 0.0),
             },
         }
         # Remove random external pushes for stable visualization

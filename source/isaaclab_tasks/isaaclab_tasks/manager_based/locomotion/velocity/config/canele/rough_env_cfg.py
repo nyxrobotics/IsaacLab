@@ -68,7 +68,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=0.75,
+        weight=3.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -78,7 +78,7 @@ class CaneleRewards(RewardsCfg):
             'linear_cmd_threshold': 0.1,
             'angular_cmd_threshold': 0.2,
             'body_tilt_threshold': 0.3,
-            'air_min_time': 0.1,
+            'air_min_time': 0.2,
             'air_max_time': 1.0,
             'min_contact_time': 0.2,
             'ema_alpha': 0.02,
@@ -90,7 +90,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.2,
+        weight=-0.8,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
@@ -120,7 +120,7 @@ class CaneleRewards(RewardsCfg):
 
     joint_deviation_arms = RewTerm(
         func=mdp.joint_action_deviation_l2,
-        weight=-0.02,
+        weight=-0.4,
         params={
             'asset_cfg':
                 SceneEntityCfg('robot',
@@ -473,6 +473,35 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                                                              'right_hip_pitch',
                                                                              'right_knee_pitch',
                                                                          ])
+
+        self.rewards.joint_vel_arms = RewTerm(
+            func=mdp.joint_action_vel_l2,
+            weight=-0.0001,
+            params={
+                'dt':
+                    self.decimation * self.sim.dt,
+                'asset_cfg':
+                    SceneEntityCfg('robot',
+                                   joint_names=[
+                                       'left_shoulder_yaw',
+                                       'left_shoulder_pitch',
+                                       'left_shoulder_roll',
+                                       'left_elbow_yaw',
+                                       'left_elbow_pitch',
+                                       'left_wrist_yaw',
+                                       'left_wrist_roll',
+                                       'left_wrist_pitch',
+                                       'right_shoulder_yaw',
+                                       'right_shoulder_pitch',
+                                       'right_shoulder_roll',
+                                       'right_elbow_yaw',
+                                       'right_elbow_pitch',
+                                       'right_wrist_yaw',
+                                       'right_wrist_roll',
+                                       'right_wrist_pitch',
+                                   ])
+            },
+        )
 
         # Commands
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)

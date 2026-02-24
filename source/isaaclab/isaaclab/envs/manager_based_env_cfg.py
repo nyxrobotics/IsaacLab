@@ -2,18 +2,18 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
 """Base configuration of the environment.
 
 This module defines the general configuration of the environment. It includes parameters for
 configuring the environment instances, viewer settings, and simulation parameters.
 """
 
-from dataclasses import MISSING, field
+from dataclasses import field
+from dataclasses import MISSING
 
-import isaaclab.envs.mdp as mdp
 from isaaclab.devices.device_base import DevicesCfg
 from isaaclab.devices.openxr import XrCfg
+import isaaclab.envs.mdp as mdp
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RecorderManagerBaseCfg as DefaultEmptyRecorderManagerCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -32,7 +32,7 @@ class DefaultEventManagerCfg:
     by the scene configuration.
     """
 
-    reset_scene_to_default = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
+    reset_scene_to_default = EventTerm(func=mdp.reset_scene_to_default, mode='reset')
 
 
 @configclass

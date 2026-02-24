@@ -118,33 +118,6 @@ class CaneleRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_arms = RewTerm(
-        func=mdp.joint_action_deviation_l2,
-        weight=-0.4,
-        params={
-            'asset_cfg':
-                SceneEntityCfg('robot',
-                               joint_names=[
-                                   'left_shoulder_yaw',
-                                   'left_shoulder_pitch',
-                                   'left_shoulder_roll',
-                                   'left_elbow_yaw',
-                                   'left_elbow_pitch',
-                                   'left_wrist_yaw',
-                                   'left_wrist_roll',
-                                   'left_wrist_pitch',
-                                   'right_shoulder_yaw',
-                                   'right_shoulder_pitch',
-                                   'right_shoulder_roll',
-                                   'right_elbow_yaw',
-                                   'right_elbow_pitch',
-                                   'right_wrist_yaw',
-                                   'right_wrist_roll',
-                                   'right_wrist_pitch',
-                               ])
-        },
-    )
-
     joint_deviation_torso = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.01,
@@ -229,7 +202,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.policy.height_scan = None
 
         # -----------------------------------------------------------
-        # 4b. Restrict action/observation joints to actuated joints only
+        # 5. Restrict action/observation joints to actuated joints only
         # -----------------------------------------------------------
         # Collect actuated joint names from the configured actuators.
         actuated_joint_names: list[str] = []
@@ -246,18 +219,45 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print('[DEBUG] Actuated joint names count:', len(actuated_joint_names))
         print('[DEBUG] Actuated joint names:', actuated_joint_names)
 
-        # Build an asset cfg that only exposes actuated joints.
+        # -----------------------------------------------------------
+        # 5. Remove arm joints from observations and rewards by configuring asset_cfg with body_names/joint_names
+        # -----------------------------------------------------------
+        arm_joints = [
+            'left_shoulder_yaw',
+            'left_shoulder_pitch',
+            'left_shoulder_roll',
+            'left_elbow_yaw',
+            'left_elbow_pitch',
+            'left_wrist_yaw',
+            'left_wrist_roll',
+            'left_wrist_pitch',
+            'right_shoulder_yaw',
+            'right_shoulder_pitch',
+            'right_shoulder_roll',
+            'right_elbow_yaw',
+            'right_elbow_pitch',
+            'right_wrist_yaw',
+            'right_wrist_roll',
+            'right_wrist_pitch',
+        ]
+
+        print('[DEBUG] Arm joints to exclude:', arm_joints)
+        actuated_joint_names = [j for j in actuated_joint_names if j not in arm_joints]
+        print('[DEBUG] Actuated joint names after excluding arm joints:', actuated_joint_names)
+
+        # -----------------------------------------------------------
+        # 6. Build an asset cfg that only exposes actuated joints.
+        # -----------------------------------------------------------
         # Important: explicitly clear joint_ids. Isaac Lab errors if both joint_names and joint_ids
         # are set but not consistent (order-sensitive).
         def _make_actuated_asset_cfg() -> SceneEntityCfg:
             return SceneEntityCfg(
                 'robot',
                 joint_names=actuated_joint_names,
-                joint_ids=slice(None),
                 preserve_order=True,
             )
 
-        # ---- Actions: override the joint selection of the joint position action term
+        # Update action config.
         if hasattr(self, 'actions') and hasattr(self.actions, 'joint_pos'):
             action_term = self.actions.joint_pos
             if hasattr(action_term, 'joint_names'):
@@ -280,7 +280,14 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 obs_term.params['asset_cfg'] = _make_actuated_asset_cfg()
                 print(f"[DEBUG] Injected actuated asset_cfg into observation term '{obs_name}'")
 
-        # --- Fix: base_com observation expects 'base' in parent cfg, but Canele uses 'body_link'
+        # Update reset config (exclude arm joints from reset_joints_by_scale).
+        if getattr(self.events, 'reset_robot_joints', None) is not None:
+            self.events.reset_robot_joints.params['asset_cfg'] = _make_actuated_asset_cfg()
+            print("[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg")
+
+        # -----------------------------------------------------------
+        # 7. Fix: base_com observation expects 'base' in parent cfg, but Canele uses 'body_link'
+        # -----------------------------------------------------------
         if hasattr(self.observations, 'policy'):
             base_com_term = getattr(self.observations.policy, 'base_com', None)
             if base_com_term is not None and hasattr(base_com_term, 'params'):
@@ -293,7 +300,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 )
                 print(f"[DEBUG] Patched observation term 'base_com' to use body '{base_link_name}'")
 
-        # --- Fix: base_com STARTUP EVENT expects 'base' in parent cfg, but Canele uses 'body_link'
+        # -----------------------------------------------------------
+        # 8. Fix: base_com startup event expects 'base' in parent cfg, but Canele uses 'body_link'
+        # -----------------------------------------------------------
         if hasattr(self, 'events') and getattr(self, 'events', None) is not None:
             event_base_com = getattr(self.events, 'base_com', None)
             if event_base_com is not None and hasattr(event_base_com, 'params'):
@@ -319,7 +328,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 print(f"[DEBUG] Patched startup event term 'base_com' to use body '{base_link_name}'")
 
         # -----------------------------------------------------------
-        # 5. Rewards & terminations use short names only
+        # 9. Rewards & terminations use short names only
         # -----------------------------------------------------------
         self.rewards.feet_slide.params['sensor_cfg'].body_names = ankle_names
         self.rewards.feet_slide.params['asset_cfg'].body_names = ankle_names
@@ -328,7 +337,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print('[DEBUG] Base contact link:', base_link_name)
 
         # -----------------------------------------------------------
-        # Remaining default settings
+        # 10. Remaining default settings
         # -----------------------------------------------------------
         if self.scene.terrain.terrain_generator is not None:
             tg = self.scene.terrain.terrain_generator
@@ -366,7 +375,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                 setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
         # -----------------------------------------------------------
-        # FIX: physics_material の body_names/body_ids 衝突を解消
+        # 11. FIX: physics_material の body_names/body_ids 衝突を解消
         # -----------------------------------------------------------
         if hasattr(self, 'physics_material') and self.physics_material is not None:
 
@@ -387,6 +396,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 # body_names は .* に強制上書き（最も安全）
                 self.physics_material.asset_cfg.body_names = ['.*']
 
+        # -----------------------------------------------------------
+        # 12. Set PhysicsScene params
+        # -----------------------------------------------------------
         # Set PhysicsScene params
         # Simulation: 500 Hz
         # Control: 50 Hz
@@ -404,7 +416,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.sim.physx.min_velocity_iteration_count = 4
         # self.sim.physx.solver_type = 0
 
-        # Randomize events
+        # -----------------------------------------------------------
+        # 13. Randomize events
+        # -----------------------------------------------------------
         self.events.physics_material.params['asset_cfg'].body_names = ankle_names
         self.events.physics_material.params['static_friction_range'] = (0.1, 1.0)
         self.events.physics_material.params['dynamic_friction_range'] = (0.1, 1.0)
@@ -473,35 +487,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                                                              'right_hip_pitch',
                                                                              'right_knee_pitch',
                                                                          ])
-
-        self.rewards.joint_vel_arms = RewTerm(
-            func=mdp.joint_action_vel_l2,
-            weight=-0.0001,
-            params={
-                'dt':
-                    self.decimation * self.sim.dt,
-                'asset_cfg':
-                    SceneEntityCfg('robot',
-                                   joint_names=[
-                                       'left_shoulder_yaw',
-                                       'left_shoulder_pitch',
-                                       'left_shoulder_roll',
-                                       'left_elbow_yaw',
-                                       'left_elbow_pitch',
-                                       'left_wrist_yaw',
-                                       'left_wrist_roll',
-                                       'left_wrist_pitch',
-                                       'right_shoulder_yaw',
-                                       'right_shoulder_pitch',
-                                       'right_shoulder_roll',
-                                       'right_elbow_yaw',
-                                       'right_elbow_pitch',
-                                       'right_wrist_yaw',
-                                       'right_wrist_roll',
-                                       'right_wrist_pitch',
-                                   ])
-            },
-        )
 
         # Commands
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)

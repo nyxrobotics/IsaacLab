@@ -1208,11 +1208,12 @@ def reset_root_state_from_terrain(
 
 
 def reset_joints_by_scale(
-    env: ManagerBasedEnv,
-    env_ids: torch.Tensor,
-    position_range: tuple[float, float],
-    velocity_range: tuple[float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        env: ManagerBasedEnv,
+        env_ids: torch.Tensor,
+        position_range: tuple[float, float],
+        velocity_range: tuple[float, float],
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+        reset_joint_targets: bool = True,
 ):
     """Reset the robot joints by scaling the default position and velocity by the given ranges.
 
@@ -1245,6 +1246,37 @@ def reset_joints_by_scale(
 
     # set into the physics simulation
     asset.write_joint_state_to_sim(joint_pos, joint_vel, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
+
+    # --- initialize targets for ALL joints to avoid drifting on joints excluded from policy actions ---
+    # Build full target vectors:
+    # - start from default pose for all joints
+    # - overwrite the joints that were randomized by this reset (asset_cfg.joint_ids)
+    if reset_joint_targets:
+        # Set targets ONLY for joints excluded from this reset/action set.
+        default_pos_all = asset.data.default_joint_pos[env_ids]
+        default_vel_all = asset.data.default_joint_vel[env_ids]
+
+        # Normalize asset_cfg.joint_ids to a tensor of selected joint indices.
+        if isinstance(asset_cfg.joint_ids, slice):
+            # slice(None) means "all joints selected" -> nothing excluded
+            if asset_cfg.joint_ids == slice(None):
+                selected_ids = torch.arange(asset.num_joints, device=default_pos_all.device)
+            else:
+                selected_ids = torch.arange(asset.num_joints, device=default_pos_all.device)[asset_cfg.joint_ids]
+        else:
+            selected_ids = torch.as_tensor(asset_cfg.joint_ids, device=default_pos_all.device, dtype=torch.long)
+
+        all_ids = torch.arange(asset.num_joints, device=default_pos_all.device, dtype=torch.long)
+
+        # Build mask: excluded = all \ selected
+        mask = torch.ones(asset.num_joints, device=default_pos_all.device, dtype=torch.bool)
+        mask[selected_ids] = False
+        excluded_ids = all_ids[mask]
+
+        # Only if there are excluded joints
+        if excluded_ids.numel() > 0:
+            asset.set_joint_position_target(default_pos_all[:, excluded_ids], joint_ids=excluded_ids, env_ids=env_ids)
+            asset.set_joint_velocity_target(default_vel_all[:, excluded_ids], joint_ids=excluded_ids, env_ids=env_ids)
 
 
 def reset_joints_by_offset(

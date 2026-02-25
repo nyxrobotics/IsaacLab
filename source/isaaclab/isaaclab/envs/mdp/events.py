@@ -1254,7 +1254,9 @@ def reset_joints_by_scale(
     if reset_joint_targets:
         # Set targets ONLY for joints excluded from this reset/action set.
         default_pos_all = asset.data.default_joint_pos[env_ids]
-        default_vel_all = asset.data.default_joint_vel[env_ids]
+        # Zero speed and torque targets for all joints by default.
+        default_vel_all = torch.zeros_like(default_pos_all)
+        default_torque_all = torch.zeros_like(default_pos_all)
 
         # Normalize asset_cfg.joint_ids to a tensor of selected joint indices.
         if isinstance(asset_cfg.joint_ids, slice):
@@ -1277,6 +1279,14 @@ def reset_joints_by_scale(
         if excluded_ids.numel() > 0:
             asset.set_joint_position_target(default_pos_all[:, excluded_ids], joint_ids=excluded_ids, env_ids=env_ids)
             asset.set_joint_velocity_target(default_vel_all[:, excluded_ids], joint_ids=excluded_ids, env_ids=env_ids)
+            asset.set_joint_effort_target(default_torque_all[:, excluded_ids], joint_ids=excluded_ids, env_ids=env_ids)
+            # Set current pose as target to avoid drifting for excluded joints without action targets.
+            asset.write_joint_position_to_sim(default_pos_all[:, excluded_ids],
+                                              joint_ids=excluded_ids,
+                                              env_ids=env_ids)
+            asset.write_joint_velocity_to_sim(default_vel_all[:, excluded_ids],
+                                              joint_ids=excluded_ids,
+                                              env_ids=env_ids)
 
 
 def reset_joints_by_offset(

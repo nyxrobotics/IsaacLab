@@ -68,7 +68,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=3.0,
+        weight=1.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -90,7 +90,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.8,
+        weight=-0.4,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
@@ -102,7 +102,6 @@ class CaneleRewards(RewardsCfg):
             ]),
         },
     )
-
     joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.01,
@@ -111,26 +110,31 @@ class CaneleRewards(RewardsCfg):
                 SceneEntityCfg('robot',
                                joint_names=[
                                    'left_hip_roll',
-                                   'left_hip_yaw',
+                                   'left_hip_pitch',
                                    'right_hip_roll',
-                                   'right_hip_yaw',
+                                   'right_hip_pitch',
                                ])
         },
     )
-
     joint_deviation_torso = RewTerm(
         func=mdp.joint_action_deviation_l1,
-        weight=-0.01,
-        params={'asset_cfg': SceneEntityCfg('robot', joint_names='torso_yaw')},
+        weight=-0.1,
+        params={'asset_cfg': SceneEntityCfg('robot', joint_names=['left_hip_yaw', 'right_hip_yaw', 'torso_yaw'])},
     )
-
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.2,
+        weight=0.4,
         params={
             'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
             'margin': 0.0,
             'gain': 1.0,
+        },
+    )
+    flat_toe_vel_penalty = RewTerm(
+        func=mdp.ang_vel_xy_links_l2,
+        weight=-0.0004,
+        params={
+            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
         },
     )
 
@@ -465,8 +469,8 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.undesired_contacts = None
         self.rewards.flat_orientation_l2.weight = -1.0
-        self.rewards.action_rate_l2.weight = -0.005
-
+        self.rewards.ang_vel_xy_l2.weight = -0.01
+        self.rewards.action_rate_l2.weight = -0.01
         self.rewards.dof_acc_l2 = None
         self.rewards.dof_acc_l2 = RewTerm(
             func=mdp.joint_action_acc_l2,

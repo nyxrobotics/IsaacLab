@@ -102,6 +102,20 @@ class CaneleRewards(RewardsCfg):
             ]),
         },
     )
+    # feet_slide = RewTerm(
+    #     func=mdp.feet_slide_keep_flat,
+    #     weight=-0.1,
+    #     params={
+    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+    #             'right_toe_link',
+    #             'left_toe_link',
+    #         ]),
+    #         'asset_cfg': SceneEntityCfg('robot', body_names=[
+    #             'right_toe_link',
+    #             'left_toe_link',
+    #         ]),
+    #     },
+    # )
     joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.01,

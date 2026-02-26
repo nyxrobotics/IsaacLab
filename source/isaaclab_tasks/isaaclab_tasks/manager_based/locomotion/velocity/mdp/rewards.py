@@ -372,6 +372,106 @@ def feet_slide_with_yaw(
     return penalty
 
 
+def _quat_apply(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate vector(s) v by quaternion(s) q.
+    q: (..., 4) in (x, y, z, w)
+    v: (..., 3)
+    """
+    q_xyz = q[..., :3]
+    q_w = q[..., 3:4]
+    t = 2.0 * torch.cross(q_xyz, v, dim=-1)
+    return v + q_w * t + torch.cross(q_xyz, t, dim=-1)
+
+
+def feet_slide_keep_flat(
+        env,
+        sensor_cfg: SceneEntityCfg,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+        lin_weight: float = 1.0,
+        tilt_weight: float = 1.0,
+        yaw_weight: float = 1.0,
+        allow_uprighting_tilt: bool = True,  # default ON
+        air_time_eps: float = 1e-6,
+        force_eps: float = 1e-6,
+        local_up_axis: torch.Tensor | None = None,  # default: +Z
+) -> torch.Tensor:
+    """Penalize XY sliding and orientation change while the foot is in contact.
+
+    Tilt handling:
+      - allow_uprighting_tilt=True:
+          Only penalize tilt motion that increases tilt (moves away from world up).
+      - allow_uprighting_tilt=False:
+          Penalize total tilt rate ||omega_xy|| as usual.
+
+    Returns positive cost (penalty).
+    """
+    # --------------------------------------------------------
+    # 1) Contact state
+    # --------------------------------------------------------
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # (N, S, 3)
+    sensor_ids = sensor_cfg.body_ids
+    forces_feet = forces_w_last[:, sensor_ids, :]  # (N, F, 3)
+    force_norm = torch.norm(forces_feet, dim=-1)  # (N, F)
+
+    air_time = contact_sensor.data.current_air_time[:, sensor_ids]  # (N, F)
+
+    grounded_by_air = air_time < air_time_eps
+    grounded_by_force = force_norm > force_eps
+
+    # Match your reference behavior:
+    in_contact = grounded_by_air | grounded_by_force  # (N, F) bool
+
+    # --------------------------------------------------------
+    # 2) Foot kinematics (world)
+    # --------------------------------------------------------
+    asset = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids  # (F,)
+
+    body_lin_vel_w = asset.data.body_lin_vel_w[:, body_ids, :]  # (N, F, 3)
+    lin_speed_xy = torch.norm(body_lin_vel_w[..., :2], dim=-1)  # (N, F)
+
+    body_ang_vel_w = asset.data.body_ang_vel_w[:, body_ids, :]  # (N, F, 3)
+    omega_xy_norm = torch.norm(body_ang_vel_w[..., :2], dim=-1)  # (N, F)
+    yaw_rate = torch.abs(body_ang_vel_w[..., 2])  # (N, F)
+
+    # --------------------------------------------------------
+    # 3) Tilt cost: optionally allow "uprighting" direction
+    # --------------------------------------------------------
+    if local_up_axis is None:
+        local_up_axis = torch.tensor([0.0, 0.0, 1.0], device=body_ang_vel_w.device, dtype=body_ang_vel_w.dtype)
+
+    if allow_uprighting_tilt:
+        # Need foot orientation in world to get u = R * local_up
+        # Isaac Lab typically provides body_quat_w as (N, B, 4) with (x,y,z,w).
+        body_quat_w = asset.data.body_quat_w[:, body_ids, :]  # (N, F, 4)
+
+        local_up = local_up_axis.view(1, 1, 3).expand(body_quat_w.shape[0], body_quat_w.shape[1], 3)
+        u = _quat_apply(body_quat_w, local_up)  # (N, F, 3) foot up in world
+
+        z = torch.zeros_like(u)
+        z[..., 2] = 1.0  # world up
+
+        # s = d/dt(u·z) = ω · (u × z)
+        # If s < 0 => u·z decreases => tilt gets worse => penalize (-s)
+        u_cross_z = torch.cross(u, z, dim=-1)  # (N, F, 3)
+        s = torch.sum(body_ang_vel_w * u_cross_z, dim=-1)  # (N, F)
+        tilt_cost = torch.relu(-s)  # only "tilt-worsening" component
+    else:
+        tilt_cost = omega_xy_norm  # penalize all tilt rate
+
+    # --------------------------------------------------------
+    # 4) Total cost (contact-masked)
+    # --------------------------------------------------------
+    cost_per_foot = (lin_weight * lin_speed_xy + tilt_weight * tilt_cost + yaw_weight * yaw_rate)
+
+    cost_per_foot = cost_per_foot * in_contact.float()
+    penalty = torch.sum(cost_per_foot, dim=1)  # (N,)
+
+    return penalty
+
+
 def feet_air_time_balanced_alternating_biped(
     env,
     command_name: str,

@@ -78,9 +78,9 @@ class CaneleRewards(RewardsCfg):
             'linear_cmd_threshold': 0.1,
             'angular_cmd_threshold': 0.2,
             'body_tilt_threshold': 0.3,
-            'air_min_time': 0.2,
+            'air_min_time': 0.1,
             'air_max_time': 1.0,
-            'min_contact_time': 0.2,
+            'min_contact_time': 0.1,
             'ema_alpha': 0.02,
             'balance_weight': 0.5,
             'air_reward': 1.0,
@@ -88,23 +88,9 @@ class CaneleRewards(RewardsCfg):
         },
     )
 
-    feet_slide = RewTerm(
-        func=mdp.feet_slide,
-        weight=-0.4,
-        params={
-            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
-                'right_toe_link',
-                'left_toe_link',
-            ]),
-            'asset_cfg': SceneEntityCfg('robot', body_names=[
-                'right_toe_link',
-                'left_toe_link',
-            ]),
-        },
-    )
     # feet_slide = RewTerm(
-    #     func=mdp.feet_slide_keep_flat,
-    #     weight=-0.1,
+    #     func=mdp.feet_slide,
+    #     weight=-0.4,
     #     params={
     #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
     #             'right_toe_link',
@@ -116,6 +102,21 @@ class CaneleRewards(RewardsCfg):
     #         ]),
     #     },
     # )
+    feet_slide = RewTerm(
+        func=mdp.feet_slide_keep_flat,
+        weight=-0.1,
+        params={
+            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+                'right_toe_link',
+                'left_toe_link',
+            ]),
+            'asset_cfg': SceneEntityCfg('robot', body_names=[
+                'right_toe_link',
+                'left_toe_link',
+            ]),
+            'air_time_eps': 0.02,
+        },
+    )
     joint_deviation_hip = RewTerm(
         func=mdp.joint_action_deviation_l1,
         weight=-0.01,
@@ -135,22 +136,22 @@ class CaneleRewards(RewardsCfg):
         weight=-0.1,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names=['left_hip_yaw', 'right_hip_yaw', 'torso_yaw'])},
     )
-    flat_toe_penalty = RewTerm(
-        func=mdp.flat_orientation_links_l2,
-        weight=0.4,
-        params={
-            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
-            'margin': 0.0,
-            'gain': 1.0,
-        },
-    )
-    flat_toe_vel_penalty = RewTerm(
-        func=mdp.ang_vel_xy_links_l2,
-        weight=-0.0004,
-        params={
-            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
-        },
-    )
+    # flat_toe_penalty = RewTerm(
+    #     func=mdp.flat_orientation_links_l2,
+    #     weight=0.4,
+    #     params={
+    #         'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
+    #         'margin': 0.0,
+    #         'gain': 1.0,
+    #     },
+    # )
+    # flat_toe_vel_penalty = RewTerm(
+    #     func=mdp.ang_vel_xy_links_l2,
+    #     weight=-0.0004,
+    #     params={
+    #         'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------

@@ -136,15 +136,15 @@ class CaneleRewards(RewardsCfg):
         weight=-0.1,
         params={'asset_cfg': SceneEntityCfg('robot', joint_names=['left_hip_yaw', 'right_hip_yaw', 'torso_yaw'])},
     )
-    # flat_toe_penalty = RewTerm(
-    #     func=mdp.flat_orientation_links_l2,
-    #     weight=0.4,
-    #     params={
-    #         'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
-    #         'margin': 0.0,
-    #         'gain': 1.0,
-    #     },
-    # )
+    flat_toe_penalty = RewTerm(
+        func=mdp.flat_orientation_links_l2,
+        weight=0.4,
+        params={
+            'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
+            'margin': 0.0,
+            'gain': 1.0,
+        },
+    )
     # flat_toe_vel_penalty = RewTerm(
     #     func=mdp.ang_vel_xy_links_l2,
     #     weight=-0.0004,

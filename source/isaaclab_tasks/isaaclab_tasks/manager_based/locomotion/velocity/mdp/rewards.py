@@ -391,7 +391,7 @@ def feet_slide_keep_flat(
         tilt_weight: float = 1.0,
         yaw_weight: float = 1.0,
         allow_uprighting_tilt: bool = True,  # default ON
-        air_time_eps: float = 1e-6,
+        air_time_eps: float = 1e-3,
         force_eps: float = 1e-6,
         local_up_axis: torch.Tensor | None = None,  # default: +Z
 ) -> torch.Tensor:
@@ -666,57 +666,6 @@ def feet_air_time_balanced_alternating_biped(
     return reward
 
 
-def prefer_foot_contact(
-    env,
-    foot_sensor_cfg: SceneEntityCfg,
-    other_sensor_cfg: SceneEntityCfg,
-    *,
-    contact_force_threshold: float = 0.01,
-    foot_contact_reward: float = 1.0,
-    nonfoot_contact_penalty: float = 1.0,
-) -> torch.Tensor:
-    """
-    Encourage states where at least one foot link is in contact with the ground,
-    and discourage states where any non-foot link is in contact.
-
-    - Reward if ANY foot link is in contact.
-    - Penalize if ANY non-foot link is in contact.
-    - Contact counts do NOT matter (existence check only).
-
-    Contact detection logic follows other reward functions in this file:
-      - Uses peak contact force over history from ContactSensor.
-    """
-    # --------------------------------------------------------
-    # Foot contact detection
-    # --------------------------------------------------------
-    foot_sensor: ContactSensor = env.scene.sensors[foot_sensor_cfg.name]
-    foot_forces = foot_sensor.data.net_forces_w_history[:, :, foot_sensor_cfg.body_ids, :]  # (N, H, F, 3)
-
-    foot_in_contact = (foot_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold)  # (N, F)
-
-    any_foot_contact = foot_in_contact.any(dim=1)  # (N,)
-
-    # --------------------------------------------------------
-    # Non-foot contact detection
-    # --------------------------------------------------------
-    other_sensor: ContactSensor = env.scene.sensors[other_sensor_cfg.name]
-    other_forces = other_sensor.data.net_forces_w_history[:, :, other_sensor_cfg.body_ids, :]  # (N, H, K, 3)
-
-    other_in_contact = (other_forces.norm(dim=-1).amax(dim=1) > contact_force_threshold)  # (N, K)
-
-    any_nonfoot_contact = other_in_contact.any(dim=1)  # (N,)
-
-    # --------------------------------------------------------
-    # Reward composition
-    # --------------------------------------------------------
-    reward = torch.zeros_like(any_foot_contact, dtype=torch.float)
-
-    reward += any_foot_contact.float() * foot_contact_reward
-    reward -= any_nonfoot_contact.float() * nonfoot_contact_penalty
-
-    return reward
-
-
 def both_feet_flight_time_penalty_and_grounded_time_reward(
     env,
     foot_sensor_cfg: SceneEntityCfg,
@@ -848,3 +797,96 @@ def nonfoot_contact_time_penalty_and_clear_time_reward(
     bonus = reward_scale * torch.clamp(clear_time, max=max_time)
 
     return torch.where(any_nonfoot_contact, penalty, bonus)
+
+
+def prevent_both_feet_airborne(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    weight: float = 1.0,
+    contact_time_eps: float = 1e-3,
+    force_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Penalize states where no foot qualifies as 'in contact'.
+
+    A foot is considered in contact only if:
+      - current_contact_time > contact_time_eps
+      - AND contact force norm > force_eps
+
+    This discourages lifting a foot immediately after touching down, because
+    very short contacts won't count as support.
+
+    Returns:
+      penalty (N,) positive only when zero feet qualify as in contact.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    sensor_ids = sensor_cfg.body_ids  # feet sensor indices (F,)
+
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # (N, S, 3)
+    forces_feet = forces_w_last[:, sensor_ids, :]  # (N, F, 3)
+    force_norm = torch.norm(forces_feet, dim=-1)  # (N, F)
+
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]  # (N, F)
+
+    grounded_by_time = contact_time > contact_time_eps
+    grounded_by_force = force_norm > force_eps
+    in_contact = grounded_by_time & grounded_by_force  # (N, F)
+
+    any_contact = torch.any(in_contact, dim=1)  # (N,)
+    penalty = weight * torch.logical_not(any_contact).float()
+    return penalty
+
+
+def prevent_both_feet_airborne_linear(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    contact_time_eps: float = 1e-3,
+    progress_reward_weight: float = 1.0,
+    airborne_penalty_weight: float = 1.0,
+    squared: bool = False,
+) -> torch.Tensor:
+    """
+    Linear shaping using only current_contact_time.
+
+    (A) Progress reward (linear for 0 <= contact_time < contact_time_eps)
+    (B) Airborne penalty (linear, only when no support foot exists)
+
+    If squared=True:
+        Final penalty is squared (nonlinear amplification).
+
+    Returns:
+        penalty (N,) positive.
+        (Progress is internally subtracted as negative penalty.)
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    sensor_ids = sensor_cfg.body_ids
+
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]
+
+    # ---------------------------
+    # (A) Linear progress reward
+    # ---------------------------
+    progress = torch.clamp(contact_time / contact_time_eps, 0.0, 1.0)
+    progress = progress * (contact_time < contact_time_eps).float()
+    progress_term = -progress_reward_weight * torch.sum(progress, dim=1)
+
+    # ---------------------------
+    # (B) Linear airborne penalty
+    # ---------------------------
+    support_foot = contact_time >= contact_time_eps
+    has_support = torch.any(support_foot, dim=1)
+
+    missing = torch.clamp(
+        (contact_time_eps - contact_time) / contact_time_eps,
+        0.0,
+        1.0,
+    )
+    airborne_amount = torch.sum(missing, dim=1)
+
+    airborne_term = airborne_penalty_weight * airborne_amount * (~has_support).float()
+
+    penalty = progress_term + airborne_term
+
+    if squared:
+        penalty = penalty * penalty
+
+    return penalty

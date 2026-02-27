@@ -87,21 +87,6 @@ class CaneleRewards(RewardsCfg):
             'contact_reward': 1.0,
         },
     )
-
-    # feet_slide = RewTerm(
-    #     func=mdp.feet_slide,
-    #     weight=-0.4,
-    #     params={
-    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
-    #             'right_toe_link',
-    #             'left_toe_link',
-    #         ]),
-    #         'asset_cfg': SceneEntityCfg('robot', body_names=[
-    #             'right_toe_link',
-    #             'left_toe_link',
-    #         ]),
-    #     },
-    # )
     feet_slide = RewTerm(
         func=mdp.feet_slide_keep_flat,
         weight=-0.1,
@@ -145,13 +130,17 @@ class CaneleRewards(RewardsCfg):
             'gain': 1.0,
         },
     )
-    # flat_toe_vel_penalty = RewTerm(
-    #     func=mdp.ang_vel_xy_links_l2,
-    #     weight=-0.0004,
-    #     params={
-    #         'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
-    #     },
-    # )
+    prevent_both_feet_airborne = RewTerm(
+        func=mdp.prevent_both_feet_airborne,
+        weight=-0.4,
+        params={
+            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+                'right_toe_link',
+                'left_toe_link',
+            ]),
+            'contact_time_eps': 0.02,
+        },
+    )
 
 
 # ---------------------------------------------------------------------

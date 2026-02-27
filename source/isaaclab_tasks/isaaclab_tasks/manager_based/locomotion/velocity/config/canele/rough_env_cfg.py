@@ -99,7 +99,7 @@ class CaneleRewards(RewardsCfg):
                 'right_toe_link',
                 'left_toe_link',
             ]),
-            'air_time_eps': 0.02,
+            'air_time_eps': 0.01,
         },
     )
     joint_deviation_hip = RewTerm(

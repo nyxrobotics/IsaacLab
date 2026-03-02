@@ -477,6 +477,9 @@ def feet_air_time_alternating_biped(
     command_name: str,
     sensor_cfg: SceneEntityCfg,
     *,
+    # --- double-support ratio control (0 disables; same behavior as before) ---
+    dsp_ratio: float = 0.0,
+
     # --- gating thresholds (set < 0 to disable each gate) ---
     linear_cmd_threshold: float = 0.1,
     angular_cmd_threshold: float = 0.1,
@@ -513,9 +516,16 @@ def feet_air_time_alternating_biped(
       - clears air_timed_out when a step completes (touchdown_active)
       - stores last_completed_air for the completed (active) foot on touchdown_active
 
-    Change requested:
-      - reward_contact_hold also applies during double_contact (both feet in contact),
-        using stance_time = min(contact_time_left, contact_time_right).
+    Contact reward:
+      - reward_contact_hold applies during both single_contact and double_contact
+        (double_contact uses stance_time = min(contact_time_left, contact_time_right)).
+
+    DSP behavior (requested):
+      - If dsp_ratio > 0, the next liftoff (start_air_phase) is suppressed until the
+        "previous airborne foot" has stayed in contact for:
+            dsp_ratio * (previous airborne duration)
+        This prevents foot-lift rewards from appearing "too soon" after touchdown.
+      - If dsp_ratio == 0, behavior is identical to the previous implementation.
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     foot_ids = sensor_cfg.body_ids
@@ -601,15 +611,34 @@ def feet_air_time_alternating_biped(
 
     lifted_contact_time = torch.where(lifted_foot == 0, contact_time[:, 0],
                                       torch.where(lifted_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)))
-
     liftoff_contact_ok = lifted_contact_time >= min_contact_time
 
+    # ------------------------------------------------------------------
+    # DSP gate: suppress the next liftoff until the previous airborne foot
+    # has stayed in contact for dsp_ratio * (previous airborne duration).
+    # ------------------------------------------------------------------
+    has_prev_step = prev_step_air_foot >= 0
+
+    prev_air_duration = torch.where(
+        prev_step_air_foot == 0, last_completed_air[:, 0],
+        torch.where(prev_step_air_foot == 1, last_completed_air[:, 1], torch.zeros_like(lin_mag)))
+
+    prev_contact_since_touchdown = torch.where(
+        prev_step_air_foot == 0, contact_time[:, 0],
+        torch.where(prev_step_air_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)))
+
+    # Required double-support time after the previous step completes.
+    dsp_required_time = dsp_ratio * prev_air_duration
+
+    # If dsp_ratio == 0, do not gate (same behavior as before).
+    # If no previous step yet, do not gate.
+    dsp_ok = (dsp_ratio <= 0.0) | (~has_prev_step) | (prev_contact_since_touchdown >= dsp_required_time)
+
     start_air_phase = ((active_air_foot < 0) & (lift_count == 1) & single_contact & (~air_timed_out) &
-                       (lifted_foot >= 0) & liftoff_contact_ok)
+                       (lifted_foot >= 0) & liftoff_contact_ok & dsp_ok)
 
     active_air_foot = torch.where(start_air_phase, lifted_foot, active_air_foot)
 
-    has_prev_step = prev_step_air_foot >= 0
     liftoff_alternation_ok = (~has_prev_step) | (lifted_foot != prev_step_air_foot)
 
     reward_liftoff = air_reward * start_air_phase.float() * (
@@ -643,7 +672,7 @@ def feet_air_time_alternating_biped(
 
     reward_air_hold = air_reward * air_progress * single_contact.float()
 
-    # ★ requested change: apply also on double_contact
+    # Applies on both single_contact and double_contact
     reward_contact_hold = contact_reward * contact_progress * (single_contact | double_contact).float()
 
     # ------------------------------------------------------------------

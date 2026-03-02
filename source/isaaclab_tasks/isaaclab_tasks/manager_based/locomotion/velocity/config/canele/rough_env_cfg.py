@@ -85,6 +85,7 @@ class CaneleRewards(RewardsCfg):
             'balance_weight': 0.5,
             'air_reward': 1.0,
             'contact_reward': 1.0,
+            'dsp_ratio': 0.04,
         },
     )
     feet_slide = RewTerm(

@@ -478,14 +478,14 @@ def feet_air_time_balanced_alternating_biped(
     sensor_cfg: SceneEntityCfg,
     *,
     # --- gating thresholds (set < 0 to disable each gate) ---
-    linear_cmd_threshold: float = 1.0,
-    angular_cmd_threshold: float = 1.0,
-    body_tilt_threshold: float = 0.35,
+    linear_cmd_threshold: float = 0.1,
+    angular_cmd_threshold: float = 0.1,
+    body_tilt_threshold: float = 0.2,
 
     # --- air/contact time constraints ---
-    air_min_time: float = 0.15,
-    air_max_time: float = 0.45,
-    min_contact_time: float = 0.10,
+    air_min_time: float = 0.05,
+    air_max_time: float = 0.5,
+    min_contact_time: float = 0.05,
 
     # --- symmetry control using EMA (multiplicative downscaler) ---
     ema_alpha: float = 0.02,

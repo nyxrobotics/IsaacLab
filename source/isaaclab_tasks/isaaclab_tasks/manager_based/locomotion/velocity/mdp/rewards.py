@@ -506,6 +506,12 @@ def feet_air_time_balanced_alternating_biped(
       - Contact reward ramps to 1 at min_contact_time, then stays constant.
       - Double flight and timeout zero the reward.
       - Symmetry imbalance smoothly downscales reward.
+
+    NOTE: This version completes the step-state machine (issue #3):
+      - updates prev_step_air_foot on touchdown of the active foot
+      - clears active_air_foot on touchdown of the active foot
+      - clears air_timed_out when a step completes (touchdown_active)
+      - stores last_completed_air for the completed (active) foot on touchdown_active
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     foot_ids = sensor_cfg.body_ids
@@ -548,6 +554,8 @@ def feet_air_time_balanced_alternating_biped(
     # ------------------------------------------------------------------
     lift_off = prev_in_contact & (~in_contact)
     touch_down = (~prev_in_contact) & in_contact
+
+    # (Keep original behavior; step-completion storage is handled later using touchdown_active.)
     last_completed_air = torch.where(touch_down, air_time, last_completed_air)
 
     # ------------------------------------------------------------------
@@ -651,6 +659,32 @@ def feet_air_time_balanced_alternating_biped(
     # ------------------------------------------------------------------
     base_reward = reward_liftoff + reward_air_hold + reward_contact_hold + reward_alternation
     reward = base_reward * gate_scale * double_flight_scale * timeout_scale * balance_scale
+
+    # ------------------------------------------------------------------
+    # STEP COMPLETION (fix #3): close the state machine on touchdown of active foot
+    # ------------------------------------------------------------------
+    active_is_0 = active_air_foot == 0
+    active_is_1 = active_air_foot == 1
+    touchdown_active = (active_is_0 & touch_down[:, 0]) | (active_is_1 & touch_down[:, 1])
+
+    # Save completed air-time for the active foot (state-consistent).
+    # (If your sensor resets air_time at touchdown, this stores the reset value—addressing that would be #2.)
+    completed_air_value = torch.where(active_is_0, air_time[:, 0],
+                                      torch.where(active_is_1, air_time[:, 1], torch.zeros_like(lin_mag)))
+
+    mask = touchdown_active & (active_air_foot >= 0)
+    if mask.any():
+        idx = active_air_foot.clamp(min=0)
+        # in-place update on a cloned tensor to avoid autograd surprises
+        last_completed_air = last_completed_air.clone()
+        last_completed_air[mask, idx[mask]] = completed_air_value[mask]
+
+    # Update previous-step foot and clear active phase
+    prev_step_air_foot = torch.where(touchdown_active, active_air_foot, prev_step_air_foot)
+    active_air_foot = torch.where(touchdown_active, torch.full_like(active_air_foot, -1), active_air_foot)
+
+    # Clear timeout lock when a step completes (so reward doesn't die forever)
+    air_timed_out = torch.where(touchdown_active, torch.zeros_like(air_timed_out), air_timed_out)
 
     # ------------------------------------------------------------------
     # Save buffers

@@ -67,7 +67,7 @@ class CaneleRewards(RewardsCfg):
                                   })
 
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_balanced_alternating_biped,
+        func=mdp.feet_air_time_alternating_biped,
         weight=0.25,
         params={
             'command_name': 'base_velocity',

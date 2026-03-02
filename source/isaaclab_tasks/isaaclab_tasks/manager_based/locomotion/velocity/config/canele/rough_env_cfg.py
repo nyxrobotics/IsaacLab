@@ -68,7 +68,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_balanced_alternating_biped,
-        weight=1.0,
+        weight=0.25,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -76,11 +76,11 @@ class CaneleRewards(RewardsCfg):
                 'left_toe_link',
             ]),
             'linear_cmd_threshold': 0.1,
-            'angular_cmd_threshold': 0.2,
-            'body_tilt_threshold': 0.3,
-            'air_min_time': 0.1,
-            'air_max_time': 1.0,
-            'min_contact_time': 0.1,
+            'angular_cmd_threshold': 0.1,
+            'body_tilt_threshold': 0.2,
+            'air_min_time': 0.05,
+            'air_max_time': 0.5,
+            'min_contact_time': 0.05,
             'ema_alpha': 0.02,
             'balance_weight': 0.5,
             'air_reward': 1.0,
@@ -130,17 +130,17 @@ class CaneleRewards(RewardsCfg):
             'gain': 1.0,
         },
     )
-    prevent_both_feet_airborne = RewTerm(
-        func=mdp.prevent_both_feet_airborne,
-        weight=-0.4,
-        params={
-            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
-                'right_toe_link',
-                'left_toe_link',
-            ]),
-            'contact_time_eps': 0.02,
-        },
-    )
+    # prevent_both_feet_airborne = RewTerm(
+    #     func=mdp.prevent_both_feet_airborne,
+    #     weight=-0.1,
+    #     params={
+    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+    #             'right_toe_link',
+    #             'left_toe_link',
+    #         ]),
+    #         'contact_time_eps': 0.01,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------

@@ -82,7 +82,7 @@ class CaneleRewards(RewardsCfg):
             'air_max_time': 0.5,
             'min_contact_time': 0.05,
             'ema_alpha': 0.02,
-            'balance_weight': 0.5,
+            'balance_weight': 1.0,
             'air_reward': 1.0,
             'contact_reward': 1.0,
             'dsp_ratio': 0.1,
@@ -141,7 +141,7 @@ class CaneleRewards(RewardsCfg):
             ]),
             'contact_time_eps': 0.05,
             'penalty_weight': 1.0,
-            'reward_weight': 0.25,
+            'reward_weight': 1.0,
         },
     )
     # prevent_both_feet_airborne = RewTerm(

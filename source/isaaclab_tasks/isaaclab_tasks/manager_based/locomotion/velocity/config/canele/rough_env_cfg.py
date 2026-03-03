@@ -132,16 +132,29 @@ class CaneleRewards(RewardsCfg):
         },
     )
     prevent_both_feet_airborne = RewTerm(
-        func=mdp.prevent_both_feet_airborne,
-        weight=-0.4,
+        func=mdp.reward_and_penalize_feet_contact,
+        weight=0.4,
         params={
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
                 'right_toe_link',
                 'left_toe_link',
             ]),
             'contact_time_eps': 0.05,
+            'penalty_weight': 1.0,
+            'reward_weight': 0.25,
         },
     )
+    # prevent_both_feet_airborne = RewTerm(
+    #     func=mdp.prevent_both_feet_airborne,
+    #     weight=-0.4,
+    #     params={
+    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+    #             'right_toe_link',
+    #             'left_toe_link',
+    #         ]),
+    #         'contact_time_eps': 0.05,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------

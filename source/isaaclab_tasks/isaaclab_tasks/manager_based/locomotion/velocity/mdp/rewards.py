@@ -774,57 +774,46 @@ def prevent_both_feet_airborne(
     return penalty
 
 
-def prevent_both_feet_airborne_linear(
+def reward_and_penalize_feet_contact(
     env,
     sensor_cfg: SceneEntityCfg,
+    *,
+    reward_weight: float = 1.0,
+    penalty_weight: float = 1.0,
     contact_time_eps: float = 1e-3,
-    progress_reward_weight: float = 1.0,
-    airborne_penalty_weight: float = 1.0,
-    squared: bool = False,
+    force_eps: float = 1e-6,
 ) -> torch.Tensor:
-    """
-    Linear shaping using only current_contact_time.
+    """Reward when BOTH feet qualify as 'in contact', penalize when NONE qualify.
 
-    (A) Progress reward (linear for 0 <= contact_time < contact_time_eps)
-    (B) Airborne penalty (linear, only when no support foot exists)
-
-    If squared=True:
-        Final penalty is squared (nonlinear amplification).
+    A foot is considered in contact only if:
+      - current_contact_time > contact_time_eps
+      - AND contact force norm > force_eps
 
     Returns:
-        penalty (N,) positive.
-        (Progress is internally subtracted as negative penalty.)
+      score (N,): +reward_weight when both feet are in contact,
+                 -penalty_weight when no feet are in contact,
+                 0 otherwise (exactly one foot in contact).
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    sensor_ids = sensor_cfg.body_ids
+    sensor_ids = sensor_cfg.body_ids  # feet sensor indices (F,) where F should be 2
 
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # (N, S, 3)
+    forces_feet = forces_w_last[:, sensor_ids, :]  # (N, F, 3)
+    force_norm = torch.norm(forces_feet, dim=-1)  # (N, F)
 
-    # ---------------------------
-    # (A) Linear progress reward
-    # ---------------------------
-    progress = torch.clamp(contact_time / contact_time_eps, 0.0, 1.0)
-    progress = progress * (contact_time < contact_time_eps).float()
-    progress_term = -progress_reward_weight * torch.sum(progress, dim=1)
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]  # (N, F)
 
-    # ---------------------------
-    # (B) Linear airborne penalty
-    # ---------------------------
-    support_foot = contact_time >= contact_time_eps
-    has_support = torch.any(support_foot, dim=1)
+    grounded_by_time = contact_time > contact_time_eps
+    grounded_by_force = force_norm > force_eps
+    in_contact = grounded_by_time & grounded_by_force  # (N, F) boolean
 
-    missing = torch.clamp(
-        (contact_time_eps - contact_time) / contact_time_eps,
-        0.0,
-        1.0,
-    )
-    airborne_amount = torch.sum(missing, dim=1)
+    num_contact = torch.sum(in_contact, dim=1)  # (N,) in {0..F}
 
-    airborne_term = airborne_penalty_weight * airborne_amount * (~has_support).float()
+    both_contact = num_contact == in_contact.shape[1]
+    none_contact = num_contact == 0
 
-    penalty = progress_term + airborne_term
+    reward = reward_weight * both_contact.float()
+    penalty = penalty_weight * none_contact.float()
 
-    if squared:
-        penalty = penalty * penalty
-
-    return penalty
+    score = reward - penalty
+    return score

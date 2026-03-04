@@ -817,3 +817,90 @@ def reward_and_penalize_feet_contact(
 
     score = reward - penalty
     return score
+
+
+def _any_foot_in_contact(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    contact_time_eps: float = 1e-3,
+    force_eps: float = 1e-6,
+) -> torch.Tensor:
+    """Return (N,) bool tensor indicating whether any foot is in contact."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    sensor_ids = sensor_cfg.body_ids
+
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]
+    forces_feet = forces_w_last[:, sensor_ids, :]
+    force_norm = torch.norm(forces_feet, dim=-1)
+
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]
+
+    grounded_by_time = contact_time > contact_time_eps
+    grounded_by_force = force_norm > force_eps
+
+    in_contact = grounded_by_time & grounded_by_force
+    return torch.any(in_contact, dim=1)
+
+
+def track_lin_vel_xy_yaw_frame_exp_no_flight(
+    env,
+    std: float,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+    contact_time_eps: float = 1e-3,
+    force_eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Same as track_lin_vel_xy_yaw_frame_exp but returns 0 if both feet are airborne.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    vel_yaw = quat_apply_inverse(
+        yaw_quat(asset.data.root_quat_w),
+        asset.data.root_lin_vel_w[:, :3],
+    )
+
+    lin_vel_error = torch.sum(
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]),
+        dim=1,
+    )
+
+    reward = torch.exp(-lin_vel_error / std**2)
+
+    any_contact = _any_foot_in_contact(
+        env,
+        sensor_cfg,
+        contact_time_eps=contact_time_eps,
+        force_eps=force_eps,
+    )
+
+    return reward * any_contact.float()
+
+
+def track_ang_vel_z_world_exp_no_flight(
+    env,
+    command_name: str,
+    std: float,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg('robot'),
+    contact_time_eps: float = 1e-3,
+    force_eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Same as track_ang_vel_z_world_exp but returns 0 if both feet are airborne.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
+
+    reward = torch.exp(-ang_vel_error / std**2)
+
+    any_contact = _any_foot_in_contact(
+        env,
+        sensor_cfg,
+        contact_time_eps=contact_time_eps,
+        force_eps=force_eps,
+    )
+
+    return reward * any_contact.float()

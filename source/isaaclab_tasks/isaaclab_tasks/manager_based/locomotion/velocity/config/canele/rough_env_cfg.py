@@ -49,23 +49,34 @@ class CaneleRewards(RewardsCfg):
         func=mdp.is_terminated,
         weight=-200.0,
     )
-
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp,
+        func=mdp.track_lin_vel_xy_yaw_frame_exp_no_flight,
         weight=1.0,
         params={
             'command_name': 'base_velocity',
-            'std': 0.5
+            'std': 0.5,
+            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+                'right_toe_link',
+                'left_toe_link',
+            ]),
+            'contact_time_eps': 1.0e-3,
+            'force_eps': 1.0e-3,
         },
     )
-
-    track_ang_vel_z_exp = RewTerm(func=mdp.track_ang_vel_z_world_exp,
-                                  weight=2.0,
-                                  params={
-                                      'command_name': 'base_velocity',
-                                      'std': 0.5
-                                  })
-
+    track_ang_vel_z_exp = RewTerm(
+        func=mdp.track_ang_vel_z_world_exp_no_flight,
+        weight=2.0,
+        params={
+            'command_name': 'base_velocity',
+            'std': 0.5,
+            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
+                'right_toe_link',
+                'left_toe_link',
+            ]),
+            'contact_time_eps': 1.0e-3,
+            'force_eps': 1.0e-3,
+        },
+    )
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_alternating_biped,
         weight=1.0,

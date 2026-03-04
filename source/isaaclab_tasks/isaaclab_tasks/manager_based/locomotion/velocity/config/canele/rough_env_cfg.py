@@ -68,7 +68,7 @@ class CaneleRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_alternating_biped,
-        weight=0.25,
+        weight=1.0,
         params={
             'command_name': 'base_velocity',
             'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
@@ -76,16 +76,15 @@ class CaneleRewards(RewardsCfg):
                 'left_toe_link',
             ]),
             'linear_cmd_threshold': 0.1,
-            'angular_cmd_threshold': 0.1,
-            'body_tilt_threshold': 0.2,
-            'air_min_time': 0.05,
-            'air_max_time': 0.5,
-            'min_contact_time': 0.05,
+            'angular_cmd_threshold': 0.2,
+            'body_tilt_threshold': 0.3,
+            'air_min_time': 0.1,
+            'air_max_time': 1.0,
+            'min_contact_time': 0.1,
             'ema_alpha': 0.02,
-            'balance_weight': 1.0,
+            'balance_weight': 0.5,
             'air_reward': 1.0,
             'contact_reward': 1.0,
-            'dsp_ratio': 0.1,
         },
     )
     feet_slide = RewTerm(
@@ -100,7 +99,7 @@ class CaneleRewards(RewardsCfg):
                 'right_toe_link',
                 'left_toe_link',
             ]),
-            'air_time_eps': 0.01,
+            'air_time_eps': 0.02,
         },
     )
     joint_deviation_hip = RewTerm(
@@ -131,30 +130,6 @@ class CaneleRewards(RewardsCfg):
             'gain': 1.0,
         },
     )
-    prevent_both_feet_airborne = RewTerm(
-        func=mdp.reward_and_penalize_feet_contact,
-        weight=0.4,
-        params={
-            'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
-                'right_toe_link',
-                'left_toe_link',
-            ]),
-            'contact_time_eps': 0.05,
-            'penalty_weight': 1.0,
-            'reward_weight': 1.0,
-        },
-    )
-    # prevent_both_feet_airborne = RewTerm(
-    #     func=mdp.prevent_both_feet_airborne,
-    #     weight=-0.4,
-    #     params={
-    #         'sensor_cfg': SceneEntityCfg('contact_forces', body_names=[
-    #             'right_toe_link',
-    #             'left_toe_link',
-    #         ]),
-    #         'contact_time_eps': 0.05,
-    #     },
-    # )
 
 
 # ---------------------------------------------------------------------

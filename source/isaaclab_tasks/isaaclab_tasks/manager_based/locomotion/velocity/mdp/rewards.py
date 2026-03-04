@@ -492,7 +492,8 @@ def feet_air_time_alternating_biped(
 
     # --- symmetry control using EMA (multiplicative downscaler) ---
     ema_alpha: float = 0.02,
-    balance_weight: float = 0.5,
+    air_balance_weight: float = 0.5,
+    contact_balance_weight: float = 0.0,
 
     # --- shaping rewards ---
     air_reward: float = 1.0,
@@ -693,8 +694,8 @@ def feet_air_time_alternating_biped(
     ema_air = (1 - ema_alpha) * ema_air + ema_alpha * last_completed_air
     ema_contact = (1 - ema_alpha) * ema_contact + ema_alpha * contact_time
 
-    imbalance = torch.abs(ema_air[:, 0] - ema_air[:, 1]) + torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
-    balance_scale = torch.exp(-balance_weight * imbalance).clamp_min(0)
+    imbalance = air_balance_weight * torch.abs(ema_air[:, 0] - ema_air[:, 1]) + contact_balance_weight * torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
+    balance_scale = torch.exp(-imbalance).clamp_min(0)
 
     # ------------------------------------------------------------------
     # Total reward

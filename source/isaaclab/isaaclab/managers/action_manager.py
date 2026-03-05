@@ -404,6 +404,10 @@ class ActionManager(ManagerBase):
             term_actions = action[:, idx : idx + term.action_dim]
             term.process_actions(term_actions)
             idx += term.action_dim
+        
+        # Print applied action (the one that will be used by action terms)
+        if self._env.num_envs == 1 and (self._env.common_step_counter % 100 == 0):
+            print("APPLIED ACTION:", self._action[0].detach().cpu().numpy())
 
     def apply_action(self) -> None:
         """Applies the actions to the environment/simulation.
@@ -411,9 +415,6 @@ class ActionManager(ManagerBase):
         Note:
             This should be called at every simulation step.
         """
-        # Print applied action (the one that will be used by action terms)
-        if self._env.num_envs == 1 and (self._env.common_step_counter % 100 == 0):
-            print("APPLIED ACTION:", self._action[0].detach().cpu().numpy())
         for term in self._terms.values():
             term.apply_actions()
 

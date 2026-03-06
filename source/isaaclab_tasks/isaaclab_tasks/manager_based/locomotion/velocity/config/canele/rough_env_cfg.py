@@ -86,9 +86,9 @@ class CaneleRewards(RewardsCfg):
                 'right_toe_link',
                 'left_toe_link',
             ]),
-            'linear_cmd_threshold': 0.01,
-            'angular_cmd_threshold': 0.02,
-            'body_tilt_threshold': 0.02,
+            'linear_cmd_threshold': 0.0,
+            'angular_cmd_threshold': 0.0,
+            'body_tilt_threshold': 0.0,
             'air_min_time': 0.1,
             'air_max_time': 1.0,
             'min_contact_time': 0.1,
@@ -135,7 +135,7 @@ class CaneleRewards(RewardsCfg):
     )
     flat_toe_penalty = RewTerm(
         func=mdp.flat_orientation_links_l2,
-        weight=0.4,
+        weight=0.1,
         params={
             'asset_cfg': SceneEntityCfg('robot', body_names=['right_toe_link', 'left_toe_link']),
             'margin': 0.0,

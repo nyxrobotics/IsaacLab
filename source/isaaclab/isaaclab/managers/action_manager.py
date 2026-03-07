@@ -406,7 +406,7 @@ class ActionManager(ManagerBase):
             idx += term.action_dim
         
         # Print applied action (the one that will be used by action terms)
-        if self._env.num_envs == 1 and (self._env.common_step_counter % 100 == 0):
+        if self._env.num_envs == 1:
             print("APPLIED ACTION:", self._action[0].detach().cpu().numpy())
 
     def apply_action(self) -> None:

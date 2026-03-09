@@ -13,9 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
-from isaaclab.assets import RigidObject
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import quat_apply_inverse
 import torch
 
 if TYPE_CHECKING:
@@ -384,59 +382,3 @@ def joint_action_acc_l2(
 
     action_acc = (action - 2.0 * prev + prev_prev) / (dt * dt)
     return torch.sum(torch.square(action_acc), dim=1)
-
-
-"""
-Velocity-tracking rewards.
-"""
-
-
-def flat_orientation_links_l2(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    margin: float = 0.3,
-    gain: float = 1.0,
-) -> torch.Tensor:
-    """
-    Penalize non-flat orientation for multiple links with a tolerance margin.
-
-    - Project gravity into body frames
-    - Compute L2 norm of xy components (tilt magnitude)
-    - If tilt <= margin → penalty = 0
-    - If tilt > margin → penalty = -gain * (tilt - margin)
-    """
-    asset: RigidObject = env.scene[asset_cfg.name]
-
-    # body orientations
-    body_quat_w = asset.data.body_quat_w  # (N, B, 4)
-
-    # world gravity expanded to match shape (N, B, 3)
-    g_w = torch.zeros_like(asset.data.body_pos_w)
-    g_w[..., 2] = -1.0
-
-    # gravity in body frame
-    g_b = quat_apply_inverse(body_quat_w, g_w)  # (N, B, 3)
-
-    # select target bodies
-    body_ids = asset_cfg.body_ids
-    g_sel = g_b[:, body_ids, :2]  # (N, K, 2)
-
-    # tilt magnitude: L2 norm of xy gravity components
-    l2_per_body = torch.sum(g_sel * g_sel, dim=-1)  # (N, K)
-    excess_per_body = torch.relu(torch.sqrt(l2_per_body) - margin)  # (N, K)
-    # margin-based penalty
-    penalty_per_body = -gain * excess_per_body  # (N, K)
-    penalty_sum = torch.sum(penalty_per_body, dim=1)  # (N,)
-
-    return penalty_sum
-
-
-def ang_vel_xy_links_l2(
-    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """Penalize xy-axis angular velocity for multiple links using L2 squared kernel."""
-    asset: RigidObject = env.scene[asset_cfg.name]
-    ang_vel_w = asset.data.body_ang_vel_w[:, asset_cfg.body_ids, :2]  # (N, K, 2)
-    l2_per_body = torch.sum(ang_vel_w * ang_vel_w, dim=-1)  # (N, K)
-    l2_sum = torch.sum(l2_per_body, dim=1)  # (N,)
-    return l2_sum

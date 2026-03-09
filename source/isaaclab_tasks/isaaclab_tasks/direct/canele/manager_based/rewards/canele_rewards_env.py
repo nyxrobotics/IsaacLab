@@ -13,9 +13,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
 from isaaclab.managers.manager_base import ManagerTermBase
 from isaaclab.managers.manager_term_cfg import RewardTermCfg
 import torch
+
+from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv

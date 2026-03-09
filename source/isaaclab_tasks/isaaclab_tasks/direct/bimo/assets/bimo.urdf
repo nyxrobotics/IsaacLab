@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="Bimo">
+  <joint name="LAnkle" type="continuous">
+    <origin xyz="0.0000215 -0.0266207 -0.1798357" rpy="1.5707964 0. -1.5707964"/>
+    <parent link="Bimo_LegLeft"/>
+    <child link="Bimo_FootLeft"/>
+    <axis xyz="1. 0. 0."/>
+  </joint>
+  <joint name="LHip" type="continuous">
+    <origin xyz="-0.0000239 -0.052674 -0.0420033" rpy="0.2003087 -1.5707961 -0.2003087"/>
+    <parent link="Root"/>
+    <child link="Bimo_ShoulderLeft"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="LKnee" type="continuous">
+    <origin xyz="0.1800214 -0.0000834 -0.0002125" rpy="-1.5707964 0. 1.5707964"/>
+    <parent link="Bimo_TighLeft"/>
+    <child link="Bimo_LegLeft"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="LShoulder" type="continuous">
+    <origin xyz="-0.0000628 -0.0394178 -0.0000858" rpy="-1.5707964 0.0000002 -3.1415925"/>
+    <parent link="Bimo_ShoulderLeft"/>
+    <child link="Bimo_TighLeft"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="RAnkle" type="continuous">
+    <origin xyz="0.0000045 0.0264381 -0.1798033" rpy="1.5707964 0. -1.5707964"/>
+    <parent link="Bimo_LegRight"/>
+    <child link="Bimo_FootRight"/>
+    <axis xyz="1. 0. 0."/>
+  </joint>
+  <joint name="RHip" type="continuous">
+    <origin xyz="0.000006 0.0526842 -0.0420406" rpy="0.7383882 -1.5707961 -0.7383881"/>
+    <parent link="Root"/>
+    <child link="Bimo_ShoulderRight"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="RKnee" type="continuous">
+    <origin xyz="0.1801341 -0.0000654 0.0000308" rpy="-1.5707964 0. 1.5707964"/>
+    <parent link="Bimo_TighRight"/>
+    <child link="Bimo_LegRight"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="RShoulder" type="continuous">
+    <origin xyz="0.000058 0.0394084 -0.0000548" rpy="-1.5707963 0.0000002 -3.1415925"/>
+    <parent link="Bimo_ShoulderRight"/>
+    <child link="Bimo_TighRight"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <link name="Bimo_FootLeft">
+    <inertial>
+      <origin xyz="0.0264886 -0.0097823 -0.0000066" rpy="0. 0. 0."/>
+      <mass value="0.074"/>
+      <inertia ixx="0.000043" ixy="-0." ixz="0." iyy="0.0000488" iyz="-0." izz="0.000028"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0. -0.0008768 0. " rpy="-3.1415927 0. 3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_FootLeft_FootLeft_Foot_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0. -0.0008768 0. " rpy="-3.1415927 0. 3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_FootLeft_FootLeft_Foot_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_FootRight">
+    <inertial>
+      <origin xyz="0.0264886 -0.0097823 -0.0000066" rpy="0. 0. 0."/>
+      <mass value="0.074"/>
+      <inertia ixx="0.000043" ixy="-0." ixz="0." iyy="0.0000488" iyz="-0." izz="0.000028"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. -0.00088 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_FootRight_FootRight_Foot_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. -0.00088 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_FootRight_FootRight_Foot_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_LegLeft">
+    <inertial>
+      <origin xyz="0.0000083 0.0198295 -0.0949685" rpy="0. 0. 0."/>
+      <mass value="0.154"/>
+      <inertia ixx="0.0005869" ixy="-0." ixz="0.0000002" iyy="0.0005775" iyz="-0.0000065" izz="0.0000477"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0000215 -0.0201207 -0.1801125" rpy="-3.1415927 0. -3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_LegLeft_LegLeft_Leg_Low_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0000215 -0.0201207 -0.1801125" rpy="-3.1415927 0. -3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_LegLeft_LegLeft_Leg_Low_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_LegRight">
+    <inertial>
+      <origin xyz="0.0000083 0.0198268 0.0949547" rpy="0. 0. 0."/>
+      <mass value="0.154"/>
+      <inertia ixx="0.0005869" ixy="0." ixz="-0.0000002" iyy="0.0005775" iyz="-0.0000064" izz="0.0000477"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0000045 0.0199381 -0.1800833" rpy="0. 0. 3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_LegRight_LegRight_Leg_Low_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0000045 0.0199381 -0.1800833" rpy="0. 0. 3.1415927"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_LegRight_LegRight_Leg_Low_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_ShoulderLeft">
+    <inertial>
+      <origin xyz="-0.0000495 0.0000014 0.0343639" rpy="0. 0. 0."/>
+      <mass value="0.048"/>
+      <inertia ixx="0.0000191" ixy="0." ixz="-0." iyy="0.0000236" iyz="0." izz="0.0000153"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0001467 0.008124 -0.0000239" rpy="1.5707963 1.5707961 -0. "/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_ShoulderLeft_ShoulderLeft_Shoulder_Left_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0001467 0.008124 -0.0000239" rpy="1.5707963 1.5707961 -0. "/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_ShoulderLeft_ShoulderLeft_Shoulder_Left_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_ShoulderRight">
+    <inertial>
+      <origin xyz="-0.0000514 0.0000009 -0.0343649" rpy="0. 0. 0."/>
+      <mass value="0.048"/>
+      <inertia ixx="0.0000191" ixy="-0." ixz="0." iyy="0.0000236" iyz="0." izz="0.0000153"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0001094 -0.0081342 0.000006 " rpy="0.9553165 1.5707961 -0.6154796"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_ShoulderRight_ShoulderRight_Shoulder_Left_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0001094 -0.0081342 0.000006 " rpy="0.9553165 1.5707961 -0.6154796"/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_ShoulderRight_ShoulderRight_Shoulder_Left_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_TighLeft">
+    <inertial>
+      <origin xyz="0.0477498 0.0000132 0.0000993" rpy="0. 0. 0."/>
+      <mass value="0.196"/>
+      <inertia ixx="0.0001424" ixy="0.0002383" ixz="0.0000006" iyy="0.0006628" iyz="-0.0000002" izz="0.0007555"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0426338 -0.0000619 -0.0000918" rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_TighLeft_TighLeft_Leg_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0426338 -0.0000619 -0.0000918" rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_TighLeft_TighLeft_Leg_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Bimo_TighRight">
+    <inertial>
+      <origin xyz="0.047818 -0.0000072 0.0000295" rpy="0. 0. 0."/>
+      <mass value="0.196"/>
+      <inertia ixx="0.0001905" ixy="0.0002818" ixz="-0.0000003" iyy="0.0006146" iyz="0.0000002" izz="0.0007552"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0427174 -0.0000609 0.0000927" rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_TighRight_TighRight_Leg_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0427174 -0.0000609 0.0000927" rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="file://meshes/Bimo_TighRight_TighRight_Leg_Right_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="Root">
+    <visual>
+      <origin xyz="0.00001 0.062475 -0.04202 " rpy="0. 0. -1.5707964"/>
+      <geometry>
+        <mesh filename="file://meshes/Head_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.00001 0.062475 -0.04202 " rpy="0. 0. -1.5707964"/>
+      <geometry>
+        <mesh filename="file://meshes/Head_Sim.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

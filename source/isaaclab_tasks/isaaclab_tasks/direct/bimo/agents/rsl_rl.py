@@ -32,7 +32,7 @@ class BimoPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         critic_hidden_dims=[512, 256, 128],
         actor_obs_normalization=True,
         critic_obs_normalization=False,
-        state_dependent_std=False,
+        # state_dependent_std=False,
         activation="elu",
     )
 

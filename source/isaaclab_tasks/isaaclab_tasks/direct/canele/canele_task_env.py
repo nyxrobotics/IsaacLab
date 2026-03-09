@@ -21,6 +21,10 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import GaussianNoiseCfg, gaussian_noise
 
 from .canele_cfg import CANELE_MINIMAL_CFG
+from . import canele_terminations
+from . import canele_rewards_env
+from . import canele_rewards_walk
+from . import canele_rewards_joint
 
 
 LOWER_BODY_JOINTS = [
@@ -53,11 +57,13 @@ class CaneleEnvCfg(DirectRLEnvCfg):
     state_space = 0
     dt = 0.005
 
-    obj = "walk"
-
     sim: SimulationCfg = SimulationCfg(dt=dt)
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(env_spacing=2.5, replicate_physics=True)
-    robot_cfg: ArticulationCfg = CANELE_MINIMAL_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        env_spacing=2.5, replicate_physics=True
+    )
+    robot_cfg: ArticulationCfg = CANELE_MINIMAL_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot"
+    )
 
     imu: ImuCfg = ImuCfg(
         prim_path=f"/World/envs/env_.*/Robot/{BASE_LINK}",
@@ -79,15 +85,27 @@ class CaneleEnvCfg(DirectRLEnvCfg):
 class CaneleEnv(DirectRLEnv):
     def __init__(self, cfg: CaneleEnvCfg, **kwargs):
         super().__init__(cfg, **kwargs)
-        self.obj = self.cfg.obj
         self.joint_names = list(LOWER_BODY_JOINTS)
         self.num_actions = len(self.joint_names)
-        self.joint_ids = [self.robot_joint_name_to_id(name) for name in self.joint_names]
+        self.joint_ids = [self._joint_name_to_id(name) for name in self.joint_names]
+        self.base_id = self._body_name_to_id(BASE_LINK)
+        self.foot_ids = [
+            self._body_name_to_id(LEFT_FOOT),
+            self._body_name_to_id(RIGHT_FOOT),
+        ]
 
         default_joint_pos = self.robot.data.default_joint_pos[:, self.joint_ids]
         self.base_pose = torch.rad2deg(default_joint_pos).clone()
         self.cmd_actions = self.base_pose.clone()
         self.noisy_act = self.base_pose.clone()
+        self.prev_actions = torch.zeros(
+            self.scene.num_envs, self.num_actions, device=self.device
+        )
+        self.prev_joint_vel = torch.zeros(
+            self.scene.num_envs, len(self.joint_ids), device=self.device
+        )
+
+        self.commands = torch.zeros(self.scene.num_envs, 3, device=self.device)
 
         self.orient_noise = GaussianNoiseCfg(mean=0.0, std=0.015, operation="add")
         self.gyro_noise = GaussianNoiseCfg(mean=0.0, std=0.01, operation="add")
@@ -95,15 +113,43 @@ class CaneleEnv(DirectRLEnv):
 
         self.orient_h = torch.zeros(self.scene.num_envs, 4, 3, device=self.device)
         self.gyro_h = torch.zeros(self.scene.num_envs, 4, 3, device=self.device)
-        self.act_hist = torch.zeros(self.scene.num_envs, 4, self.num_actions, device=self.device)
+        self.act_hist = torch.zeros(
+            self.scene.num_envs, 4, self.num_actions, device=self.device
+        )
 
-        self.lower_limits = torch.rad2deg(self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 0]).clone()
-        self.upper_limits = torch.rad2deg(self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 1]).clone()
-        start_norm = normalize_actions(self.base_pose, self.lower_limits, self.upper_limits)
+        self.lower_limits = torch.rad2deg(
+            self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 0]
+        ).clone()
+        self.upper_limits = torch.rad2deg(
+            self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 1]
+        ).clone()
+        start_norm = normalize_actions(
+            self.base_pose, self.lower_limits, self.upper_limits
+        )
         self.act_hist[:] = start_norm.unsqueeze(1)
 
-    def robot_joint_name_to_id(self, joint_name: str) -> int:
+        self.hip_ids = [
+            self.joint_names.index(n)
+            for n in [
+                "left_hip_roll",
+                "left_hip_pitch",
+                "right_hip_roll",
+                "right_hip_pitch",
+            ]
+        ]
+        self.torso_ids = [
+            self.joint_names.index(n)
+            for n in ["left_hip_yaw", "right_hip_yaw", "torso_yaw"]
+        ]
+
+    def _joint_name_to_id(self, joint_name: str) -> int:
         matches = self.robot.find_joints(joint_name)
+        if isinstance(matches, tuple):
+            return int(matches[0][0])
+        return int(matches[0])
+
+    def _body_name_to_id(self, body_name: str) -> int:
+        matches = self.robot.find_bodies(body_name)
         if isinstance(matches, tuple):
             return int(matches[0][0])
         return int(matches[0])
@@ -111,13 +157,10 @@ class CaneleEnv(DirectRLEnv):
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self.robot
-
         self.imu = Imu(self.cfg.imu)
         self.scene.sensors["imu"] = self.imu
-
         self.contact = ContactSensor(self.cfg.contact)
         self.scene.sensors["contact"] = self.contact
-
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[])
 
@@ -127,11 +170,11 @@ class CaneleEnv(DirectRLEnv):
             restitution=0.0,
             friction_combine_mode="average",
         )
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(physics_material=ground_cfg))
-
+        spawn_ground_plane(
+            prim_path="/World/ground", cfg=GroundPlaneCfg(physics_material=ground_cfg)
+        )
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
-
         self.cfg.viewer.eye = (5.0, -5.0, 3.5)
         self.cfg.viewer.lookat = (0.0, 0.0, 1.0)
 
@@ -146,25 +189,31 @@ class CaneleEnv(DirectRLEnv):
         orient = quaternion_to_euler(imu_data.quat_w)
         orient = gaussian_noise(orient, self.orient_noise)
         angular_vel = gaussian_noise(imu_data.ang_vel_b, self.gyro_noise)
-
         orient = scale_value(orient, -1.0, 1.0)
         angular_vel = scale_value(angular_vel, -2.0, 2.0)
-
         self.update_imu_history(orient, angular_vel)
-        imu_obs = torch.cat((self.orient_h[:, :, :2], self.gyro_h), dim=2).reshape(self.scene.num_envs, 20)
+        imu_obs = torch.cat((self.orient_h[:, :, :2], self.gyro_h), dim=2).reshape(
+            self.scene.num_envs, 20
+        )
 
-        cmd_act = normalize_actions(self.cmd_actions, self.lower_limits, self.upper_limits)
+        cmd_act = normalize_actions(
+            self.cmd_actions, self.lower_limits, self.upper_limits
+        )
         self.act_hist[:, :-1] = self.act_hist[:, 1:].clone()
         self.act_hist[:, -1] = cmd_act
         act_obs = self.act_hist.reshape(self.scene.num_envs, 4 * self.num_actions)
 
         obs_buffer = torch.cat((imu_obs, act_obs), dim=1)
-        obs_buffer = torch.round(obs_buffer, decimals=4)
-        return {"policy": obs_buffer}
+        return {"policy": torch.round(obs_buffer, decimals=4)}
 
     def _pre_physics_step(self, actions):
+        self.prev_actions[:] = normalize_actions(
+            self.cmd_actions, self.lower_limits, self.upper_limits
+        )
         delta_deg = torch.clamp(actions, -3.0, 3.0) * 0.5
-        self.cmd_actions = torch.clamp(self.cmd_actions + delta_deg, self.lower_limits, self.upper_limits)
+        self.cmd_actions = torch.clamp(
+            self.cmd_actions + delta_deg, self.lower_limits, self.upper_limits
+        )
         self.noisy_act = torch.clamp(
             gaussian_noise(self.cmd_actions, self.actuator_noise),
             self.lower_limits,
@@ -172,77 +221,147 @@ class CaneleEnv(DirectRLEnv):
         )
 
     def _apply_action(self):
-        target = torch.deg2rad(self.noisy_act)
-        self.robot.set_joint_position_target(target, joint_ids=self.joint_ids)
+        self.robot.set_joint_position_target(
+            torch.deg2rad(self.noisy_act), joint_ids=self.joint_ids
+        )
 
     def _get_rewards(self):
         root_pos = self.robot.data.root_pos_w
-        root_lin_vel = self.robot.data.root_com_vel_w[:, :3]
-        root_ang_vel = self.robot.data.root_com_vel_w[:, 3:]
+        root_quat = self.robot.data.root_quat_w
+        root_com_vel = self.robot.data.root_com_vel_w
+        root_lin_vel = root_com_vel[:, :3]
+        root_ang_vel_w = root_com_vel[:, 3:]
+        root_ang_vel_b = self.imu.data.ang_vel_b
+        body_pos = self.robot.data.body_pos_w[:, [self.base_id] + self.foot_ids]
+        body_quat = self.robot.data.body_quat_w[:, [self.base_id] + self.foot_ids]
+        feet_pos = self.robot.data.body_pos_w[:, self.foot_ids]
+        feet_vel = self.robot.data.body_lin_vel_w[:, self.foot_ids]
         contact_data = self.scene.sensors["contact"].data
         air_time = contact_data.current_air_time
-        foot_pos = contact_data.pos_w
-        joint_error = torch.abs(self.cmd_actions - self.base_pose)
-
-        height_target = 0.95
-        height_reward = torch.exp(-10.0 * torch.square(root_pos[:, 2] - height_target))
-        upright_reward = torch.exp(-2.0 * torch.sum(torch.square(quaternion_to_euler(self.robot.data.root_quat_w)[:, :2]), dim=1))
-        forward_reward = torch.clamp(root_lin_vel[:, 0], min=0.0, max=0.8)
-        yaw_penalty = torch.abs(root_ang_vel[:, 2])
-        pose_penalty = torch.mean(joint_error / 30.0, dim=1)
-        feet_reward = feet_height_reward(air_time, foot_pos, 0.04, 100.0)
-
-        reward = (
-            1.0 * height_reward
-            + 1.0 * upright_reward
-            + 1.0 * forward_reward
-            + 0.5 * feet_reward
-            - 0.2 * yaw_penalty
-            - 0.1 * pose_penalty
+        in_contact = air_time <= 0.02
+        curr_action = normalize_actions(
+            self.cmd_actions, self.lower_limits, self.upper_limits
         )
+        joint_vel = self.robot.data.joint_vel[:, self.joint_ids]
+        torques = getattr(
+            self.robot.data,
+            "applied_torque",
+            torch.zeros_like(self.robot.data.joint_vel),
+        )[:, self.joint_ids]
+
+        reward = torch.zeros(self.scene.num_envs, device=self.device)
+        reward += -200.0 * self._compute_terminated().float()
+        reward += 1.0 * canele_rewards_walk.track_lin_vel_xy_yaw_frame_exp_no_flight(
+            self.commands, root_lin_vel, in_contact, std=0.5
+        )
+        reward += 2.0 * canele_rewards_walk.track_ang_vel_z_world_exp_no_flight(
+            self.commands, root_ang_vel_w, in_contact, std=0.5
+        )
+        reward += 1.0 * canele_rewards_walk.feet_air_time_alternating_biped(
+            air_time, self.commands, air_min_time=0.1, air_max_time=1.0
+        )
+        reward += -0.1 * canele_rewards_walk.feet_slide_keep_flat(feet_vel, in_contact)
+        reward += -0.01 * canele_rewards_joint.joint_action_deviation_l1(
+            curr_action,
+            normalize_actions(self.base_pose, self.lower_limits, self.upper_limits),
+            self.hip_ids,
+        )
+        reward += -0.1 * canele_rewards_joint.joint_action_deviation_l1(
+            curr_action,
+            normalize_actions(self.base_pose, self.lower_limits, self.upper_limits),
+            self.torso_ids,
+        )
+        reward += 0.1 * canele_rewards_walk.flat_orientation_links_l2(
+            body_quat[:, 1:], quaternion_to_euler, margin=0.0, gain=1.0
+        )
+        reward += -0.2 * canele_rewards_env.lin_vel_z_l2(root_lin_vel)
+        reward += -1.0 * canele_rewards_env.flat_orientation_l2(
+            root_quat, quaternion_to_euler
+        )
+        reward += -0.01 * canele_rewards_env.ang_vel_xy_l2(root_ang_vel_b)
+        reward += -0.01 * canele_rewards_env.action_rate_l2(
+            curr_action, self.prev_actions
+        )
+        reward += -1.0e-9 * canele_rewards_env.dof_acc_l2(
+            joint_vel, self.prev_joint_vel, self.cfg.decimation * self.cfg.dt
+        )
+        reward += -2.0e-6 * canele_rewards_env.dof_torques_l2(
+            torques[:, [0, 1, 2, 3, 7, 8, 9, 10]] if torques.shape[1] >= 11 else torques
+        )
+        self.prev_joint_vel[:] = joint_vel
         return reward
+
+    def _compute_terminated(self):
+        root_pos = self.robot.data.root_pos_w
+        root_quat = self.robot.data.root_quat_w
+        root_com_vel = self.robot.data.root_com_vel_w
+        feet_pos = self.robot.data.body_pos_w[:, self.foot_ids]
+        body_quat = self.robot.data.body_quat_w[:, [self.base_id] + self.foot_ids]
+        root_lin_vel = root_com_vel[:, :3]
+        root_ang_vel = root_com_vel[:, 3:]
+        return (
+            canele_terminations.detect_fall(
+                root_quat, root_lin_vel, root_ang_vel, limit_angle=1.3
+            )
+            | canele_terminations.detect_height_too_low_relative(
+                root_pos, feet_pos, min_height=0.5
+            )
+            | canele_terminations.detect_tilt_too_high_any_link(body_quat, max_tilt=1.5)
+            | canele_terminations.detect_support_plane_tilt_too_high(
+                feet_pos, max_tilt=1.3
+            )
+        )
 
     def _get_dones(self):
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        root_pos = self.robot.data.root_pos_w
-        euler_angles = quaternion_to_euler(self.robot.data.root_quat_w)
-        fallen = (root_pos[:, 2] < 0.45) | (torch.abs(euler_angles[:, 0]) > 1.2) | (torch.abs(euler_angles[:, 1]) > 1.2)
-        return fallen, truncated
+        return self._compute_terminated(), truncated
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
-
         root_state = self.robot.data.default_root_state[env_ids].clone()
         root_state[:, :3] += self.scene.env_origins[env_ids]
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_vel = self.robot.data.default_joint_vel[env_ids].clone()
-
         self.robot.write_root_link_pose_to_sim(root_state[:, :7], env_ids)
         self.robot.write_root_com_velocity_to_sim(root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
-
         self.orient_h[env_ids] = 0.0
         self.gyro_h[env_ids] = 0.0
         self.cmd_actions[env_ids] = self.base_pose[env_ids]
         self.noisy_act[env_ids] = self.base_pose[env_ids]
-        start_norm = normalize_actions(self.base_pose[env_ids], self.lower_limits[env_ids], self.upper_limits[env_ids])
-        self.act_hist[env_ids] = start_norm.unsqueeze(1)
+        self.prev_actions[env_ids] = normalize_actions(
+            self.base_pose[env_ids],
+            self.lower_limits[env_ids],
+            self.upper_limits[env_ids],
+        )
+        self.prev_joint_vel[env_ids] = 0.0
+        self.act_hist[env_ids] = self.prev_actions[env_ids].unsqueeze(1)
+        self.commands[env_ids, 0] = torch.empty(
+            len(env_ids), device=self.device
+        ).uniform_(-0.6, 0.6)
+        self.commands[env_ids, 1] = torch.empty(
+            len(env_ids), device=self.device
+        ).uniform_(-0.6, 0.6)
+        self.commands[env_ids, 2] = torch.empty(
+            len(env_ids), device=self.device
+        ).uniform_(-1.2, 1.2)
 
 
 @torch.jit.script
 def quaternion_to_euler(quat: torch.Tensor):
-    quat = quat / torch.norm(quat, dim=-1, keepdim=True)
+    quat = quat / torch.norm(quat, dim=-1, keepdim=True).clamp_min(1e-8)
     w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
-
     sinr_cosp = 2 * (w * x + y * z)
     cosr_cosp = 1 - 2 * (x * x + y * y)
     roll = torch.atan2(sinr_cosp, cosr_cosp)
-
     sinp = 2 * (w * y - z * x)
-    pitch = torch.where(torch.abs(sinp) >= 1, torch.sign(sinp) * (torch.pi / 2), torch.asin(sinp))
-
+    pitch = torch.where(
+        torch.abs(sinp) >= 1,
+        torch.sign(sinp) * torch.tensor(torch.pi / 2, device=quat.device),
+        torch.asin(sinp),
+    )
     siny_cosp = 2 * (w * z + x * y)
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = torch.atan2(siny_cosp, cosy_cosp)
@@ -255,20 +374,5 @@ def scale_value(value: torch.Tensor, min_val: float, max_val: float):
 
 
 @torch.jit.script
-def normalize_actions(value: torch.Tensor, min_val: torch.Tensor, max_val: torch.Tensor):
-    return torch.clamp((value - min_val) / (max_val - min_val) * 2 - 1, -1, 1)
-
-
-@torch.jit.script
-def feet_height_reward(air_time, feet_pos, target_h: float, scale: float = 25.0):
-    in_air = air_time > 0
-    num_in_air = in_air.sum(dim=1)
-    both_in_air = num_in_air == 2
-    both_on_ground = num_in_air == 0
-
-    z_pos = feet_pos[..., 2]
-    z_err = torch.abs(z_pos - target_h)
-    reward_per_leg = torch.where(z_pos >= target_h, torch.ones_like(z_pos), torch.exp(-scale * z_err)) * in_air.float()
-    reward = reward_per_leg.sum(dim=1)
-    reward = torch.where(both_in_air | both_on_ground, torch.zeros_like(reward), reward)
-    return reward
+def normalize_actions(value: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor):
+    return torch.clamp((value - lower) / (upper - lower + 1e-8) * 2 - 1, -1, 1)

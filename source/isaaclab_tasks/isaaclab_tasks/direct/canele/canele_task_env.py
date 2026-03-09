@@ -96,9 +96,8 @@ class _DirectActionManager:
         self._env = env
         self.active_terms = ["joint_position"]
         self._term = _ActionTerm(joint_names)
-        self.action = torch.zeros(
-            env.scene.num_envs, len(joint_names), device=env.device
-        )
+        self.total_action_dim = int(env.cfg.action_space)
+        self.action = torch.zeros(env.scene.num_envs, len(joint_names), device=env.device)
         self.prev_action = torch.zeros_like(self.action)
         self.prev_prev_action = torch.zeros_like(self.action)
 
@@ -111,9 +110,7 @@ class _DirectActionManager:
 class _DirectTerminationManager:
     def __init__(self, env: "CaneleEnv"):
         self._env = env
-        self.terminated = torch.zeros(
-            env.scene.num_envs, dtype=torch.bool, device=env.device
-        )
+        self.terminated = torch.zeros(env.scene.num_envs, dtype=torch.bool, device=env.device)
         self.time_outs = torch.zeros_like(self.terminated)
 
     def get_term(self, term: str) -> torch.Tensor:
@@ -132,12 +129,8 @@ class CaneleEnvCfg(DirectRLEnvCfg):
     dt = 0.005
 
     sim: SimulationCfg = SimulationCfg(dt=dt)
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        env_spacing=2.5, replicate_physics=True
-    )
-    robot_cfg: ArticulationCfg = CANELE_MINIMAL_CFG.replace(
-        prim_path="/World/envs/env_.*/Robot"
-    )
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(env_spacing=2.5, replicate_physics=True)
+    robot_cfg: ArticulationCfg = CANELE_MINIMAL_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
     imu: ImuCfg = ImuCfg(
         prim_path=f"/World/envs/env_.*/Robot/{BASE_LINK}",
@@ -163,19 +156,14 @@ class CaneleEnv(DirectRLEnv):
         self.joint_names = list(LOWER_BODY_JOINTS)
         self.joint_ids = [self._joint_name_to_id(name) for name in self.joint_names]
         self.base_id = self._body_name_to_id(BASE_LINK)
-        self.foot_ids = [
-            self._body_name_to_id(RIGHT_FOOT),
-            self._body_name_to_id(LEFT_FOOT),
-        ]
+        self.foot_ids = [self._body_name_to_id(RIGHT_FOOT), self._body_name_to_id(LEFT_FOOT)]
 
         lower_limits = self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 0]
         upper_limits = self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 1]
         self.lower_limits = lower_limits
         self.upper_limits = upper_limits
 
-        self.base_pose = torch.rad2deg(
-            self.robot.data.default_joint_pos[:, self.joint_ids]
-        ).clone()
+        self.base_pose = torch.rad2deg(self.robot.data.default_joint_pos[:, self.joint_ids]).clone()
         self.cmd_actions = self.base_pose.clone()
         self.noisy_act = self.base_pose.clone()
 
@@ -186,9 +174,7 @@ class CaneleEnv(DirectRLEnv):
         self.orient_h = torch.zeros(self.scene.num_envs, 4, 3, device=self.device)
         self.gyro_h = torch.zeros(self.scene.num_envs, 4, 3, device=self.device)
 
-        norm_base = normalize_actions(
-            self.base_pose, self.lower_limits, self.upper_limits
-        )
+        norm_base = normalize_actions(self.base_pose, self.lower_limits, self.upper_limits)
         self.act_hist = norm_base.unsqueeze(1).repeat(1, 4, 1)
 
         self.commands = torch.zeros(self.scene.num_envs, 3, device=self.device)
@@ -197,12 +183,8 @@ class CaneleEnv(DirectRLEnv):
         self.action_manager = _DirectActionManager(self, self.joint_names)
         self.termination_manager = _DirectTerminationManager(self)
 
-        self.contact_sensor_cfg = self._make_body_cfg(
-            "contact_forces", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids
-        )
-        self.feet_body_cfg = self._make_body_cfg(
-            "robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids
-        )
+        self.contact_sensor_cfg = self._make_body_cfg("contact_forces", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
+        self.feet_body_cfg = self._make_body_cfg("robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
         self.base_body_cfg = self._make_body_cfg("robot", [BASE_LINK], [self.base_id])
         self.base_and_feet_cfg = self._make_body_cfg(
             "robot",
@@ -225,9 +207,7 @@ class CaneleEnv(DirectRLEnv):
             return int(matches[0][0])
         return int(matches[0])
 
-    def _make_body_cfg(
-        self, name: str, body_names: list[str], body_ids: list[int]
-    ) -> SceneEntityCfg:
+    def _make_body_cfg(self, name: str, body_names: list[str], body_ids: list[int]) -> SceneEntityCfg:
         cfg = SceneEntityCfg(name, body_names=list(body_names), preserve_order=True)
         cfg.body_ids = list(body_ids)
         return cfg
@@ -258,9 +238,7 @@ class CaneleEnv(DirectRLEnv):
             restitution=0.0,
             friction_combine_mode="average",
         )
-        spawn_ground_plane(
-            prim_path="/World/ground", cfg=GroundPlaneCfg(physics_material=ground_cfg)
-        )
+        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(physics_material=ground_cfg))
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -285,13 +263,9 @@ class CaneleEnv(DirectRLEnv):
 
         self.update_imu_history(orient, angular_vel)
 
-        imu_hist = torch.cat((self.orient_h[:, :, :2], self.gyro_h), dim=2).reshape(
-            self.scene.num_envs, 20
-        )
+        imu_hist = torch.cat((self.orient_h[:, :, :2], self.gyro_h), dim=2).reshape(self.scene.num_envs, 20)
 
-        cmd_act_norm = normalize_actions(
-            self.cmd_actions, self.lower_limits, self.upper_limits
-        )
+        cmd_act_norm = normalize_actions(self.cmd_actions, self.lower_limits, self.upper_limits)
         self.act_hist[:, :-1] = self.act_hist[:, 1:].clone()
         self.act_hist[:, -1] = cmd_act_norm
         act_hist = self.act_hist.reshape(self.scene.num_envs, 4 * len(self.joint_names))
@@ -306,13 +280,9 @@ class CaneleEnv(DirectRLEnv):
         self.action_manager.prev_action.copy_(self.action_manager.action)
         self.action_manager.action.copy_(torch.clamp(actions, -1.0, 1.0))
 
-        self.cmd_actions = denormalize_actions(
-            self.action_manager.action, self.lower_limits, self.upper_limits
-        )
+        self.cmd_actions = denormalize_actions(self.action_manager.action, self.lower_limits, self.upper_limits)
         self.noisy_act = gaussian_noise(self.cmd_actions, self.actuator_noise)
-        self.noisy_act = torch.max(
-            torch.min(self.noisy_act, self.upper_limits), self.lower_limits
-        )
+        self.noisy_act = torch.max(torch.min(self.noisy_act, self.upper_limits), self.lower_limits)
 
     def _apply_action(self):
         self.robot.set_joint_position_target(self.noisy_act, joint_ids=self.joint_ids)
@@ -428,9 +398,7 @@ class CaneleEnv(DirectRLEnv):
 
         reward += -0.2 * self._root_vertical_velocity_l2()
         reward += -1.0 * self._flat_orientation_base_l2()
-        reward += -0.01 * canele_rewards_joint.ang_vel_xy_links_l2(
-            self, asset_cfg=self.base_body_cfg
-        )
+        reward += -0.01 * canele_rewards_joint.ang_vel_xy_links_l2(self, asset_cfg=self.base_body_cfg)
         reward += -0.01 * self._action_rate_l2()
         reward += -1.0e-9 * canele_rewards_joint.joint_action_acc_l2(
             self,
@@ -466,11 +434,7 @@ class CaneleEnv(DirectRLEnv):
         self.cmd_actions[env_ids] = self.base_pose[env_ids]
         self.noisy_act[env_ids] = self.base_pose[env_ids]
 
-        reset_norm = normalize_actions(
-            self.base_pose[env_ids],
-            self.lower_limits[env_ids],
-            self.upper_limits[env_ids],
-        )
+        reset_norm = normalize_actions(self.base_pose[env_ids], self.lower_limits[env_ids], self.upper_limits[env_ids])
         self.action_manager.action[env_ids] = reset_norm
         self.action_manager.prev_action[env_ids] = reset_norm
         self.action_manager.prev_prev_action[env_ids] = reset_norm
@@ -479,15 +443,9 @@ class CaneleEnv(DirectRLEnv):
         self.termination_manager.terminated[env_ids] = False
         self.termination_manager.time_outs[env_ids] = False
 
-        self.commands[env_ids, 0] = torch.empty(
-            len(env_ids), device=self.device
-        ).uniform_(-0.6, 0.6)
-        self.commands[env_ids, 1] = torch.empty(
-            len(env_ids), device=self.device
-        ).uniform_(-0.6, 0.6)
-        self.commands[env_ids, 2] = torch.empty(
-            len(env_ids), device=self.device
-        ).uniform_(-1.2, 1.2)
+        self.commands[env_ids, 0] = torch.empty(len(env_ids), device=self.device).uniform_(-0.6, 0.6)
+        self.commands[env_ids, 1] = torch.empty(len(env_ids), device=self.device).uniform_(-0.6, 0.6)
+        self.commands[env_ids, 2] = torch.empty(len(env_ids), device=self.device).uniform_(-1.2, 1.2)
 
 
 @torch.jit.script
@@ -515,17 +473,13 @@ def scale_value(value: torch.Tensor, min_val: float, max_val: float):
 
 
 @torch.jit.script
-def normalize_actions(
-    value_deg: torch.Tensor, lower_deg: torch.Tensor, upper_deg: torch.Tensor
-):
+def normalize_actions(value_deg: torch.Tensor, lower_deg: torch.Tensor, upper_deg: torch.Tensor):
     denom = (upper_deg - lower_deg).clamp_min(1e-6)
     return torch.clamp((value_deg - lower_deg) / denom * 2.0 - 1.0, -1.0, 1.0)
 
 
 @torch.jit.script
-def denormalize_actions(
-    value_norm: torch.Tensor, lower_deg: torch.Tensor, upper_deg: torch.Tensor
-):
+def denormalize_actions(value_norm: torch.Tensor, lower_deg: torch.Tensor, upper_deg: torch.Tensor):
     return lower_deg + (value_norm + 1.0) * 0.5 * (upper_deg - lower_deg)
 
 

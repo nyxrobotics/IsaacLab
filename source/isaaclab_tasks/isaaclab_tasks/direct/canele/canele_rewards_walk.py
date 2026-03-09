@@ -496,34 +496,35 @@ def feet_air_time_alternating_biped(
     # ------------------------------------------------------------------
     # Gating
     # ------------------------------------------------------------------
-    if linear_cmd_threshold > 0 or angular_cmd_threshold > 0:
-        cmd = env.command_manager.get_command(command_name)
-        lin_mag = torch.norm(cmd[:, :2], dim=1)
-        yaw_mag = (
-            torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
-        )
-        lin_scale = torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1)
-        yaw_scale = torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1)
-    else:
-        lin_scale = torch.zeros((n_env,), device=device)
-        yaw_scale = torch.zeros((n_env,), device=device)
+    cmd = env.command_manager.get_command(command_name)
+    lin_mag = torch.norm(cmd[:, :2], dim=1)
+    yaw_mag = torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
 
-    if body_tilt_threshold > 0:
-        tilt_scale = torch.zeros_like(lin_scale)
+    lin_scale = (
+        torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1)
+        if linear_cmd_threshold >= 0
+        else torch.zeros_like(lin_mag)
+    )
+    yaw_scale = (
+        torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1)
+        if angular_cmd_threshold >= 0
+        else torch.zeros_like(lin_mag)
+    )
+
+    tilt_scale = torch.zeros_like(lin_mag)
+    if body_tilt_threshold >= 0:
         robot = env.scene.articulations["robot"]
         proj_g = robot.data.projected_gravity_b
         sin_tilt = torch.norm(proj_g[:, :2], dim=1).clamp(0, 1)
         tilt_angle = torch.asin(sin_tilt)
         tilt_scale = torch.clamp(tilt_angle / max(body_tilt_threshold, 1e-6), 0, 1)
-    else:
-        tilt_scale = torch.zeros((n_env,), device=device)
 
     if (
         linear_cmd_threshold < 0
         and angular_cmd_threshold < 0
         and body_tilt_threshold < 0
     ):
-        gate_scale = torch.ones_like(lin_scale)
+        gate_scale = torch.ones_like(lin_mag)
     else:
         gate_scale = torch.maximum(torch.maximum(lin_scale, yaw_scale), tilt_scale)
 

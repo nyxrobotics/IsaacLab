@@ -19,6 +19,7 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
 )
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
 from . import canele_terminations
+from . import canele_env_rewards
 from . import canele_walk_rewards
 from . import canele_joint_rewards
 
@@ -54,7 +55,7 @@ class CaneleRewards(RewardsCfg):
     """Reward terms for the MDP (Canele)."""
 
     termination_penalty = RewTerm(
-        func=mdp.is_terminated,
+        func=canele_env_rewards.is_terminated,
         weight=-200.0,
     )
     track_lin_vel_xy_exp = RewTerm(

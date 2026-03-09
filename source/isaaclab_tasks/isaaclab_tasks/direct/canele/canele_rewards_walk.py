@@ -499,13 +499,11 @@ def feet_air_time_alternating_biped(
     if linear_cmd_threshold > 0 or angular_cmd_threshold > 0:
         cmd = env.command_manager.get_command(command_name)
         lin_mag = torch.norm(cmd[:, :2], dim=1)
-        yaw_mag = torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
-        lin_scale = (
-            torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1)
+        yaw_mag = (
+            torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
         )
-        yaw_scale = (
-            torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1)
-        )
+        lin_scale = torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1)
+        yaw_scale = torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1)
     else:
         lin_scale = torch.zeros((n_env,), device=device)
         yaw_scale = torch.zeros((n_env,), device=device)

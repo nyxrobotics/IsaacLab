@@ -22,11 +22,11 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import GaussianNoiseCfg, gaussian_noise
 
-from .canele_cfg import CANELE_MINIMAL_CFG
-from . import canele_terminations
-from . import canele_rewards_env
-from . import canele_rewards_walk
-from . import canele_rewards_joint
+from ..assets.canele_cfg import CANELE_MINIMAL_CFG
+from .terminations import canele_terminations
+from .rewards import canele_rewards_env
+from .rewards import canele_rewards_walk
+from .rewards import canele_rewards_joint
 
 
 LOWER_BODY_JOINTS = [
@@ -183,7 +183,16 @@ class CaneleEnv(DirectRLEnv):
         self.action_manager = _DirectActionManager(self, self.joint_names)
         self.termination_manager = _DirectTerminationManager(self)
 
-        self.contact_sensor_cfg = self._make_body_cfg("contact_forces", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
+        num_contact_bodies = int(self.contact.data.current_contact_time.shape[1])
+        if num_contact_bodies < 2:
+            raise RuntimeError(
+                f"ContactSensor matched only {num_contact_bodies} body/bodies for {self.cfg.contact.prim_path}"
+            )
+        self.contact_sensor_cfg = self._make_body_cfg(
+            "contact_forces",
+            [RIGHT_FOOT, LEFT_FOOT],
+            list(range(2)),
+        )
         self.feet_body_cfg = self._make_body_cfg("robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
         self.base_body_cfg = self._make_body_cfg("robot", [BASE_LINK], [self.base_id])
         self.base_and_feet_cfg = self._make_body_cfg(

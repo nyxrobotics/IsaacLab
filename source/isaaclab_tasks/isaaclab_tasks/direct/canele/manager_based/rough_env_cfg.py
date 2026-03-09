@@ -12,16 +12,16 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 # Canele articulation config
-from .canele_cfg import CANELE_MINIMAL_CFG
+from ..assets.canele_cfg import CANELE_MINIMAL_CFG
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     LocomotionVelocityRoughEnvCfg,
 )
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
-from . import canele_terminations
-from . import canele_rewards_env
-from . import canele_rewards_walk
-from . import canele_rewards_joint
+from .terminations import canele_terminations
+from .rewards import canele_rewards_env
+from .rewards import canele_rewards_walk
+from .rewards import canele_rewards_joint
 
 
 # For USD prim inspection

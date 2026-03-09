@@ -76,6 +76,8 @@ from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_po
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
+from export_io_descriptors import export_io_descriptors
+from isaaclab_tasks.direct.bimo.io_descriptors import get_io_descriptors as get_bimo_io_descriptors
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -115,19 +117,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    # ------------------------------------------------------------
-    # Export IO descriptors into the same exported/ directory as policy.onnx/policy.pt
-    # NOTE: ManagerBasedEnv checks these flags during env initialization.
-    # ------------------------------------------------------------
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     os.makedirs(export_model_dir, exist_ok=True)
-
-    # Set flags even if the cfg class doesn't define them (Hydra configclass is permissive)
-    setattr(env_cfg, "export_io_descriptors", True)
-    setattr(env_cfg, "io_descriptors_output_dir", export_model_dir)
-
-    print(f"[INFO] IO descriptors will be exported to: {export_model_dir}")
-    # ------------------------------------------------------------
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -184,6 +175,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # export policy to onnx/jit
     export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
     export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+
+    if args_cli.task.split(":")[-1] == "Bimo":
+        descriptors = get_bimo_io_descriptors(env.unwrapped.obj)
+        export_io_descriptors(descriptors, export_model_dir)
+        print(f"[INFO] IO descriptors exported to: {export_model_dir}")
 
     dt = env.unwrapped.step_dt
 

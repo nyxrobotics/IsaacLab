@@ -19,9 +19,9 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
 )
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
 from . import canele_terminations
-from . import canele_env_rewards
-from . import canele_walk_rewards
-from . import canele_joint_rewards
+from . import canele_rewards_env
+from . import canele_rewards_walk
+from . import canele_rewards_joint
 
 
 # For USD prim inspection
@@ -55,11 +55,11 @@ class CaneleRewards(RewardsCfg):
     """Reward terms for the MDP (Canele)."""
 
     termination_penalty = RewTerm(
-        func=canele_env_rewards.is_terminated,
+        func=canele_rewards_env.is_terminated,
         weight=-200.0,
     )
     track_lin_vel_xy_exp = RewTerm(
-        func=canele_walk_rewards.track_lin_vel_xy_yaw_frame_exp_no_flight,
+        func=canele_rewards_walk.track_lin_vel_xy_yaw_frame_exp_no_flight,
         weight=1.0,
         params={
             "command_name": "base_velocity",
@@ -76,7 +76,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     track_ang_vel_z_exp = RewTerm(
-        func=canele_walk_rewards.track_ang_vel_z_world_exp_no_flight,
+        func=canele_rewards_walk.track_ang_vel_z_world_exp_no_flight,
         weight=2.0,
         params={
             "command_name": "base_velocity",
@@ -93,7 +93,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     feet_air_time = RewTerm(
-        func=canele_walk_rewards.feet_air_time_alternating_biped,
+        func=canele_rewards_walk.feet_air_time_alternating_biped,
         weight=1.0,
         params={
             "command_name": "base_velocity",
@@ -118,7 +118,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     feet_slide = RewTerm(
-        func=canele_walk_rewards.feet_slide_keep_flat,
+        func=canele_rewards_walk.feet_slide_keep_flat,
         weight=-0.1,
         params={
             "sensor_cfg": SceneEntityCfg(
@@ -139,7 +139,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     joint_deviation_hip = RewTerm(
-        func=canele_joint_rewards.joint_action_deviation_l1,
+        func=canele_rewards_joint.joint_action_deviation_l1,
         weight=-0.01,
         params={
             "asset_cfg": SceneEntityCfg(
@@ -154,7 +154,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     joint_deviation_torso = RewTerm(
-        func=canele_joint_rewards.joint_action_deviation_l1,
+        func=canele_rewards_joint.joint_action_deviation_l1,
         weight=-0.1,
         params={
             "asset_cfg": SceneEntityCfg(
@@ -163,7 +163,7 @@ class CaneleRewards(RewardsCfg):
         },
     )
     flat_toe_penalty = RewTerm(
-        func=canele_joint_rewards.flat_orientation_links_l2,
+        func=canele_rewards_joint.flat_orientation_links_l2,
         weight=0.1,
         params={
             "asset_cfg": SceneEntityCfg(

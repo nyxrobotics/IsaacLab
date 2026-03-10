@@ -1,9 +1,22 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+"""Common functions that can be used to define rewards for the learning environment.
+
+Pure direct-environment reward helpers for the Canele task.
+"""
+
 from __future__ import annotations
 
-import torch
+from typing import TYPE_CHECKING
+
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import yaw_quat
+import torch
+
 
 
 def _quat_conjugate(q: torch.Tensor) -> torch.Tensor:
@@ -29,22 +42,689 @@ def _quat_rotate(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return _quat_mul(_quat_mul(q, qv), _quat_conjugate(q))[..., 1:]
 
 
+def _quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    return _quat_rotate(_quat_conjugate(q), v)
+
+
+def _quat_apply(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate vector(s) v by quaternion(s) q.
+    q: (..., 4) in (x, y, z, w)
+    v: (..., 3)
+    """
+    q_xyz = q[..., :3]
+    q_w = q[..., 3:4]
+    t = 2.0 * torch.cross(q_xyz, v, dim=-1)
+    return v + q_w * t + torch.cross(q_xyz, t, dim=-1)
+
+
 def _any_foot_in_contact(
     env,
     sensor_cfg: SceneEntityCfg,
     contact_time_eps: float = 1e-3,
     force_eps: float = 1e-6,
 ) -> torch.Tensor:
+    """Return (N,) bool tensor indicating whether any foot is in contact."""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     sensor_ids = sensor_cfg.body_ids
+
     forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]
     forces_feet = forces_w_last[:, sensor_ids, :]
     force_norm = torch.norm(forces_feet, dim=-1)
+
     contact_time = contact_sensor.data.current_contact_time[:, sensor_ids]
+
     grounded_by_time = contact_time > contact_time_eps
     grounded_by_force = force_norm > force_eps
+
     in_contact = grounded_by_time & grounded_by_force
     return torch.any(in_contact, dim=1)
+
+
+def global_torso_height_penalty_l1(
+    env,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    Torso height penalty with margin.
+
+    - rel_height = chest_z - min_ankle_z
+    - If |rel_height - target_height| <= margin → penalty = 0
+    - If above margin → penalty = -gain * (excess amount)
+
+    Parameters
+    ----------
+    target_height : float
+        Desired torso height above lowest ankle.
+    margin : float
+        Allowed deviation without penalty.
+    gain : float
+        Penalty gain applied to the amount exceeding the margin.
+    """
+    asset = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    # Heights
+    chest_z = body_pos_w[:, chest_id, 2]
+    ankles_z = body_pos_w[:, ankle_ids, 2]
+    min_ankle_z = ankles_z.min(dim=-1).values
+
+    # Torso height above lowest ankle
+    rel_height = chest_z - min_ankle_z
+
+    # deviation
+    diff = rel_height - target_height
+
+    # margin excess (positive if outside ±margin)
+    excess = torch.relu(torch.abs(diff) - margin)
+
+    penalty = -gain * excess
+    return penalty
+
+
+def global_torso_height_penalty_l2(
+    env,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+) -> torch.Tensor:
+    """
+    L2 version of global_torso_height_penalty.
+
+    - rel_height = chest_z - min_ankle_z
+    - If |rel_height - target_height| <= margin → penalty = 0
+    - If above margin → penalty = -gain * (excess amount)^2
+
+    Parameters
+    ----------
+    target_height : float
+        Desired torso height above lowest ankle.
+    margin : float
+        Allowed deviation without penalty.
+    gain : float
+        Penalty gain applied to the squared amount exceeding the margin.
+    """
+    asset = env.scene[asset_cfg.name]
+    body_pos_w = asset.data.body_pos_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    # Heights
+    chest_z = body_pos_w[:, chest_id, 2]
+    ankles_z = body_pos_w[:, ankle_ids, 2]
+    min_ankle_z = ankles_z.min(dim=-1).values
+
+    # Torso height above lowest ankle
+    rel_height = chest_z - min_ankle_z
+
+    # deviation
+    diff = rel_height - target_height
+
+    # margin excess (positive if outside ±margin)
+    excess = torch.relu(torch.abs(diff) - margin)
+
+    # L2 penalty
+    penalty = -gain * excess * excess
+    return penalty
+
+
+def local_torso_height_penalty_l1(
+    env,
+    asset_cfg,
+    contact_sensor_cfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+    contact_force_threshold: float = 0.01,
+) -> torch.Tensor:
+    asset = env.scene[asset_cfg.name]
+
+    body_pos_w = asset.data.body_pos_w
+    body_quat_w = asset.data.body_quat_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    chest_pos_w = body_pos_w[:, chest_id, :]
+    chest_quat_w = body_quat_w[:, chest_id, :]
+    ankles_pos_w = body_pos_w[:, ankle_ids, :]
+
+    rel_vec_w = ankles_pos_w - chest_pos_w.unsqueeze(1)
+    chest_quat_w_a = chest_quat_w.unsqueeze(1).expand(-1, rel_vec_w.shape[1], -1)
+    rel_vec_b = _quat_rotate_inverse(chest_quat_w_a, rel_vec_w)
+
+    foot_depths = -rel_vec_b[..., 2]  # (N, A) positive along torso -Z
+
+    # Contact detection
+    contact_sensor = env.scene.sensors[contact_sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[
+        :, :, contact_sensor_cfg.body_ids, :
+    ]  # (N, H, A, 3)
+    in_contact = forces.norm(dim=-1).max(dim=1)[0] > contact_force_threshold  # (N, A)
+
+    num_contact = in_contact.sum(dim=-1)  # (N,)
+    any_contact = num_contact > 0
+
+    # If contact exists: use "highest foot" among contacting feet => min depth
+    contact_depths = torch.where(
+        in_contact, foot_depths, torch.full_like(foot_depths, 1e9)
+    )
+    contact_depth = contact_depths.min(dim=-1).values  # (N,)
+
+    # If flight: use lower foot => max depth
+    flight_depth = foot_depths.max(dim=-1).values  # (N,)
+
+    foot_depth = torch.where(any_contact, contact_depth, flight_depth)
+
+    diff = foot_depth - target_height
+    excess = torch.relu(torch.abs(diff) - margin)
+    return -gain * excess
+
+
+def local_torso_height_penalty_l2(
+    env,
+    asset_cfg,
+    contact_sensor_cfg,
+    target_height: float,
+    margin: float,
+    gain: float = 1.0,
+    contact_force_threshold: float = 0.01,
+    large_value: float = 1e9,
+) -> torch.Tensor:
+    """
+    L2 version of local_torso_height_penalty.
+
+    - Computes foot depth along the torso local -Z axis (positive means "below the torso").
+    - If any foot is in contact: uses the highest contacting foot (min depth) as support reference.
+    - If in flight: uses the lower foot (max depth) as reference.
+    - Penalizes deviation outside a dead-zone (margin) with a squared (L2) penalty:
+        penalty = -gain * (max(|diff| - margin, 0))^2
+    """
+    asset = env.scene[asset_cfg.name]
+
+    body_pos_w = asset.data.body_pos_w
+    body_quat_w = asset.data.body_quat_w
+
+    chest_id = asset_cfg.body_ids[0]
+    ankle_ids = asset_cfg.body_ids[1:]
+
+    chest_pos_w = body_pos_w[:, chest_id, :]
+    chest_quat_w = body_quat_w[:, chest_id, :]
+    ankles_pos_w = body_pos_w[:, ankle_ids, :]
+
+    rel_vec_w = ankles_pos_w - chest_pos_w.unsqueeze(1)
+    chest_quat_w_a = chest_quat_w.unsqueeze(1).expand(-1, rel_vec_w.shape[1], -1)
+    rel_vec_b = _quat_rotate_inverse(chest_quat_w_a, rel_vec_w)
+
+    foot_depths = -rel_vec_b[..., 2]  # (N, A) positive along torso -Z
+
+    # Contact detection (use peak force over history)
+    contact_sensor = env.scene.sensors[contact_sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w_history[
+        :, :, contact_sensor_cfg.body_ids, :
+    ]  # (N, H, A, 3)
+    in_contact = forces.norm(dim=-1).amax(dim=1) > contact_force_threshold  # (N, A)
+
+    any_contact = in_contact.any(dim=-1)  # (N,)
+
+    # If contact exists: use "highest foot" among contacting feet => min depth
+    contact_depths = torch.where(
+        in_contact, foot_depths, torch.full_like(foot_depths, large_value)
+    )
+    contact_depth = contact_depths.min(dim=-1).values  # (N,)
+
+    # If flight: use lower foot => max depth
+    flight_depth = foot_depths.max(dim=-1).values  # (N,)
+
+    foot_depth = torch.where(any_contact, contact_depth, flight_depth)
+
+    diff = foot_depth - target_height
+    excess = torch.relu(torch.abs(diff) - margin)
+
+    # L2 penalty
+    return -gain * excess * excess
+
+
+def feet_slide_keep_flat(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    lin_weight: float = 1.0,
+    tilt_weight: float = 1.0,
+    yaw_weight: float = 1.0,
+    allow_uprighting_tilt: bool = True,  # default ON
+    air_time_eps: float = 1e-3,
+    force_eps: float = 1e-6,
+    local_up_axis: torch.Tensor | None = None,  # default: +Z
+) -> torch.Tensor:
+    """Penalize XY sliding and orientation change while the foot is in contact.
+
+    Tilt handling:
+      - allow_uprighting_tilt=True:
+          Only penalize tilt motion that increases tilt (moves away from world up).
+      - allow_uprighting_tilt=False:
+          Penalize total tilt rate ||omega_xy|| as usual.
+
+    Returns positive cost (penalty).
+    """
+    # --------------------------------------------------------
+    # 1) Contact state
+    # --------------------------------------------------------
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]  # (N, S, 3)
+    sensor_ids = sensor_cfg.body_ids
+    forces_feet = forces_w_last[:, sensor_ids, :]  # (N, F, 3)
+    force_norm = torch.norm(forces_feet, dim=-1)  # (N, F)
+
+    air_time = contact_sensor.data.current_air_time[:, sensor_ids]  # (N, F)
+
+    grounded_by_air = air_time < air_time_eps
+    grounded_by_force = force_norm > force_eps
+
+    # Match your reference behavior:
+    in_contact = grounded_by_air | grounded_by_force  # (N, F) bool
+
+    # --------------------------------------------------------
+    # 2) Foot kinematics (world)
+    # --------------------------------------------------------
+    asset = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids  # (F,)
+
+    body_lin_vel_w = asset.data.body_lin_vel_w[:, body_ids, :]  # (N, F, 3)
+    lin_speed_xy = torch.norm(body_lin_vel_w[..., :2], dim=-1)  # (N, F)
+
+    body_ang_vel_w = asset.data.body_ang_vel_w[:, body_ids, :]  # (N, F, 3)
+    omega_xy_norm = torch.norm(body_ang_vel_w[..., :2], dim=-1)  # (N, F)
+    yaw_rate = torch.abs(body_ang_vel_w[..., 2])  # (N, F)
+
+    # --------------------------------------------------------
+    # 3) Tilt cost: optionally allow "uprighting" direction
+    # --------------------------------------------------------
+    if local_up_axis is None:
+        local_up_axis = torch.tensor(
+            [0.0, 0.0, 1.0], device=body_ang_vel_w.device, dtype=body_ang_vel_w.dtype
+        )
+
+    if allow_uprighting_tilt:
+        # Need foot orientation in world to get u = R * local_up
+        # Isaac Lab typically provides body_quat_w as (N, B, 4) with (x,y,z,w).
+        body_quat_w = asset.data.body_quat_w[:, body_ids, :]  # (N, F, 4)
+
+        local_up = local_up_axis.view(1, 1, 3).expand(
+            body_quat_w.shape[0], body_quat_w.shape[1], 3
+        )
+        u = _quat_apply(body_quat_w, local_up)  # (N, F, 3) foot up in world
+
+        z = torch.zeros_like(u)
+        z[..., 2] = 1.0  # world up
+
+        # s = d/dt(u·z) = ω · (u × z)
+        # If s < 0 => u·z decreases => tilt gets worse => penalize (-s)
+        u_cross_z = torch.cross(u, z, dim=-1)  # (N, F, 3)
+        s = torch.sum(body_ang_vel_w * u_cross_z, dim=-1)  # (N, F)
+        tilt_cost = torch.relu(-s)  # only "tilt-worsening" component
+    else:
+        tilt_cost = omega_xy_norm  # penalize all tilt rate
+
+    # --------------------------------------------------------
+    # 4) Total cost (contact-masked)
+    # --------------------------------------------------------
+    cost_per_foot = (
+        lin_weight * lin_speed_xy + tilt_weight * tilt_cost + yaw_weight * yaw_rate
+    )
+
+    cost_per_foot = cost_per_foot * in_contact.float()
+    penalty = torch.sum(cost_per_foot, dim=1)  # (N,)
+
+    return penalty
+
+
+def feet_air_time_alternating_biped(
+    env,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    *,
+    # --- double-support ratio control (0 disables; same behavior as before) ---
+    dsp_ratio: float = 0.0,
+    # --- gating thresholds (set < 0 to disable each gate) ---
+    linear_cmd_threshold: float = 0.0,
+    angular_cmd_threshold: float = 0.0,
+    body_tilt_threshold: float = 0.0,
+    # --- air/contact time constraints ---
+    air_min_time: float = 0.1,
+    air_max_time: float = 1.0,
+    min_contact_time: float = 0.1,
+    # --- symmetry control using EMA (multiplicative downscaler) ---
+    ema_alpha: float = 0.02,
+    air_balance_weight: float = 1.0,
+    contact_balance_weight: float = 0.0,
+    # --- shaping rewards ---
+    air_reward: float = 1.0,
+    contact_reward: float = 1.0,
+    # --- alternation rewards ---
+    alternation_reward_scale: float = 1.0,
+    non_alternation_reward_scale: float = 0.2,
+) -> torch.Tensor:
+    """
+    Pure reward-scaling design:
+      - All terms are non-negative.
+      - Air reward ramps to 1 at air_min_time, then stays constant until air_max_time.
+      - Contact reward ramps to 1 at min_contact_time, then stays constant.
+      - Double flight and timeout zero the reward.
+      - Symmetry imbalance smoothly downscales reward.
+
+    Step-state machine completed:
+      - updates prev_step_air_foot on touchdown of the active foot
+      - clears active_air_foot on touchdown of the active foot
+      - clears air_timed_out when a step completes (touchdown_active)
+      - stores last_completed_air for the completed (active) foot on touchdown_active
+
+    Contact reward:
+      - reward_contact_hold applies during both single_contact and double_contact
+        (double_contact uses stance_time = min(contact_time_left, contact_time_right)).
+
+    DSP behavior (requested):
+      - If dsp_ratio > 0, the next liftoff (start_air_phase) is suppressed until the
+        "previous airborne foot" has stayed in contact for:
+            dsp_ratio * (previous airborne duration)
+        This prevents foot-lift rewards from appearing "too soon" after touchdown.
+      - If dsp_ratio == 0, behavior is identical to the previous implementation.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    foot_ids = sensor_cfg.body_ids
+    assert len(foot_ids) == 2
+
+    air_time = contact_sensor.data.current_air_time[:, foot_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, foot_ids]
+    in_contact = contact_time > 0.0
+
+    n_env = in_contact.shape[0]
+    device = in_contact.device
+
+    # ------------------------------------------------------------------
+    # Buffers
+    # ------------------------------------------------------------------
+    key = "_feet_air_contact_reward_buf"
+    if not hasattr(env, key):
+        setattr(
+            env,
+            key,
+            {
+                "prev_in_contact": in_contact.clone(),
+                "last_completed_air": torch.zeros((n_env, 2), device=device),
+                "ema_air": torch.zeros((n_env, 2), device=device),
+                "ema_contact": torch.zeros((n_env, 2), device=device),
+                "active_air_foot": torch.full(
+                    (n_env,), -1, device=device, dtype=torch.long
+                ),
+                "prev_step_air_foot": torch.full(
+                    (n_env,), -1, device=device, dtype=torch.long
+                ),
+                "air_timed_out": torch.zeros((n_env,), device=device, dtype=torch.bool),
+            },
+        )
+
+    buf = getattr(env, key)
+    prev_in_contact = buf["prev_in_contact"]
+    last_completed_air = buf["last_completed_air"]
+    ema_air = buf["ema_air"]
+    ema_contact = buf["ema_contact"]
+    active_air_foot = buf["active_air_foot"]
+    prev_step_air_foot = buf["prev_step_air_foot"]
+    air_timed_out = buf["air_timed_out"]
+
+    # ------------------------------------------------------------------
+    # Contact transitions
+    # ------------------------------------------------------------------
+    lift_off = prev_in_contact & (~in_contact)
+    touch_down = (~prev_in_contact) & in_contact
+
+    # (Kept as-is; step-completion storage is handled later using touchdown_active.)
+    last_completed_air = torch.where(touch_down, air_time, last_completed_air)
+
+    # ------------------------------------------------------------------
+    # Gating
+    # ------------------------------------------------------------------
+    cmd = env.command_manager.get_command(command_name)
+    lin_mag = torch.norm(cmd[:, :2], dim=1)
+    yaw_mag = torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
+
+    lin_scale = (
+        torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1)
+        if linear_cmd_threshold >= 0
+        else torch.zeros_like(lin_mag)
+    )
+    yaw_scale = (
+        torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1)
+        if angular_cmd_threshold >= 0
+        else torch.zeros_like(lin_mag)
+    )
+
+    tilt_scale = torch.zeros_like(lin_mag)
+    if body_tilt_threshold >= 0:
+        robot = env.scene.articulations["robot"]
+        proj_g = robot.data.projected_gravity_b
+        sin_tilt = torch.norm(proj_g[:, :2], dim=1).clamp(0, 1)
+        tilt_angle = torch.asin(sin_tilt)
+        tilt_scale = torch.clamp(tilt_angle / max(body_tilt_threshold, 1e-6), 0, 1)
+
+    if (
+        linear_cmd_threshold < 0
+        and angular_cmd_threshold < 0
+        and body_tilt_threshold < 0
+    ):
+        gate_scale = torch.ones_like(lin_mag)
+    else:
+        gate_scale = torch.maximum(torch.maximum(lin_scale, yaw_scale), tilt_scale)
+
+    # ------------------------------------------------------------------
+    # Contact classification
+    # ------------------------------------------------------------------
+    contact_count = in_contact.int().sum(dim=1)
+    single_contact = contact_count == 1
+    double_contact = contact_count == 2
+    double_flight = contact_count == 0
+
+    # ------------------------------------------------------------------
+    # Air phase logic
+    # ------------------------------------------------------------------
+    lift_count = lift_off.int().sum(dim=1)
+    lifted_foot = torch.where(lift_off[:, 0], 0, torch.where(lift_off[:, 1], 1, -1))
+
+    lifted_contact_time = torch.where(
+        lifted_foot == 0,
+        contact_time[:, 0],
+        torch.where(lifted_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)),
+    )
+    liftoff_contact_ok = lifted_contact_time >= min_contact_time
+
+    # ------------------------------------------------------------------
+    # DSP gate: suppress the next liftoff until the previous airborne foot
+    # has stayed in contact for dsp_ratio * (previous airborne duration).
+    # ------------------------------------------------------------------
+    has_prev_step = prev_step_air_foot >= 0
+
+    prev_air_duration = torch.where(
+        prev_step_air_foot == 0,
+        last_completed_air[:, 0],
+        torch.where(
+            prev_step_air_foot == 1, last_completed_air[:, 1], torch.zeros_like(lin_mag)
+        ),
+    )
+
+    prev_contact_since_touchdown = torch.where(
+        prev_step_air_foot == 0,
+        contact_time[:, 0],
+        torch.where(
+            prev_step_air_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)
+        ),
+    )
+
+    # Required double-support time after the previous step completes.
+    dsp_required_time = dsp_ratio * prev_air_duration
+
+    # If dsp_ratio == 0, do not gate (same behavior as before).
+    # If no previous step yet, do not gate.
+    dsp_ok = (
+        (dsp_ratio <= 0.0)
+        | (~has_prev_step)
+        | (prev_contact_since_touchdown >= dsp_required_time)
+    )
+
+    start_air_phase = (
+        (active_air_foot < 0)
+        & (lift_count == 1)
+        & single_contact
+        & (~air_timed_out)
+        & (lifted_foot >= 0)
+        & liftoff_contact_ok
+        & dsp_ok
+    )
+
+    active_air_foot = torch.where(start_air_phase, lifted_foot, active_air_foot)
+
+    liftoff_alternation_ok = (~has_prev_step) | (lifted_foot != prev_step_air_foot)
+
+    reward_liftoff = (
+        air_reward
+        * start_air_phase.float()
+        * (
+            non_alternation_reward_scale
+            + (alternation_reward_scale - non_alternation_reward_scale)
+            * liftoff_alternation_ok.float()
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Air progress (ramp → constant)
+    # ------------------------------------------------------------------
+    active_air_time = torch.where(
+        active_air_foot == 0,
+        air_time[:, 0],
+        torch.where(active_air_foot == 1, air_time[:, 1], torch.zeros_like(lin_mag)),
+    )
+
+    air_progress = torch.clamp(active_air_time / max(air_min_time, 1e-6), 0, 1)
+
+    timeout_now = (active_air_foot >= 0) & (active_air_time > air_max_time)
+    air_timed_out = air_timed_out | timeout_now
+
+    # ------------------------------------------------------------------
+    # Contact progress (ramp → constant)
+    #
+    # - single_contact: stance_time = contact_time of the stance (opposite) foot
+    # - double_contact: stance_time = min(contact_time_left, contact_time_right)
+    # ------------------------------------------------------------------
+    stance_time_single = torch.where(
+        active_air_foot == 0,
+        contact_time[:, 1],
+        torch.where(
+            active_air_foot == 1, contact_time[:, 0], torch.zeros_like(lin_mag)
+        ),
+    )
+
+    stance_time_double = torch.minimum(contact_time[:, 0], contact_time[:, 1])
+    stance_time = torch.where(double_contact, stance_time_double, stance_time_single)
+
+    contact_progress = torch.clamp(stance_time / max(min_contact_time, 1e-6), 0, 1)
+
+    reward_air_hold = air_reward * air_progress * single_contact.float()
+
+    # Applies on both single_contact and double_contact
+    reward_contact_hold = (
+        contact_reward * contact_progress * (single_contact | double_contact).float()
+    )
+
+    # ------------------------------------------------------------------
+    # Alternation shaping
+    # ------------------------------------------------------------------
+    alternation_ok = (
+        (active_air_foot >= 0) & has_prev_step & (active_air_foot != prev_step_air_foot)
+    )
+    alternation_scale = torch.where(
+        alternation_ok,
+        torch.full_like(lin_mag, alternation_reward_scale),
+        torch.full_like(lin_mag, non_alternation_reward_scale),
+    )
+
+    reward_alternation = alternation_scale * single_contact.float()
+
+    # ------------------------------------------------------------------
+    # Downscaling (no negatives)
+    # ------------------------------------------------------------------
+    double_flight_scale = (~double_flight).float()
+    timeout_scale = (~air_timed_out).float()
+
+    ema_air = (1 - ema_alpha) * ema_air + ema_alpha * last_completed_air
+    ema_contact = (1 - ema_alpha) * ema_contact + ema_alpha * contact_time
+
+    imbalance = air_balance_weight * torch.abs(
+        ema_air[:, 0] - ema_air[:, 1]
+    ) + contact_balance_weight * torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
+    balance_scale = torch.exp(-imbalance).clamp_min(0)
+
+    # ------------------------------------------------------------------
+    # Total reward
+    # ------------------------------------------------------------------
+    base_reward = (
+        reward_liftoff + reward_air_hold + reward_contact_hold + reward_alternation
+    )
+    reward = (
+        base_reward * gate_scale * double_flight_scale * timeout_scale * balance_scale
+    )
+
+    # ------------------------------------------------------------------
+    # STEP COMPLETION: close the state machine on touchdown of active foot
+    # ------------------------------------------------------------------
+    active_is_0 = active_air_foot == 0
+    active_is_1 = active_air_foot == 1
+    touchdown_active = (active_is_0 & touch_down[:, 0]) | (
+        active_is_1 & touch_down[:, 1]
+    )
+
+    completed_air_value = torch.where(
+        active_is_0,
+        air_time[:, 0],
+        torch.where(active_is_1, air_time[:, 1], torch.zeros_like(lin_mag)),
+    )
+
+    mask = touchdown_active & (active_air_foot >= 0)
+    if mask.any():
+        idx = active_air_foot.clamp(min=0)
+        last_completed_air = last_completed_air.clone()
+        last_completed_air[mask, idx[mask]] = completed_air_value[mask]
+
+    prev_step_air_foot = torch.where(
+        touchdown_active, active_air_foot, prev_step_air_foot
+    )
+    active_air_foot = torch.where(
+        touchdown_active, torch.full_like(active_air_foot, -1), active_air_foot
+    )
+
+    air_timed_out = torch.where(
+        touchdown_active, torch.zeros_like(air_timed_out), air_timed_out
+    )
+
+    # ------------------------------------------------------------------
+    # Save buffers
+    # ------------------------------------------------------------------
+    buf["prev_in_contact"] = in_contact
+    buf["last_completed_air"] = last_completed_air
+    buf["ema_air"] = ema_air
+    buf["ema_contact"] = ema_contact
+    buf["active_air_foot"] = active_air_foot
+    buf["prev_step_air_foot"] = prev_step_air_foot
+    buf["air_timed_out"] = air_timed_out
+
+    return reward
 
 
 def track_lin_vel_xy_yaw_frame_exp_no_flight(
@@ -56,11 +736,32 @@ def track_lin_vel_xy_yaw_frame_exp_no_flight(
     contact_time_eps: float = 1e-3,
     force_eps: float = 1e-6,
 ) -> torch.Tensor:
+    """
+    Same as track_lin_vel_xy_yaw_frame_exp but returns 0 if both feet are airborne.
+    """
     asset = env.scene[asset_cfg.name]
-    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
-    lin_vel_error = torch.sum(torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1)
+
+    vel_yaw = quat_apply_inverse(
+        yaw_quat(asset.data.root_quat_w),
+        asset.data.root_lin_vel_w[:, :3],
+    )
+
+    lin_vel_error = torch.sum(
+        torch.square(
+            env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]
+        ),
+        dim=1,
+    )
+
     reward = torch.exp(-lin_vel_error / std**2)
-    any_contact = _any_foot_in_contact(env, sensor_cfg, contact_time_eps=contact_time_eps, force_eps=force_eps)
+
+    any_contact = _any_foot_in_contact(
+        env,
+        sensor_cfg,
+        contact_time_eps=contact_time_eps,
+        force_eps=force_eps,
+    )
+
     return reward * any_contact.float()
 
 
@@ -73,174 +774,23 @@ def track_ang_vel_z_world_exp_no_flight(
     contact_time_eps: float = 1e-3,
     force_eps: float = 1e-6,
 ) -> torch.Tensor:
+    """
+    Same as track_ang_vel_z_world_exp but returns 0 if both feet are airborne.
+    """
     asset = env.scene[asset_cfg.name]
-    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
+
+    ang_vel_error = torch.square(
+        env.command_manager.get_command(command_name)[:, 2]
+        - asset.data.root_ang_vel_w[:, 2]
+    )
+
     reward = torch.exp(-ang_vel_error / std**2)
-    any_contact = _any_foot_in_contact(env, sensor_cfg, contact_time_eps=contact_time_eps, force_eps=force_eps)
+
+    any_contact = _any_foot_in_contact(
+        env,
+        sensor_cfg,
+        contact_time_eps=contact_time_eps,
+        force_eps=force_eps,
+    )
+
     return reward * any_contact.float()
-
-
-def feet_slide_keep_flat(
-    env,
-    sensor_cfg: SceneEntityCfg,
-    asset_cfg: SceneEntityCfg,
-    air_time_eps: float = 0.02,
-    force_eps: float = 1e-6,
-) -> torch.Tensor:
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    sensor_ids = sensor_cfg.body_ids
-    forces_w_last = contact_sensor.data.net_forces_w_history[:, -1, :, :]
-    forces_feet = forces_w_last[:, sensor_ids, :]
-    force_norm = torch.norm(forces_feet, dim=-1)
-    air_time = contact_sensor.data.current_air_time[:, sensor_ids]
-    grounded_by_air = air_time < air_time_eps
-    grounded_by_force = force_norm > force_eps
-    in_contact = grounded_by_air | grounded_by_force
-
-    asset = env.scene[asset_cfg.name]
-    body_ids = asset_cfg.body_ids
-    body_lin_vel_w = asset.data.body_lin_vel_w[:, body_ids, :]
-    lin_speed_xy = torch.norm(body_lin_vel_w[..., :2], dim=-1)
-    return torch.sum(lin_speed_xy * in_contact.float(), dim=1)
-
-
-def feet_air_time_alternating_biped(
-    env,
-    command_name: str,
-    sensor_cfg: SceneEntityCfg,
-    *,
-    dsp_ratio: float = 0.0,
-    linear_cmd_threshold: float = 0.0,
-    angular_cmd_threshold: float = 0.0,
-    body_tilt_threshold: float = 0.0,
-    air_min_time: float = 0.1,
-    air_max_time: float = 1.0,
-    min_contact_time: float = 0.1,
-    ema_alpha: float = 0.02,
-    air_balance_weight: float = 1.0,
-    contact_balance_weight: float = 0.0,
-    air_reward: float = 1.0,
-    contact_reward: float = 1.0,
-    alternation_reward_scale: float = 1.0,
-    non_alternation_reward_scale: float = 0.2,
-) -> torch.Tensor:
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    foot_ids = sensor_cfg.body_ids
-    assert len(foot_ids) == 2
-
-    air_time = contact_sensor.data.current_air_time[:, foot_ids]
-    contact_time = contact_sensor.data.current_contact_time[:, foot_ids]
-    in_contact = contact_time > 0.0
-
-    n_env = in_contact.shape[0]
-    device = in_contact.device
-    key = "_feet_air_contact_reward_buf"
-    if not hasattr(env, key):
-        setattr(env, key, {
-            "prev_in_contact": in_contact.clone(),
-            "last_completed_air": torch.zeros((n_env, 2), device=device),
-            "ema_air": torch.zeros((n_env, 2), device=device),
-            "ema_contact": torch.zeros((n_env, 2), device=device),
-            "active_air_foot": torch.full((n_env,), -1, device=device, dtype=torch.long),
-            "prev_step_air_foot": torch.full((n_env,), -1, device=device, dtype=torch.long),
-            "air_timed_out": torch.zeros((n_env,), device=device, dtype=torch.bool),
-        })
-    buf = getattr(env, key)
-    prev_in_contact = buf["prev_in_contact"]
-    last_completed_air = buf["last_completed_air"]
-    ema_air = buf["ema_air"]
-    ema_contact = buf["ema_contact"]
-    active_air_foot = buf["active_air_foot"]
-    prev_step_air_foot = buf["prev_step_air_foot"]
-    air_timed_out = buf["air_timed_out"]
-
-    lift_off = prev_in_contact & (~in_contact)
-    touch_down = (~prev_in_contact) & in_contact
-    last_completed_air = torch.where(touch_down, air_time, last_completed_air)
-
-    cmd = env.command_manager.get_command(command_name)
-    lin_mag = torch.norm(cmd[:, :2], dim=1)
-    yaw_mag = torch.abs(cmd[:, 2]) if cmd.shape[1] > 2 else torch.zeros_like(lin_mag)
-    lin_scale = torch.clamp(lin_mag / max(linear_cmd_threshold, 1e-6), 0, 1) if linear_cmd_threshold >= 0 else torch.zeros_like(lin_mag)
-    yaw_scale = torch.clamp(yaw_mag / max(angular_cmd_threshold, 1e-6), 0, 1) if angular_cmd_threshold >= 0 else torch.zeros_like(lin_mag)
-    tilt_scale = torch.zeros_like(lin_mag)
-    if body_tilt_threshold >= 0:
-        robot = env.scene.articulations["robot"]
-        proj_g = robot.data.projected_gravity_b
-        sin_tilt = torch.norm(proj_g[:, :2], dim=1).clamp(0, 1)
-        tilt_angle = torch.asin(sin_tilt)
-        tilt_scale = torch.clamp(tilt_angle / max(body_tilt_threshold, 1e-6), 0, 1)
-    if linear_cmd_threshold < 0 and angular_cmd_threshold < 0 and body_tilt_threshold < 0:
-        gate_scale = torch.ones_like(lin_mag)
-    else:
-        gate_scale = torch.maximum(torch.maximum(lin_scale, yaw_scale), tilt_scale)
-
-    contact_count = in_contact.int().sum(dim=1)
-    single_contact = contact_count == 1
-    double_contact = contact_count == 2
-    double_flight = contact_count == 0
-
-    lift_count = lift_off.int().sum(dim=1)
-    lifted_foot = torch.where(lift_off[:, 0], 0, torch.where(lift_off[:, 1], 1, -1))
-    lifted_contact_time = torch.where(lifted_foot == 0, contact_time[:, 0], torch.where(lifted_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)))
-    liftoff_contact_ok = lifted_contact_time >= min_contact_time
-
-    has_prev_step = prev_step_air_foot >= 0
-    prev_air_duration = torch.where(prev_step_air_foot == 0, last_completed_air[:, 0], torch.where(prev_step_air_foot == 1, last_completed_air[:, 1], torch.zeros_like(lin_mag)))
-    prev_contact_since_touchdown = torch.where(prev_step_air_foot == 0, contact_time[:, 0], torch.where(prev_step_air_foot == 1, contact_time[:, 1], torch.zeros_like(lin_mag)))
-    dsp_required_time = dsp_ratio * prev_air_duration
-    dsp_ok = (dsp_ratio <= 0.0) | (~has_prev_step) | (prev_contact_since_touchdown >= dsp_required_time)
-
-    start_air_phase = (active_air_foot < 0) & (lift_count == 1) & single_contact & (~air_timed_out) & (lifted_foot >= 0) & liftoff_contact_ok & dsp_ok
-    active_air_foot = torch.where(start_air_phase, lifted_foot, active_air_foot)
-    liftoff_alternation_ok = (~has_prev_step) | (lifted_foot != prev_step_air_foot)
-    reward_liftoff = air_reward * start_air_phase.float() * (non_alternation_reward_scale + (alternation_reward_scale - non_alternation_reward_scale) * liftoff_alternation_ok.float())
-
-    active_air_time = torch.where(active_air_foot == 0, air_time[:, 0], torch.where(active_air_foot == 1, air_time[:, 1], torch.zeros_like(lin_mag)))
-    air_progress = torch.clamp(active_air_time / max(air_min_time, 1e-6), 0, 1)
-    timeout_now = (active_air_foot >= 0) & (active_air_time > air_max_time)
-    air_timed_out = air_timed_out | timeout_now
-
-    stance_time_single = torch.where(active_air_foot == 0, contact_time[:, 1], torch.where(active_air_foot == 1, contact_time[:, 0], torch.zeros_like(lin_mag)))
-    stance_time_double = torch.minimum(contact_time[:, 0], contact_time[:, 1])
-    stance_time = torch.where(double_contact, stance_time_double, stance_time_single)
-    contact_progress = torch.clamp(stance_time / max(min_contact_time, 1e-6), 0, 1)
-
-    reward_air_hold = air_reward * air_progress * single_contact.float()
-    reward_contact_hold = contact_reward * contact_progress * (single_contact | double_contact).float()
-
-    alternation_ok = (active_air_foot >= 0) & has_prev_step & (active_air_foot != prev_step_air_foot)
-    alternation_scale = torch.where(alternation_ok, torch.full_like(lin_mag, alternation_reward_scale), torch.full_like(lin_mag, non_alternation_reward_scale))
-    reward_alternation = alternation_scale * single_contact.float()
-
-    double_flight_scale = (~double_flight).float()
-    timeout_scale = (~air_timed_out).float()
-    ema_air = (1 - ema_alpha) * ema_air + ema_alpha * last_completed_air
-    ema_contact = (1 - ema_alpha) * ema_contact + ema_alpha * contact_time
-    imbalance = air_balance_weight * torch.abs(ema_air[:, 0] - ema_air[:, 1]) + contact_balance_weight * torch.abs(ema_contact[:, 0] - ema_contact[:, 1])
-    balance_scale = torch.exp(-imbalance).clamp_min(0)
-
-    base_reward = reward_liftoff + reward_air_hold + reward_contact_hold + reward_alternation
-    reward = base_reward * gate_scale * double_flight_scale * timeout_scale * balance_scale
-
-    active_is_0 = active_air_foot == 0
-    active_is_1 = active_air_foot == 1
-    touchdown_active = (active_is_0 & touch_down[:, 0]) | (active_is_1 & touch_down[:, 1])
-    completed_air_value = torch.where(active_is_0, air_time[:, 0], torch.where(active_is_1, air_time[:, 1], torch.zeros_like(lin_mag)))
-    mask = touchdown_active & (active_air_foot >= 0)
-    if mask.any():
-        idx = active_air_foot.clamp(min=0)
-        last_completed_air = last_completed_air.clone()
-        last_completed_air[mask, idx[mask]] = completed_air_value[mask]
-    prev_step_air_foot = torch.where(touchdown_active, active_air_foot, prev_step_air_foot)
-    active_air_foot = torch.where(touchdown_active, torch.full_like(active_air_foot, -1), active_air_foot)
-    air_timed_out = torch.where(touchdown_active, torch.zeros_like(air_timed_out), air_timed_out)
-
-    buf["prev_in_contact"] = in_contact
-    buf["last_completed_air"] = last_completed_air
-    buf["ema_air"] = ema_air
-    buf["ema_contact"] = ema_contact
-    buf["active_air_foot"] = active_air_foot
-    buf["prev_step_air_foot"] = prev_step_air_foot
-    buf["air_timed_out"] = air_timed_out
-    return reward

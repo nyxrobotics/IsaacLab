@@ -27,6 +27,7 @@ from .terminations import canele_terminations
 from .rewards import canele_rewards_env
 from .rewards import canele_rewards_walk
 from .rewards import canele_rewards_joint
+from .rewards import canele_rewards_link
 
 LOWER_BODY_JOINTS = [
     "torso_yaw",
@@ -217,13 +218,19 @@ class CaneleEnv(DirectRLEnv):
                 f"ContactSensor matched only {num_contact_bodies} body/bodies for {self.cfg.contact.prim_path}"
             )
         self.contact_sensor_ids = [0, 1]
+        self.foot_ids = self.foot_ids
 
-        self.base_body_cfg = self._make_body_cfg('robot', [BASE_LINK], [self.base_id])
-        self.feet_body_cfg = self._make_body_cfg('robot', [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
-        self.base_and_feet_body_cfg = self._make_body_cfg('robot', [BASE_LINK, RIGHT_FOOT, LEFT_FOOT], self.base_and_feet_ids)
-        self.contact_sensor_cfg = self._make_body_cfg('contact_forces', [RIGHT_FOOT, LEFT_FOOT], self.contact_sensor_ids)
-        self.hip_action_cfg = self._make_joint_cfg('robot', HIP_JOINTS)
-        self.torso_action_cfg = self._make_joint_cfg('robot', TORSO_JOINTS)
+        self.base_body_cfg = self._make_body_cfg("robot", [BASE_LINK], [self.base_id])
+        self.feet_body_cfg = self._make_body_cfg("robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
+        self.base_and_feet_body_cfg = self._make_body_cfg(
+            "robot", [BASE_LINK, RIGHT_FOOT, LEFT_FOOT], self.base_and_feet_ids
+        )
+        self.contact_sensor_cfg = self._make_body_cfg(
+            "contact_forces", [RIGHT_FOOT, LEFT_FOOT], self.contact_sensor_ids
+        )
+        self.hip_action_cfg = self._make_joint_cfg("robot", HIP_JOINTS)
+        self.torso_action_cfg = self._make_joint_cfg("robot", TORSO_JOINTS)
+        self.torque_action_cfg = self._make_joint_cfg("robot", TORQUE_JOINTS)
 
     def _joint_name_to_id(self, joint_name: str) -> int:
         matches = self.robot.find_joints(joint_name)
@@ -245,7 +252,7 @@ class CaneleEnv(DirectRLEnv):
         return cfg
 
     def _make_joint_cfg(self, name: str, joint_names: list[str]) -> SceneEntityCfg:
-        joint_ids = [self.joint_names.index(jn) for jn in joint_names]
+        joint_ids = [self._joint_name_to_id(jn) for jn in joint_names]
         cfg = SceneEntityCfg(name, joint_names=list(joint_names), preserve_order=True)
         cfg.joint_ids = list(joint_ids)
         return cfg
@@ -366,16 +373,6 @@ class CaneleEnv(DirectRLEnv):
             return torch.zeros(self.scene.num_envs, device=self.device)
         return torch.sum(torch.square(torques), dim=1)
 
-    def _root_vertical_velocity_l2(self) -> torch.Tensor:
-        return torch.square(self.robot.data.root_com_vel_w[:, 2])
-
-    def _flat_orientation_base_l2(self) -> torch.Tensor:
-        q = self.robot.data.root_quat_w
-        gravity = torch.zeros((q.shape[0], 3), device=self.device, dtype=q.dtype)
-        gravity[:, 2] = -1.0
-        g_b = quat_apply_inverse_xyzw(q, gravity)
-        return torch.sum(torch.square(g_b[:, :2]), dim=1)
-
     def _action_rate_l2(self) -> torch.Tensor:
         delta = self.action_manager.action - self.action_manager.prev_action
         return torch.sum(torch.square(delta), dim=1)
@@ -392,18 +389,18 @@ class CaneleEnv(DirectRLEnv):
         reward += 1.0 * canele_rewards_walk.track_lin_vel_xy_yaw_frame_exp_no_flight(
             self,
             std=0.5,
-            command_name='base_velocity',
+            command_name="base_velocity",
             sensor_cfg=self.contact_sensor_cfg,
         )
         reward += 2.0 * canele_rewards_walk.track_ang_vel_z_world_exp_no_flight(
             self,
-            command_name='base_velocity',
+            command_name="base_velocity",
             std=0.5,
             sensor_cfg=self.contact_sensor_cfg,
         )
         reward += 1.0 * canele_rewards_walk.feet_air_time_alternating_biped(
             self,
-            command_name='base_velocity',
+            command_name="base_velocity",
             sensor_cfg=self.contact_sensor_cfg,
             linear_cmd_threshold=0.0,
             angular_cmd_threshold=0.0,
@@ -431,18 +428,16 @@ class CaneleEnv(DirectRLEnv):
             self,
             asset_cfg=self.torso_action_cfg,
         )
-        reward += 0.1 * canele_rewards_joint.flat_orientation_links_l2(
+        reward += 0.1 * canele_rewards_link.flat_orientation_links_l2(
             self,
             asset_cfg=self.feet_body_cfg,
             margin=0.0,
             gain=1.0,
         )
 
-        reward += -0.2 * self._root_vertical_velocity_l2()
-        reward += -1.0 * self._flat_orientation_base_l2()
-        reward += -0.01 * canele_rewards_joint.ang_vel_xy_links_l2(
-            self, asset_cfg=self.base_body_cfg
-        )
+        reward += -0.2 * canele_rewards_link.lin_vel_z_l2(self)
+        reward += -1.0 * canele_rewards_link.flat_orientation_l2(self)
+        reward += -0.01 * canele_rewards_link.ang_vel_xy_l2(self)
         reward += -0.01 * self._action_rate_l2()
         reward += -1.0e-9 * canele_rewards_joint.joint_action_acc_l2(
             self,

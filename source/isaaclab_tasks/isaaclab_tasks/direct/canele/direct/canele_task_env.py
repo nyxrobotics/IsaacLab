@@ -125,7 +125,7 @@ class _DirectTerminationManager:
 
 @configclass
 class CaneleEnvCfg(DirectRLEnvCfg):
-    decimation = 10
+    decimation = 4
     episode_length_s = 20.0
     observation_space = 20 + 4 * len(LOWER_BODY_JOINTS)
     action_space = len(LOWER_BODY_JOINTS)
@@ -221,7 +221,9 @@ class CaneleEnv(DirectRLEnv):
         self.foot_ids = self.foot_ids
 
         self.base_body_cfg = self._make_body_cfg("robot", [BASE_LINK], [self.base_id])
-        self.feet_body_cfg = self._make_body_cfg("robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
+        self.feet_body_cfg = self._make_body_cfg(
+            "robot", [RIGHT_FOOT, LEFT_FOOT], self.foot_ids
+        )
         self.base_and_feet_body_cfg = self._make_body_cfg(
             "robot", [BASE_LINK, RIGHT_FOOT, LEFT_FOOT], self.base_and_feet_ids
         )

@@ -476,21 +476,21 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 12. Set PhysicsScene params
         # -----------------------------------------------------------
         # Set PhysicsScene params
-        # Simulation: 500 Hz
+        # Simulation: 200 Hz
         # Control: 50 Hz
-        # Rendering: 120Hz
+        # Rendering: 60Hz
         # Slover type: PGS
         # TODO: enableGPUDynamics = 0, broadphaseType = "MBP"
 
-        # self.sim.dt = 0.002
-        # self.decimation = 10
-        # self.sim.render_interval = 4
-        # self.episode_length_s = 50.0
+        # self.sim.dt = 0.005
+        # self.decimation = 4
+        # self.sim.render_interval = 3
+        # self.sim.physx.solver_type = 0
+        # self.episode_length_s = 20.0
         # self.sim.physx.max_position_iteration_count = 4
         # self.sim.physx.min_position_iteration_count = 4
         # self.sim.physx.max_velocity_iteration_count = 4
         # self.sim.physx.min_velocity_iteration_count = 4
-        # self.sim.physx.solver_type = 0
 
         # -----------------------------------------------------------
         # 13. Randomize events

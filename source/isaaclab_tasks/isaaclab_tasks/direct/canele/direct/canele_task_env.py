@@ -14,6 +14,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, Imu, ImuCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners import RigidBodyMaterialCfg
@@ -216,7 +217,13 @@ class CaneleEnv(DirectRLEnv):
                 f"ContactSensor matched only {num_contact_bodies} body/bodies for {self.cfg.contact.prim_path}"
             )
         self.contact_sensor_ids = [0, 1]
-        self.foot_ids = self.foot_ids
+
+        self.base_body_cfg = self._make_body_cfg('robot', [BASE_LINK], [self.base_id])
+        self.feet_body_cfg = self._make_body_cfg('robot', [RIGHT_FOOT, LEFT_FOOT], self.foot_ids)
+        self.base_and_feet_body_cfg = self._make_body_cfg('robot', [BASE_LINK, RIGHT_FOOT, LEFT_FOOT], self.base_and_feet_ids)
+        self.contact_sensor_cfg = self._make_body_cfg('contact_forces', [RIGHT_FOOT, LEFT_FOOT], self.contact_sensor_ids)
+        self.hip_action_cfg = self._make_joint_cfg('robot', HIP_JOINTS)
+        self.torso_action_cfg = self._make_joint_cfg('robot', TORSO_JOINTS)
 
     def _joint_name_to_id(self, joint_name: str) -> int:
         matches = self.robot.find_joints(joint_name)
@@ -324,15 +331,25 @@ class CaneleEnv(DirectRLEnv):
 
     def _compute_terminated(self) -> torch.Tensor:
         return (
-            canele_terminations.detect_fall(self, self.base_id, limit_angle=1.3)
+            canele_terminations.detect_fall(
+                self,
+                limit_angle=1.3,
+                asset_cfg=self.base_body_cfg,
+            )
             | canele_terminations.detect_height_too_low_relative(
-                self, self.base_id, self.foot_ids, min_height=0.5
+                self,
+                min_height=0.5,
+                asset_cfg=self.base_and_feet_body_cfg,
             )
             | canele_terminations.detect_tilt_too_high_any_link(
-                self, self.base_and_feet_ids, max_tilt=1.5
+                self,
+                max_tilt=1.5,
+                asset_cfg=self.base_and_feet_body_cfg,
             )
             | canele_terminations.detect_support_plane_tilt_too_high(
-                self, self.foot_ids, max_tilt=1.3
+                self,
+                max_tilt=1.3,
+                asset_cfg=self.base_and_feet_body_cfg,
             )
         )
 
@@ -375,19 +392,19 @@ class CaneleEnv(DirectRLEnv):
         reward += 1.0 * canele_rewards_walk.track_lin_vel_xy_yaw_frame_exp_no_flight(
             self,
             std=0.5,
-            command_name="base_velocity",
-            sensor_ids=self.contact_sensor_ids,
+            command_name='base_velocity',
+            sensor_cfg=self.contact_sensor_cfg,
         )
         reward += 2.0 * canele_rewards_walk.track_ang_vel_z_world_exp_no_flight(
             self,
-            command_name="base_velocity",
+            command_name='base_velocity',
             std=0.5,
-            sensor_ids=self.contact_sensor_ids,
+            sensor_cfg=self.contact_sensor_cfg,
         )
         reward += 1.0 * canele_rewards_walk.feet_air_time_alternating_biped(
             self,
-            command_name="base_velocity",
-            sensor_ids=self.contact_sensor_ids,
+            command_name='base_velocity',
+            sensor_cfg=self.contact_sensor_cfg,
             linear_cmd_threshold=0.0,
             angular_cmd_threshold=0.0,
             body_tilt_threshold=0.0,
@@ -402,21 +419,21 @@ class CaneleEnv(DirectRLEnv):
         )
         reward += -0.1 * canele_rewards_walk.feet_slide_keep_flat(
             self,
-            sensor_ids=self.contact_sensor_ids,
-            body_ids=self.foot_ids,
+            sensor_cfg=self.contact_sensor_cfg,
+            asset_cfg=self.feet_body_cfg,
             air_time_eps=0.02,
         )
         reward += -0.01 * canele_rewards_joint.joint_action_deviation_l1(
             self,
-            joint_ids=self.hip_joint_ids,
+            asset_cfg=self.hip_action_cfg,
         )
         reward += -0.1 * canele_rewards_joint.joint_action_deviation_l1(
             self,
-            joint_ids=self.torso_joint_ids,
+            asset_cfg=self.torso_action_cfg,
         )
         reward += 0.1 * canele_rewards_joint.flat_orientation_links_l2(
             self,
-            body_ids=self.foot_ids,
+            asset_cfg=self.feet_body_cfg,
             margin=0.0,
             gain=1.0,
         )
@@ -424,7 +441,7 @@ class CaneleEnv(DirectRLEnv):
         reward += -0.2 * self._root_vertical_velocity_l2()
         reward += -1.0 * self._flat_orientation_base_l2()
         reward += -0.01 * canele_rewards_joint.ang_vel_xy_links_l2(
-            self, body_ids=[self.base_id]
+            self, asset_cfg=self.base_body_cfg
         )
         reward += -0.01 * self._action_rate_l2()
         reward += -1.0e-9 * canele_rewards_joint.joint_action_acc_l2(

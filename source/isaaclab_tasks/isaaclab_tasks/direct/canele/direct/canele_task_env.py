@@ -369,8 +369,8 @@ class CaneleEnv(DirectRLEnv):
             torques = self.robot.data.applied_torque.index_select(1, ids)
         elif hasattr(self.robot.data, "computed_torque"):
             torques = self.robot.data.computed_torque.index_select(1, ids)
-        elif hasattr(self.robot.data, "joint_torques"):
-            torques = self.robot.data.joint_torques.index_select(1, ids)
+        elif hasattr(self.robot.data, "joint_effort_target"):
+            torques = self.robot.data.joint_effort_target.index_select(1, ids)
         else:
             return torch.zeros(self.scene.num_envs, device=self.device)
         return torch.sum(torch.square(torques), dim=1)

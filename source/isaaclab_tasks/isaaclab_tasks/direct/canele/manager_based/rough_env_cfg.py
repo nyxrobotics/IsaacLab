@@ -114,15 +114,28 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
     return _update_history(env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True)
 
 
-def canele_obs_imu_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+def canele_obs_projected_gravity_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
     projected_gravity = asset.data.projected_gravity_b[:, :2]
-    angular_vel = asset.data.root_ang_vel_b[:, :3]
-
     gravity_xy = projected_gravity.clamp(-1.0, 1.0)
+    return _update_history(
+        env,
+        "_canele_projected_gravity_hist",
+        gravity_xy,
+        init_with_current=False,
+    )
+
+
+def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    asset = env.scene[asset_cfg.name]
+    angular_vel = asset.data.root_ang_vel_b[:, :3]
     angular_vel = angular_vel.clamp(-2.0, 2.0) / 2.0
-    imu_like = torch.cat((gravity_xy, angular_vel), dim=-1)
-    return _update_history(env, "_canele_imu_hist", imu_like, init_with_current=False)
+    return _update_history(
+        env,
+        "_canele_ang_vel_hist",
+        angular_vel,
+        init_with_current=False,
+    )
 
 
 def canele_obs_action_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -312,7 +325,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Detected robot prim path BEFORE spawn:", robot_prim_resolved)
 
         # -----------------------------------------------------------
-        # 3. Disable synthetic height scanner and its observation.
+        # 3. Disable synthetic height scanner and its observation
         # -----------------------------------------------------------
         self.scene.height_scanner = None
         if hasattr(self.observations.policy, "height_scan"):
@@ -400,15 +413,21 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             policy_obs.height_scan = None
 
             policy_obs.cmd_vel_history = ObsTerm(func=canele_obs_cmd_vel_history)
-            policy_obs.imu_history = ObsTerm(
-                func=canele_obs_imu_history,
+            policy_obs.projected_gravity_history = ObsTerm(
+                func=canele_obs_projected_gravity_history,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
+            policy_obs.ang_vel_history = ObsTerm(
+                func=canele_obs_ang_vel_history,
                 params={"asset_cfg": SceneEntityCfg("robot")},
             )
             policy_obs.action_history = ObsTerm(
                 func=canele_obs_action_history,
                 params={"asset_cfg": _make_actuated_asset_cfg()},
             )
-            print("[DEBUG] Replaced policy observations with cmd_vel/imu/action 4-step histories")
+            print(
+                "[DEBUG] Replaced policy observations with cmd_vel/projected_gravity/ang_vel/action 4-step histories"
+            )
 
         # -----------------------------------------------------------
         # 6. Update reset config

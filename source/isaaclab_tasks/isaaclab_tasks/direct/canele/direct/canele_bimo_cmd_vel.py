@@ -75,11 +75,11 @@ class CaneleEnvCfg(DirectRLEnvCfg):
 
     # Reward weights
     # [orientation, height, joint pos, joint pos sigmoid, feet height, vel tracking, stop/stability]
-    reward_weights = [1.0, 1.0, 1.0, 0.0, 2.0, 3.0, 1.0]
+    reward_weights = [1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0]
 
     # Canele-specific posture/foot targets
     body_height_target = 0.95
-    feet_height_target = 0.05
+    feet_height_target = 0.15
 
     # Command ranges [m/s, m/s, rad/s]
     command_x_range = (-0.6, 0.6)
@@ -408,13 +408,12 @@ class CaneleEnv(DirectRLEnv):
             self.base_pose,
             self.position_reward_max_diff,
         )
-        sig_extra = sigmoid_extra(self.cmd_actions, self.base_pose)
-
         motion_mask = motion_command_mask(
             self.commands,
             self.cfg.lin_cmd_deadzone,
             self.cfg.ang_cmd_deadzone,
         )
+        sig_extra = sigmoid_extra(self.cmd_actions, self.base_pose) * motion_mask
         feet_h_rew = (
             feet_height_reward(
                 air_time,

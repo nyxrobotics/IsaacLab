@@ -74,8 +74,8 @@ class CaneleEnvCfg(DirectRLEnvCfg):
     state_space = 0
 
     # Reward weights
-    # [orientation, height, joint pos, joint pos sigmoid, feet height, vel tracking, stop/stability]
-    reward_weights = [1.0, 1.0, 1.0, 1.0, 4.0, 1.0, 1.0]
+    # [orientation, height, joint pos, joint pos sigmoid, feet height, vel tracking]
+    reward_weights = [1.0, 1.0, 1.0, 1.0, 4.0, 1.0]
 
     # Canele-specific posture/foot targets
     body_height_target = 0.95
@@ -96,9 +96,6 @@ class CaneleEnvCfg(DirectRLEnvCfg):
     # Tracking reward scales
     lin_vel_tracking_std = 0.5
     ang_vel_tracking_std = 0.5
-    stop_reward_lin_std = 0.15
-    stop_reward_ang_std = 0.35
-    stop_reward_air_time_scale = 10.0
 
     # COM randomization: sampled per episode, kept constant during the episode
     com_shift_max = 0.03
@@ -433,18 +430,6 @@ class CaneleEnv(DirectRLEnv):
             * support_mask
         )
 
-        stop_rew = (
-            stop_command_reward(
-                base_vel_yaw,
-                root_vel_w[:, 5],
-                air_time,
-                self.cfg.stop_reward_lin_std,
-                self.cfg.stop_reward_ang_std,
-                self.cfg.stop_reward_air_time_scale,
-            )
-            * stop_mask
-        )
-
         w = self.reward_weights
         total_reward = (
             orientation_rew * w[0]
@@ -453,7 +438,6 @@ class CaneleEnv(DirectRLEnv):
             + sig_extra * w[3]
             + feet_h_rew * w[4]
             + vel_track_rew * w[5]
-            + stop_rew * w[6]
         )
 
         return total_reward
@@ -816,23 +800,3 @@ def velocity_tracking_reward(
     lin_rew = torch.exp(-lin_err / (lin_std * lin_std))
     ang_rew = torch.exp(-ang_err / (ang_std * ang_std))
     return 0.6 * lin_rew + 0.4 * ang_rew
-
-
-@torch.jit.script
-def stop_command_reward(
-    vel_xy_yaw: torch.Tensor,
-    yaw_rate: torch.Tensor,
-    air_time: torch.Tensor,
-    lin_std: float,
-    ang_std: float,
-    air_time_scale: float,
-):
-    lin_err = torch.sum(torch.square(vel_xy_yaw), dim=1)
-    ang_err = torch.square(yaw_rate)
-    air_sum = torch.sum(torch.clamp(air_time, min=0.0), dim=1)
-
-    lin_term = torch.exp(-lin_err / (lin_std * lin_std))
-    ang_term = torch.exp(-ang_err / (ang_std * ang_std))
-    contact_term = torch.exp(-air_time_scale * air_sum)
-
-    return 0.4 * lin_term + 0.3 * ang_term + 0.3 * contact_term

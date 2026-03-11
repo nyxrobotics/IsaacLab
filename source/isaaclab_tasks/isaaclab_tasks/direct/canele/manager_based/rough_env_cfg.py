@@ -6,9 +6,12 @@
 import fnmatch
 import os
 
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+
+import torch
 from isaaclab.utils import configclass
 
 # Canele articulation config
@@ -46,6 +49,89 @@ def find_prim_paths(usd_path, pattern):
         if fnmatch.fnmatch(name, pattern):
             results.append(str(prim.GetPath()))
     return results
+
+
+# ---------------------------------------------------------------------
+# Observation helpers
+# ---------------------------------------------------------------------
+def _get_history_buffer(env, attr_name: str, feature_dim: int) -> torch.Tensor:
+    """Return or lazily create a [num_envs, 4, feature_dim] history buffer on the env."""
+    hist = getattr(env, attr_name, None)
+    if (
+        hist is None
+        or hist.shape[0] != env.num_envs
+        or hist.shape[1] != 4
+        or hist.shape[2] != feature_dim
+        or hist.device != env.device
+    ):
+        hist = torch.zeros(env.num_envs, 4, feature_dim, device=env.device)
+        setattr(env, attr_name, hist)
+    return hist
+
+
+def _update_history(env, attr_name: str, values: torch.Tensor, *, init_with_current: bool) -> torch.Tensor:
+    """Append current values to a 4-step per-env history buffer."""
+    hist = _get_history_buffer(env, attr_name, int(values.shape[-1]))
+    env_step_count = getattr(env, "episode_length_buf", None)
+    if env_step_count is None:
+        reset_mask = torch.zeros(values.shape[0], dtype=torch.bool, device=values.device)
+    else:
+        reset_mask = env_step_count == 0
+
+    non_reset_mask = ~reset_mask
+    if torch.any(non_reset_mask):
+        hist[non_reset_mask, :-1] = hist[non_reset_mask, 1:].clone()
+        hist[non_reset_mask, -1] = values[non_reset_mask]
+
+    if torch.any(reset_mask):
+        if init_with_current:
+            hist[reset_mask] = values[reset_mask].unsqueeze(1).repeat(1, 4, 1)
+        else:
+            hist[reset_mask] = 0.0
+
+    return hist.reshape(values.shape[0], -1)
+
+
+def _normalize_joint_positions(joint_pos: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    denom = (upper - lower).clamp_min(1.0e-6)
+    return 2.0 * (joint_pos - lower) / denom - 1.0
+
+
+def canele_obs_cmd_vel_history(env) -> torch.Tensor:
+    commands = env.command_manager.get_command("base_velocity")[:, :3]
+    cmd_cfg = env.cfg.commands.base_velocity.ranges
+    cmd_min = torch.tensor(
+        [cmd_cfg.lin_vel_x[0], cmd_cfg.lin_vel_y[0], cmd_cfg.ang_vel_z[0]],
+        device=env.device,
+        dtype=commands.dtype,
+    )
+    cmd_max = torch.tensor(
+        [cmd_cfg.lin_vel_x[1], cmd_cfg.lin_vel_y[1], cmd_cfg.ang_vel_z[1]],
+        device=env.device,
+        dtype=commands.dtype,
+    )
+    cmd_norm = 2.0 * (commands - cmd_min) / (cmd_max - cmd_min).clamp_min(1.0e-6) - 1.0
+    return _update_history(env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True)
+
+
+def canele_obs_imu_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    asset = env.scene[asset_cfg.name]
+    projected_gravity = asset.data.projected_gravity_b[:, :2]
+    angular_vel = asset.data.root_ang_vel_b[:, :3]
+
+    gravity_xy = projected_gravity.clamp(-1.0, 1.0)
+    angular_vel = angular_vel.clamp(-2.0, 2.0) / 2.0
+    imu_like = torch.cat((gravity_xy, angular_vel), dim=-1)
+    return _update_history(env, "_canele_imu_hist", imu_like, init_with_current=False)
+
+
+def canele_obs_action_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    asset = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    lower = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
+    upper = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]
+    joint_pos_norm = _normalize_joint_positions(joint_pos, lower, upper).clamp(-1.0, 1.0)
+    return _update_history(env, "_canele_action_hist", joint_pos_norm, init_with_current=True)
 
 
 # ---------------------------------------------------------------------
@@ -198,13 +284,12 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         if not base_paths:
             raise RuntimeError("body_link not found in USD!")
 
-        base_link_full = base_paths[0]  # /Root/canele/body_link
-        base_link_name = os.path.basename(base_link_full)  # body_link
+        base_link_full = base_paths[0]
+        base_link_name = os.path.basename(base_link_full)
 
         print("[DEBUG] base_link_full:", base_link_full)
         print("[DEBUG] base_link_name:", base_link_name)
 
-        # Feet: ankle yaw links
         ankle_paths = find_prim_paths(usd_path, "*_toe_link")
         print("[DEBUG] Found ankle yaw prims:", ankle_paths)
 
@@ -219,33 +304,23 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         self.scene.robot = CANELE_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-        # ⚠ IsaacLab spawns robot under scene, but its actual prim_path
-        #    may be /World/envs/env_0/Robot  OR /World/envs/env_0/Root
-        # → We MUST wait until the scene is constructed to know real path.
-        robot_prim_resolved = None
-
-        # -----------------------------------------------------------
-        # 3. Ask Scene to tell us the actual robot prim path
-        #    (resolve happens after super().__post_init__)
-        # -----------------------------------------------------------
         try:
             robot_prim_resolved = self.scene.robot.prim_path
         except Exception:
-            # fallback when not resolved yet
             robot_prim_resolved = "{ENV_REGEX_NS}/Robot"
 
         print("[DEBUG] Detected robot prim path BEFORE spawn:", robot_prim_resolved)
 
         # -----------------------------------------------------------
-        # 4. Disable synthetic height scanner and its observation.
+        # 3. Disable synthetic height scanner and its observation.
         # -----------------------------------------------------------
         self.scene.height_scanner = None
-        self.observations.policy.height_scan = None
+        if hasattr(self.observations.policy, "height_scan"):
+            self.observations.policy.height_scan = None
 
         # -----------------------------------------------------------
-        # 5. Restrict action/observation joints to actuated joints only
+        # 4. Restrict action joints to actuated leg/body joints only
         # -----------------------------------------------------------
-        # Collect actuated joint names from the configured actuators.
         actuated_joint_names: list[str] = []
         try:
             for actuator_cfg in self.scene.robot.actuators.values():
@@ -256,7 +331,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 e,
             )
 
-        # De-duplicate while preserving order
         _seen = set()
         actuated_joint_names = [
             j for j in actuated_joint_names if not (j in _seen or _seen.add(j))
@@ -265,9 +339,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Actuated joint names count:", len(actuated_joint_names))
         print("[DEBUG] Actuated joint names:", actuated_joint_names)
 
-        # -----------------------------------------------------------
-        # 5. Remove arm joints from observations and rewards by configuring asset_cfg with body_names/joint_names
-        # -----------------------------------------------------------
         arm_joints = [
             "left_shoulder_yaw",
             "left_shoulder_pitch",
@@ -294,11 +365,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             actuated_joint_names,
         )
 
-        # -----------------------------------------------------------
-        # 6. Build an asset cfg that only exposes actuated joints.
-        # -----------------------------------------------------------
-        # Important: explicitly clear joint_ids. Isaac Lab errors if both joint_names and joint_ids
-        # are set but not consistent (order-sensitive).
         def _make_actuated_asset_cfg() -> SceneEntityCfg:
             return SceneEntityCfg(
                 "robot",
@@ -306,95 +372,70 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 preserve_order=True,
             )
 
-        # Update action config.
         if hasattr(self, "actions") and hasattr(self.actions, "joint_pos"):
             action_term = self.actions.joint_pos
             if hasattr(action_term, "joint_names"):
                 action_term.joint_names = actuated_joint_names
                 print("[DEBUG] Restricted action term 'joint_pos' via joint_names")
-            else:
-                print(
-                    "[DEBUG] Action term 'joint_pos' has no joint_names field; cannot restrict."
-                )
-        else:
-            print(
-                "[DEBUG] No actions.joint_pos term found; cannot restrict action dimension."
-            )
 
-        # ---- Observations: force-inject asset_cfg into joint_pos/joint_vel terms
+        # -----------------------------------------------------------
+        # 5. Replace policy observations completely
+        # -----------------------------------------------------------
         if hasattr(self.observations, "policy"):
-            for obs_name in ("joint_pos", "joint_vel"):
-                obs_term = getattr(self.observations.policy, obs_name, None)
-                if obs_term is None or not hasattr(obs_term, "params"):
-                    continue
-                if obs_term.params is None:
-                    obs_term.params = {}
-                # Use a fresh cfg per term to avoid cross-term mutation during resolve.
-                obs_term.params["asset_cfg"] = _make_actuated_asset_cfg()
-                print(
-                    f"[DEBUG] Injected actuated asset_cfg into observation term '{obs_name}'"
-                )
+            policy_obs = self.observations.policy
 
-        # Update reset config (exclude arm joints from reset_joints_by_scale).
+            policy_obs.enable_corruption = True
+            policy_obs.concatenate_terms = True
+            policy_obs.concatenate_dim = -1
+            policy_obs.history_length = None
+            policy_obs.flatten_history_dim = True
+
+            policy_obs.base_lin_vel = None
+            policy_obs.base_ang_vel = None
+            policy_obs.projected_gravity = None
+            policy_obs.velocity_commands = None
+            policy_obs.joint_pos = None
+            policy_obs.joint_vel = None
+            policy_obs.actions = None
+            policy_obs.height_scan = None
+
+            policy_obs.cmd_vel_history = ObsTerm(func=canele_obs_cmd_vel_history)
+            policy_obs.imu_history = ObsTerm(
+                func=canele_obs_imu_history,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
+            policy_obs.action_history = ObsTerm(
+                func=canele_obs_action_history,
+                params={"asset_cfg": _make_actuated_asset_cfg()},
+            )
+            print("[DEBUG] Replaced policy observations with cmd_vel/imu/action 4-step histories")
+
+        # -----------------------------------------------------------
+        # 6. Update reset config
+        # -----------------------------------------------------------
         if getattr(self.events, "reset_robot_joints", None) is not None:
-            self.events.reset_robot_joints.params["asset_cfg"] = (
-                _make_actuated_asset_cfg()
-            )
-            print(
-                "[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg"
-            )
+            self.events.reset_robot_joints.params["asset_cfg"] = _make_actuated_asset_cfg()
+            print("[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg")
 
         # -----------------------------------------------------------
-        # 7. Fix: base_com observation expects 'base' in parent cfg, but Canele uses 'body_link'
-        # -----------------------------------------------------------
-        if hasattr(self.observations, "policy"):
-            base_com_term = getattr(self.observations.policy, "base_com", None)
-            if base_com_term is not None and hasattr(base_com_term, "params"):
-                if base_com_term.params is None:
-                    base_com_term.params = {}
-                base_com_term.params["asset_cfg"] = SceneEntityCfg(
-                    "robot",
-                    body_names=[base_link_name],
-                    preserve_order=True,
-                )
-                print(
-                    f"[DEBUG] Patched observation term 'base_com' to use body '{base_link_name}'"
-                )
-
-        # -----------------------------------------------------------
-        # 8. Fix: base_com startup event expects 'base' in parent cfg, but Canele uses 'body_link'
+        # 7. Fix startup event base body name
         # -----------------------------------------------------------
         if hasattr(self, "events") and getattr(self, "events", None) is not None:
             event_base_com = getattr(self.events, "base_com", None)
             if event_base_com is not None and hasattr(event_base_com, "params"):
                 if event_base_com.params is None:
                     event_base_com.params = {}
-                # Some configs use key 'asset_cfg' (not nested in params for events); unify here.
-                if (
-                    "asset_cfg" in event_base_com.params
-                    and event_base_com.params["asset_cfg"] is not None
-                ):
-                    try:
-                        event_base_com.params["asset_cfg"].body_names = [base_link_name]
-                        event_base_com.params["asset_cfg"].preserve_order = True
-                    except Exception:
-                        event_base_com.params["asset_cfg"] = SceneEntityCfg(
-                            "robot",
-                            body_names=[base_link_name],
-                            preserve_order=True,
-                        )
-                else:
-                    event_base_com.params["asset_cfg"] = SceneEntityCfg(
-                        "robot",
-                        body_names=[base_link_name],
-                        preserve_order=True,
-                    )
+                event_base_com.params["asset_cfg"] = SceneEntityCfg(
+                    "robot",
+                    body_names=[base_link_name],
+                    preserve_order=True,
+                )
                 print(
                     f"[DEBUG] Patched startup event term 'base_com' to use body '{base_link_name}'"
                 )
 
         # -----------------------------------------------------------
-        # 9. Rewards & terminations use short names only
+        # 8. Rewards & terminations use short names only
         # -----------------------------------------------------------
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
@@ -403,97 +444,49 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         print("[DEBUG] Base contact link:", base_link_name)
 
         # -----------------------------------------------------------
-        # 10. Remaining default settings
+        # 9. Reduce terrain size if terrain generator exists
         # -----------------------------------------------------------
-        if self.scene.terrain.terrain_generator is not None:
-            tg = self.scene.terrain.terrain_generator
-            tg.difficulty_range = (0, 1.0)
-            terrain_scale = 0.01
+        if hasattr(self.scene, "terrain") and self.scene.terrain is not None:
+            terrain_cfg = self.scene.terrain
+            terrain_gen = getattr(terrain_cfg, "terrain_generator", None)
+            if terrain_gen is not None:
+                print("[DEBUG] Original terrain generator:", terrain_gen)
 
-            # ★ 全ての段差の高さをスケールする処理 ★
-            tg.vertical_scale *= terrain_scale
+                terrain_scale = 0.5
 
-            for cfg in tg.sub_terrains.values():
-                # Mesh 系 stair: step_height_range
-                if hasattr(cfg, "step_height_range"):
-                    lo, hi = cfg.step_height_range
-                    cfg.step_height_range = (lo * terrain_scale, hi * terrain_scale)
+                for attr in ["size", "border_width", "horizontal_scale", "vertical_scale"]:
+                    if hasattr(terrain_gen, attr):
+                        val = getattr(terrain_gen, attr)
+                        if isinstance(val, (int, float)):
+                            setattr(terrain_gen, attr, val * terrain_scale)
+                        elif isinstance(val, tuple) and len(val) == 2:
+                            setattr(
+                                terrain_gen,
+                                attr,
+                                (val[0] * terrain_scale, val[1] * terrain_scale),
+                            )
 
-                # Mesh 系 blocks: grid_height_range
-                elif hasattr(cfg, "grid_height_range"):
-                    lo, hi = cfg.grid_height_range
-                    cfg.grid_height_range = (lo * terrain_scale, hi * terrain_scale)
-
-                # HeightField 系: noise_range のように height を含むパラメータにも適用（必要なら）
-                elif hasattr(cfg, "noise_range"):
-                    lo, hi = cfg.noise_range
-                    cfg.noise_range = (lo * terrain_scale, hi * terrain_scale)
-
-                # 他にも "height" を含むパラメータ名があれば自動的に 0.1 倍
-                else:
-                    for attr in dir(cfg):
-                        if "height" in attr and isinstance(
-                            getattr(cfg, attr), (float, tuple)
-                        ):
-                            val = getattr(cfg, attr)
-                            if isinstance(val, float):
-                                setattr(cfg, attr, val * terrain_scale)
-                            elif isinstance(val, tuple) and len(val) == 2:
-                                lo, hi = val
-                                setattr(
-                                    cfg, attr, (lo * terrain_scale, hi * terrain_scale)
-                                )
-
-        # -----------------------------------------------------------
-        # 11. FIX: physics_material の body_names/body_ids 衝突を解消
-        # -----------------------------------------------------------
-        if hasattr(self, "physics_material") and self.physics_material is not None:
-
-            # asset_cfg が無ければ新しく作る
-            if self.physics_material.asset_cfg is None:
-                self.physics_material.asset_cfg = SceneEntityCfg(
-                    "robot",
-                    body_names=[".*"],
-                )
-            else:
-                # body_ids があれば削除
-                if hasattr(self.physics_material.asset_cfg, "body_ids"):
-                    # body_ids フィールドが存在する（SceneEntityCfg仕様）
-                    if getattr(self.physics_material.asset_cfg, "body_ids") not in (
-                        None,
-                        [],
-                        (),
-                    ):
-                        print(
-                            "[DEBUG] Removing physics_material.asset_cfg.body_ids (conflict fix)"
-                        )
-                        self.physics_material.asset_cfg.body_ids = None
-
-                # body_names は .* に強制上書き（最も安全）
-                self.physics_material.asset_cfg.body_names = [".*"]
+                sub_terrains = getattr(terrain_gen, "sub_terrains", None)
+                if sub_terrains:
+                    for _, cfg in sub_terrains.items():
+                        for attr in [
+                            "step_height_range",
+                            "platform_width",
+                            "platform_width_range",
+                            "stone_width_range",
+                            "stone_distance_range",
+                            "noise_range",
+                        ]:
+                            if hasattr(cfg, attr):
+                                val = getattr(cfg, attr)
+                                if isinstance(val, (int, float)):
+                                    setattr(cfg, attr, val * terrain_scale)
+                                elif isinstance(val, tuple) and len(val) == 2:
+                                    lo, hi = val
+                                    setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
 
         # -----------------------------------------------------------
-        # 12. Set PhysicsScene params
-        # -----------------------------------------------------------
-        # Set PhysicsScene params
-        # Simulation: 200 Hz
-        # Control: 50 Hz
-        # Rendering: 60Hz
-        # Slover type: PGS
-        # TODO: enableGPUDynamics = 0, broadphaseType = "MBP"
-
-        # self.sim.dt = 0.005
-        # self.decimation = 4
-        # self.sim.render_interval = 3
-        # self.sim.physx.solver_type = 0
-        # self.episode_length_s = 20.0
-        # self.sim.physx.max_position_iteration_count = 4
-        # self.sim.physx.min_position_iteration_count = 4
-        # self.sim.physx.max_velocity_iteration_count = 4
-        # self.sim.physx.min_velocity_iteration_count = 4
-
-        # -----------------------------------------------------------
-        # 13. Randomize events
+        # 10. Randomize events
         # -----------------------------------------------------------
         self.events.physics_material.params["asset_cfg"].body_names = ankle_names
         self.events.physics_material.params["static_friction_range"] = (0.1, 1.0)
@@ -506,9 +499,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             "y": (-0.02, 0.02),
             "z": (-0.02, 0.02),
         }
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [
-            base_link_name
-        ]
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
         self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
         self.events.base_external_force_torque.params["torque_range"] = (-0.8, 0.8)
         self.events.push_robot.params["velocity_range"] = {
@@ -535,36 +526,23 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "pitch": (-0.3, 0.3),
                 "yaw": (-0.3, 0.3),
             },
-            "velocity_range": {
-                "x": (-0.1, 0.1),
-                "y": (-0.1, 0.1),
-                "z": (-0.1, 0.1),
-                "roll": (-0.3, 0.3),
-                "pitch": (-0.3, 0.3),
-                "yaw": (-0.3, 0.3),
-            },
         }
 
         # Rewards
         self.rewards.dof_pos_limits = None
-        self.rewards.lin_vel_z_l2 = None
         self.rewards.lin_vel_z_l2 = RewTerm(
             func=canele_rewards_link.lin_vel_z_l2, weight=-0.2
         )
         self.rewards.undesired_contacts = None
-        self.rewards.flat_orientation_l2 = None
         self.rewards.flat_orientation_l2 = RewTerm(
             func=canele_rewards_link.flat_orientation_l2, weight=-1.0
         )
         self.rewards.ang_vel_xy_l2.weight = -0.01
         self.rewards.action_rate_l2.weight = -0.01
-        self.rewards.dof_acc_l2 = None
         self.rewards.dof_acc_l2 = RewTerm(
             func=canele_rewards_joint.joint_action_acc_l2,
             weight=-1.0e-9,
-            params={
-                "dt": self.decimation * self.sim.dt,
-            },
+            params={"dt": self.decimation * self.sim.dt},
         )
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
@@ -588,8 +566,8 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # terminations
         self.terminations.base_contact = None
-        # self.terminations.base_contact.params["sensor_cfg"].body_names = "torso_link"
-        self.terminations.detect_fall = DoneTerm(  # type: ignore
+
+        self.terminations.detect_fall = DoneTerm(
             func=canele_terminations.detect_fall,
             params={
                 "limit_angle": 1.3,
@@ -602,7 +580,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         )
 
         body_and_ankle_names = [base_link_name] + ankle_names
-        self.terminations.detect_height_too_low_relative = DoneTerm(  # type: ignore
+        self.terminations.detect_height_too_low_relative = DoneTerm(
             func=canele_terminations.detect_height_too_low_relative,
             params={
                 "min_height": 0.5,
@@ -614,7 +592,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             time_out=False,
         )
 
-        self.terminations.detect_tilt = DoneTerm(  # type: ignore
+        self.terminations.detect_tilt = DoneTerm(
             func=canele_terminations.detect_tilt_too_high_any_link,
             params={
                 "max_tilt": 1.5,
@@ -626,7 +604,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             time_out=False,
         )
 
-        self.terminations.support_plane_tilt = DoneTerm(  # type: ignore
+        self.terminations.support_plane_tilt = DoneTerm(
             func=canele_terminations.detect_support_plane_tilt_too_high,
             params={
                 "max_tilt": 1.3,
@@ -649,14 +627,11 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        # make a smaller scene for play
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
         self.episode_length_s = 40.0
 
-        # spawn the robot randomly in the grid (instead of their terrain levels)
         self.scene.terrain.max_init_terrain_level = None
-        # reduce the number of terrains to save memory
         if self.scene.terrain.terrain_generator is not None:
             self.scene.terrain.terrain_generator.num_rows = 5
             self.scene.terrain.terrain_generator.num_cols = 5
@@ -675,24 +650,14 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
                 "pitch": (0.0, 0.0),
                 "yaw": (0.0, 0.0),
             },
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
-            },
         }
         self.scene.height_scanner = None
-        self.observations.policy.height_scan = None
+        if hasattr(self.observations.policy, "height_scan"):
+            self.observations.policy.height_scan = None
 
-        # disable randomization for play
         self.observations.policy.enable_corruption = False
 
-        # remove random pushing
         self.events.base_external_force_torque = None
         self.events.push_robot = None
 
-        # Enable IO descriptor export at env startup
         self.export_io_descriptors = True

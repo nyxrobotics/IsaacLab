@@ -75,11 +75,11 @@ class CaneleEnvCfg(DirectRLEnvCfg):
 
     # Reward weights
     # [orientation, height, joint pos, joint pos sigmoid, feet height, vel tracking, stop/stability]
-    reward_weights = [1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0]
+    reward_weights = [1.0, 1.0, 1.0, 1.0, 4.0, 1.0, 1.0]
 
     # Canele-specific posture/foot targets
     body_height_target = 0.95
-    feet_height_target = 0.15
+    feet_height_target = 0.2
 
     # Command ranges [m/s, m/s, rad/s]
     command_x_range = (-0.6, 0.6)
@@ -164,12 +164,8 @@ class CaneleEnv(DirectRLEnv):
             self.base_and_feet_ids,
         )
 
-        self.lower_limits = self.robot.data.soft_joint_pos_limits[
-            :, self.joint_ids, 0
-        ].clone()
-        self.upper_limits = self.robot.data.soft_joint_pos_limits[
-            :, self.joint_ids, 1
-        ].clone()
+        self.lower_limits = self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 0].clone()
+        self.upper_limits = self.robot.data.soft_joint_pos_limits[:, self.joint_ids, 1].clone()
 
         # Initial posture from CANELE_MINIMAL_CFG (already in radians).
         self.base_pose = self.robot.data.default_joint_pos[:, self.joint_ids].clone()
@@ -179,13 +175,9 @@ class CaneleEnv(DirectRLEnv):
         ).clamp_min(1e-6)
 
         # Bimo-style actuator path buffers.
-        self.cmd_actions = (
-            self.base_pose.clone()
-        )  # desired joint positions after delta integration [rad]
-        self.gear_position = (
-            self.base_pose.clone()
-        )  # backlash-affected gear position [rad]
-        self.noisy_act = self.base_pose.clone()  # final actuator target [rad]
+        self.cmd_actions = self.base_pose.clone()
+        self.gear_position = self.base_pose.clone()
+        self.noisy_act = self.base_pose.clone()
         self.last_direction = torch.zeros_like(self.base_pose)
 
         # Noise settings.
@@ -329,7 +321,9 @@ class CaneleEnv(DirectRLEnv):
         proc_act = self.act_hist.reshape(self.scene.num_envs, 4 * len(self.joint_names))
 
         cmd_vel_obs = normalize_values(
-            self.commands, self.command_min, self.command_max
+            self.commands,
+            self.command_min,
+            self.command_max,
         )
 
         obs_buffer = torch.cat((cmd_vel_obs, imu_hist, proc_act), dim=1)
@@ -350,9 +344,7 @@ class CaneleEnv(DirectRLEnv):
         # Backlash model.
         delta = self.cmd_actions - self.gear_position
         direction = torch.sign(delta)
-        direction_changed = (direction != self.last_direction) & (
-            self.last_direction != 0.0
-        )
+        direction_changed = (direction != self.last_direction) & (self.last_direction != 0.0)
 
         movement = torch.where(
             direction_changed,
@@ -400,7 +392,6 @@ class CaneleEnv(DirectRLEnv):
         contact_pos = contact_data.pos_w
         air_time = contact_data.current_air_time
 
-        # Core Bimo-like posture / gait terms.
         orientation_rew = orientation_reward(euler_imu_orient)
         height_rew = height_reward(root_pos, self.cfg.body_height_target)
         position_rew = joint_position_reward(
@@ -408,12 +399,20 @@ class CaneleEnv(DirectRLEnv):
             self.base_pose,
             self.position_reward_max_diff,
         )
+
         motion_mask = motion_command_mask(
             self.commands,
             self.cfg.lin_cmd_deadzone,
             self.cfg.ang_cmd_deadzone,
         )
-        sig_extra = sigmoid_extra(self.cmd_actions, self.base_pose) * motion_mask
+        stop_mask = stop_command_mask(
+            self.commands,
+            self.cfg.lin_cmd_deadzone,
+            self.cfg.ang_cmd_deadzone,
+        )
+
+        sig_extra = sigmoid_extra(self.cmd_actions, self.base_pose) * stop_mask
+
         feet_h_rew = (
             feet_height_reward(
                 air_time,
@@ -424,9 +423,9 @@ class CaneleEnv(DirectRLEnv):
             * motion_mask
         )
 
-        # Velocity tracking terms.
         base_vel_yaw = world_xy_to_yaw_frame(root_vel_w[:, :2], euler_imu_orient[:, 2])
         support_mask = support_phase_mask(air_time)
+
         vel_track_rew = (
             velocity_tracking_reward(
                 base_vel_yaw,
@@ -438,17 +437,16 @@ class CaneleEnv(DirectRLEnv):
             * support_mask
         )
 
-        # Extra reward when the command is exactly zero and the robot stays quiet
-        # without lifting the feet. This still allows balance control because it only
-        # rewards low motion / low air time; it does not hard-freeze the joints.
-        stop_rew = stop_command_reward(
-            base_vel_yaw,
-            root_vel_w[:, 5],
-            air_time,
-            self.commands,
-            self.cfg.stop_reward_lin_std,
-            self.cfg.stop_reward_ang_std,
-            self.cfg.stop_reward_air_time_scale,
+        stop_rew = (
+            stop_command_reward(
+                base_vel_yaw,
+                root_vel_w[:, 5],
+                air_time,
+                self.cfg.stop_reward_lin_std,
+                self.cfg.stop_reward_ang_std,
+                self.cfg.stop_reward_air_time_scale,
+            )
+            * stop_mask
         )
 
         w = self.reward_weights
@@ -482,11 +480,9 @@ class CaneleEnv(DirectRLEnv):
         self._sample_commands(env_ids)
         self._schedule_next_command_resample(env_ids)
 
-        # Default root pose + env origin.
         root_state = self.robot.data.default_root_state[env_ids].clone()
         root_state[:, :3] += self.scene.env_origins[env_ids]
 
-        # Default joint positions and velocities from CANELE_MINIMAL_CFG init_state.
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_vel = self.robot.data.default_joint_vel[env_ids].clone()
 
@@ -494,7 +490,6 @@ class CaneleEnv(DirectRLEnv):
         self.robot.write_root_com_velocity_to_sim(root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        # Reset buffers.
         self.orient_h[env_ids] = 0.0
         self.gyro_h[env_ids] = 0.0
 
@@ -812,6 +807,15 @@ def motion_command_mask(
 
 
 @torch.jit.script
+def stop_command_mask(
+    commands: torch.Tensor, lin_deadzone: float, ang_deadzone: float
+):
+    lin_mag = torch.norm(commands[:, :2], dim=1)
+    ang_mag = torch.abs(commands[:, 2])
+    return ((lin_mag <= lin_deadzone) & (ang_mag <= ang_deadzone)).float()
+
+
+@torch.jit.script
 def velocity_tracking_reward(
     vel_xy_yaw: torch.Tensor,
     yaw_rate: torch.Tensor,
@@ -832,14 +836,10 @@ def stop_command_reward(
     vel_xy_yaw: torch.Tensor,
     yaw_rate: torch.Tensor,
     air_time: torch.Tensor,
-    commands: torch.Tensor,
     lin_std: float,
     ang_std: float,
     air_time_scale: float,
 ):
-    max_abs_cmd, _ = torch.max(torch.abs(commands), dim=1)
-    stop_mask = (max_abs_cmd <= 1.0e-6).float()
-
     lin_err = torch.sum(torch.square(vel_xy_yaw), dim=1)
     ang_err = torch.square(yaw_rate)
     air_sum = torch.sum(torch.clamp(air_time, min=0.0), dim=1)
@@ -848,4 +848,4 @@ def stop_command_reward(
     ang_term = torch.exp(-ang_err / (ang_std * ang_std))
     contact_term = torch.exp(-air_time_scale * air_sum)
 
-    return (0.4 * lin_term + 0.3 * ang_term + 0.3 * contact_term) * stop_mask
+    return 0.4 * lin_term + 0.3 * ang_term + 0.3 * contact_term

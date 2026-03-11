@@ -75,11 +75,11 @@ class CaneleEnvCfg(DirectRLEnvCfg):
 
     # Reward weights
     # [orientation, height, joint pos, joint pos sigmoid, feet height, vel tracking]
-    reward_weights = [1.0, 1.0, 1.0, 1.0, 4.0, 1.0]
+    reward_weights = [1.0, 1.0, 0.1, 1.0, 10.0, 1.0]
 
     # Canele-specific posture/foot targets
     body_height_target = 0.95
-    feet_height_target = 0.2
+    feet_height_target = 0.1
 
     # Command ranges [m/s, m/s, rad/s]
     command_x_range = (-0.6, 0.6)
@@ -799,4 +799,4 @@ def velocity_tracking_reward(
 
     lin_rew = torch.exp(-lin_err / (lin_std * lin_std))
     ang_rew = torch.exp(-ang_err / (ang_std * ang_std))
-    return 0.6 * lin_rew + 0.4 * ang_rew
+    return 1.0 * lin_rew + 2.0 * ang_rew

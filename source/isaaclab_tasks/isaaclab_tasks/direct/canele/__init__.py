@@ -64,3 +64,13 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CaneleRoughPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Canele-Bimo-Cmd",
+    entry_point=f"{__name__}.direct.canele_bimo_cmd_vel:CaneleEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.direct.canele_bimo_cmd_vel:CaneleEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CaneleRoughPPORunnerCfg",
+    },
+)

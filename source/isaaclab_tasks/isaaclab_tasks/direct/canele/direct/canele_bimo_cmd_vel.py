@@ -400,16 +400,12 @@ class CaneleEnv(DirectRLEnv):
             self.position_reward_max_diff,
         )
 
-        motion_mask = motion_command_mask(
-            self.commands,
-            self.cfg.lin_cmd_deadzone,
-            self.cfg.ang_cmd_deadzone,
-        )
         stop_mask = stop_command_mask(
             self.commands,
             self.cfg.lin_cmd_deadzone,
             self.cfg.ang_cmd_deadzone,
         )
+        motion_mask = 1.0 - stop_mask
 
         sig_extra = sigmoid_extra(self.cmd_actions, self.base_pose) * stop_mask
 
@@ -795,15 +791,6 @@ def support_phase_mask(air_time: torch.Tensor):
     in_air = air_time > 0.0
     both_in_air = torch.sum(in_air, dim=1) == 2
     return (~both_in_air).float()
-
-
-@torch.jit.script
-def motion_command_mask(
-    commands: torch.Tensor, lin_deadzone: float, ang_deadzone: float
-):
-    lin_mag = torch.norm(commands[:, :2], dim=1)
-    ang_mag = torch.abs(commands[:, 2])
-    return ((lin_mag > lin_deadzone) | (ang_mag > ang_deadzone)).float()
 
 
 @torch.jit.script

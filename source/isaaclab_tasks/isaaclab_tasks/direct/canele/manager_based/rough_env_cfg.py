@@ -1,17 +1,25 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers.
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import fnmatch
-import os
+from __future__ import annotations
 
+import fnmatch
+import math
+import os
+import re
+from dataclasses import MISSING
+from typing import Any
+
+import torch
+
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-
-import torch
+from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.utils import configclass
 
 # Canele articulation config
@@ -21,21 +29,48 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     LocomotionVelocityRoughEnvCfg,
 )
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import RewardsCfg
-from .terminations import canele_terminations
+from .io_descriptors import history_observation_descriptor
 from .rewards import canele_rewards_env
-from .rewards import canele_rewards_walk
 from .rewards import canele_rewards_joint
 from .rewards import canele_rewards_link
-from .io_descriptors import history_observation_descriptor
+from .rewards import canele_rewards_walk
+from .terminations import canele_terminations
 
 # For USD prim inspection
 from pxr import Usd
 
 
 # ---------------------------------------------------------------------
+# Constants for Bimo-like sensor/actuator non-idealities
+# ---------------------------------------------------------------------
+IMU_ORIENTATION_NOISE_STD = 0.015
+IMU_GYRO_NOISE_STD = 0.01
+
+ACTUATOR_NOISE_STD_DEG = 0.5
+ACTUATOR_NOISE_STD_RAD = math.radians(ACTUATOR_NOISE_STD_DEG)
+
+ACTUATOR_DELAY_MIN = 1
+ACTUATOR_DELAY_MAX = 4
+
+BACKLASH_DEFAULT_DEG = 1.6
+BACKLASH_DEFAULT_RAD = math.radians(BACKLASH_DEFAULT_DEG)
+
+BACKLASH_RANDOM_RANGE_DEG = (0.5, 2.0)
+BACKLASH_RANDOM_RANGE_RAD = (
+    math.radians(BACKLASH_RANDOM_RANGE_DEG[0]),
+    math.radians(BACKLASH_RANDOM_RANGE_DEG[1]),
+)
+
+# Joint parameter randomization ranges taken from the Bimo task.
+JOINT_FRICTION_RANGE = (0.1, 0.3)
+JOINT_EFFORT_LIMIT_RANGE = (2.7, 2.94)
+JOINT_DAMPING_RANGE = (0.6, 0.7)
+
+
+# ---------------------------------------------------------------------
 # Utility function: find prims in USD by matching last component
 # ---------------------------------------------------------------------
-def find_prim_paths(usd_path, pattern):
+def find_prim_paths(usd_path: str, pattern: str) -> list[str]:
     """
     Find USD prim paths whose LAST ELEMENT matches fnmatch pattern.
 
@@ -51,9 +86,13 @@ def find_prim_paths(usd_path, pattern):
     return results
 
 
-# ---------------------------------------------------------------------
-# Observation helpers
-# ---------------------------------------------------------------------
+def _apply_gaussian_noise(values: torch.Tensor, std: float) -> torch.Tensor:
+    """Apply additive Gaussian noise if std > 0."""
+    if std <= 0.0:
+        return values
+    return values + torch.randn_like(values) * std
+
+
 def _get_history_buffer(env, attr_name: str, feature_dim: int) -> torch.Tensor:
     """Return or lazily create a [num_envs, 4, feature_dim] history buffer on the env."""
     hist = getattr(env, attr_name, None)
@@ -76,9 +115,7 @@ def _update_history(
     hist = _get_history_buffer(env, attr_name, int(values.shape[-1]))
     env_step_count = getattr(env, "episode_length_buf", None)
     if env_step_count is None:
-        reset_mask = torch.zeros(
-            values.shape[0], dtype=torch.bool, device=values.device
-        )
+        reset_mask = torch.zeros(values.shape[0], dtype=torch.bool, device=values.device)
     else:
         reset_mask = env_step_count == 0
 
@@ -96,13 +133,295 @@ def _update_history(
     return hist.reshape(values.shape[0], -1)
 
 
-def _normalize_joint_positions(
-    joint_pos: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor
+def _ensure_env_buffer(
+    env,
+    attr_name: str,
+    shape: tuple[int, ...],
+    *,
+    dtype: torch.dtype | None = None,
+    fill_value: float | int = 0.0,
 ) -> torch.Tensor:
-    denom = (upper - lower).clamp_min(1.0e-6)
-    return 2.0 * (joint_pos - lower) / denom - 1.0
+    """Create a tensor buffer on env if missing or mismatched."""
+    buf = getattr(env, attr_name, None)
+    expected_shape = (env.num_envs, *shape)
+    dtype = dtype or torch.float32
+    if (
+        buf is None
+        or tuple(buf.shape) != expected_shape
+        or buf.device != env.device
+        or buf.dtype != dtype
+    ):
+        if dtype.is_floating_point:
+            buf = torch.full(expected_shape, float(fill_value), device=env.device, dtype=dtype)
+        else:
+            buf = torch.full(expected_shape, int(fill_value), device=env.device, dtype=dtype)
+        setattr(env, attr_name, buf)
+    return buf
 
 
+def _resolve_joint_ids(asset, joint_names: list[str] | None) -> list[int]:
+    """Resolve joint ids from names while preserving order."""
+    if not joint_names:
+        return list(range(asset.num_joints))
+    if hasattr(asset, "find_joints"):
+        found = asset.find_joints(joint_names, preserve_order=True)
+        if isinstance(found, tuple):
+            ids = found[0]
+        else:
+            ids = found
+        if isinstance(ids, slice):
+            return list(range(asset.num_joints))[ids]
+        if torch.is_tensor(ids):
+            return ids.tolist()
+        return list(ids)
+    return list(range(asset.num_joints))
+
+
+def _match_values(
+    joint_names: list[str],
+    value: float | dict[str, float] | None,
+    *,
+    default: float = 0.0,
+) -> torch.Tensor:
+    """Map scalar/dict regex values to a per-joint tensor."""
+    out = torch.full((len(joint_names),), float(default), dtype=torch.float32)
+    if value is None:
+        return out
+    if isinstance(value, (int, float)):
+        out[:] = float(value)
+        return out
+    if isinstance(value, dict):
+        for pattern, pattern_value in value.items():
+            for i, joint_name in enumerate(joint_names):
+                if re.fullmatch(pattern, joint_name) or re.match(pattern, joint_name):
+                    out[i] = float(pattern_value)
+        return out
+    raise TypeError(f"Unsupported value type for joint mapping: {type(value)}")
+
+
+def _get_joint_limits_for_ids(asset, joint_ids: list[int], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return lower/upper soft joint limits for the selected joints."""
+    limits = asset.data.soft_joint_pos_limits
+    if limits.dim() == 3:
+        lower = limits[0, joint_ids, 0].to(device=device)
+        upper = limits[0, joint_ids, 1].to(device=device)
+    else:
+        lower = limits[joint_ids, 0].to(device=device)
+        upper = limits[joint_ids, 1].to(device=device)
+    return lower, upper
+
+
+# ---------------------------------------------------------------------
+# Custom reset randomization for Bimo-like joint parameters + backlash
+# ---------------------------------------------------------------------
+def randomize_like_joint_parameters(
+    env,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    friction_range: tuple[float, float] = JOINT_FRICTION_RANGE,
+    effort_limit_range: tuple[float, float] = JOINT_EFFORT_LIMIT_RANGE,
+    damping_range: tuple[float, float] = JOINT_DAMPING_RANGE,
+    backlash_range_rad: tuple[float, float] = BACKLASH_RANDOM_RANGE_RAD,
+) -> None:
+    """
+    Randomize per-env, per-joint friction, effort limit, damping, and backlash.
+
+    This mirrors the Bimo direct environment reset logic, which samples per-env and per-joint
+    parameters and writes them into simulation on reset.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    env_ids = env_ids.flatten().long()
+
+    joint_ids = asset_cfg.joint_ids
+    if isinstance(joint_ids, slice):
+        joint_ids = torch.arange(asset.num_joints, device=env.device)
+    elif not torch.is_tensor(joint_ids):
+        joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
+    else:
+        joint_ids = joint_ids.to(device=env.device, dtype=torch.long)
+
+    n_reset = int(env_ids.shape[0])
+    n_joints = int(joint_ids.shape[0])
+
+    friction = torch.empty((n_reset, n_joints), device=env.device).uniform_(*friction_range)
+    effort_limit = torch.empty((n_reset, n_joints), device=env.device).uniform_(*effort_limit_range)
+    damping = torch.empty((n_reset, n_joints), device=env.device).uniform_(*damping_range)
+    backlash = torch.empty((n_reset, n_joints), device=env.device).uniform_(*backlash_range_rad)
+
+    # These methods are used directly in the Bimo environment and are expected on Articulation.
+    asset.write_joint_friction_coefficient_to_sim(friction, joint_ids=joint_ids, env_ids=env_ids)
+    asset.write_joint_effort_limit_to_sim(effort_limit, joint_ids=joint_ids, env_ids=env_ids)
+    asset.write_joint_damping_to_sim(damping, joint_ids=joint_ids, env_ids=env_ids)
+
+    # Store randomized backlash so the custom action term can consume it.
+    env_backlash = _ensure_env_buffer(env, "_canele_joint_backlash_rad", (n_joints,))
+    env_backlash[env_ids] = backlash
+
+
+# ---------------------------------------------------------------------
+# Custom action term with Bimo-like delay, backlash and actuator noise
+# ---------------------------------------------------------------------
+class BimoLikeJointPositionAction(ActionTerm):
+    """
+    Joint position action term with Bimo-like delay, backlash, and actuator noise.
+
+    The action term processes raw policy actions once per environment step, then applies the
+    resulting target at every simulation step while modeling:
+      - random action delay in physics steps
+      - backlash deadband in joint target transmission
+      - additive actuator noise on the final commanded target
+    """
+
+    def __init__(self, cfg: "BimoLikeJointPositionActionCfg", env):
+        super().__init__(cfg, env)
+
+        self.cfg: BimoLikeJointPositionActionCfg = cfg
+        self._joint_names = list(cfg.joint_names)
+        self._joint_ids = _resolve_joint_ids(self._asset, self._joint_names)
+        self._num_envs = env.num_envs
+        self._device = env.device
+        self._action_dim = len(self._joint_ids)
+
+        self._raw_actions = torch.zeros(self._num_envs, self._action_dim, device=self._device)
+        self._processed_actions = torch.zeros_like(self._raw_actions)
+        self._pending_target = torch.zeros_like(self._raw_actions)
+        self._last_applied_target = torch.zeros_like(self._raw_actions)
+        self._gear_position = torch.zeros_like(self._raw_actions)
+        self._last_direction = torch.zeros_like(self._raw_actions)
+        self._delay_counter = torch.zeros(self._num_envs, device=self._device, dtype=torch.long)
+        self._delay_steps = torch.zeros(self._num_envs, device=self._device, dtype=torch.long)
+
+        self._lower_limits, self._upper_limits = _get_joint_limits_for_ids(
+            self._asset, self._joint_ids, self._device
+        )
+
+        self._scale = _match_values(self._joint_names, cfg.scale, default=1.0).to(self._device)
+        if cfg.offset is not None:
+            self._offset = _match_values(self._joint_names, cfg.offset, default=0.0).to(self._device)
+        elif cfg.use_default_offset:
+            self._offset = self._asset.data.default_joint_pos[0, self._joint_ids].detach().clone().to(self._device)
+        else:
+            self._offset = torch.zeros(self._action_dim, device=self._device)
+
+        self._default_backlash = torch.full(
+            (self._num_envs, self._action_dim), cfg.backlash_default_rad, device=self._device
+        )
+        self.reset()
+
+    @property
+    def action_dim(self) -> int:
+        return self._action_dim
+
+    @property
+    def raw_actions(self) -> torch.Tensor:
+        return self._raw_actions
+
+    @property
+    def processed_actions(self) -> torch.Tensor:
+        return self._processed_actions
+
+    def reset(self, env_ids=None) -> dict[str, torch.Tensor]:
+        if env_ids is None:
+            env_ids = slice(None)
+
+        joint_pos = self._asset.data.joint_pos[:, self._joint_ids]
+        self._raw_actions[env_ids] = 0.0
+        self._processed_actions[env_ids] = 0.0
+        self._pending_target[env_ids] = joint_pos[env_ids]
+        self._last_applied_target[env_ids] = joint_pos[env_ids]
+        self._gear_position[env_ids] = joint_pos[env_ids]
+        self._last_direction[env_ids] = 0.0
+        self._delay_counter[env_ids] = 0
+        self._delay_steps[env_ids] = 0
+        return {}
+
+    def process_actions(self, actions: torch.Tensor):
+        self._raw_actions[:] = actions
+
+        clipped = actions.clamp(self.cfg.raw_action_min, self.cfg.raw_action_max)
+        self._processed_actions[:] = clipped
+
+        target = clipped * self._scale.unsqueeze(0) + self._offset.unsqueeze(0)
+        target = torch.max(torch.min(target, self._upper_limits.unsqueeze(0)), self._lower_limits.unsqueeze(0))
+        self._pending_target[:] = target
+
+        self._delay_counter.zero_()
+        self._delay_steps = torch.randint(
+            low=self.cfg.actuator_delay_min,
+            high=self.cfg.actuator_delay_max + 1,
+            size=(self._num_envs,),
+            device=self._device,
+            dtype=torch.long,
+        )
+
+    def apply_actions(self):
+        ready_mask = self._delay_counter >= self._delay_steps
+        self._delay_counter += 1
+
+        active_target = torch.where(
+            ready_mask.unsqueeze(-1),
+            self._pending_target,
+            self._last_applied_target,
+        )
+
+        backlash = getattr(self._env, "_canele_joint_backlash_rad", None)
+        if backlash is None or backlash.shape != self._default_backlash.shape:
+            backlash = self._default_backlash
+        else:
+            backlash = backlash.to(device=self._device)
+
+        delta = active_target - self._gear_position
+        direction = torch.sign(delta)
+        direction_changed = (direction != self._last_direction) & (self._last_direction != 0)
+
+        movement = torch.where(
+            direction_changed,
+            torch.clamp(torch.abs(delta) - backlash, min=0.0) * direction,
+            delta,
+        )
+
+        self._gear_position += movement
+        self._last_direction = torch.where(delta != 0, direction, self._last_direction)
+
+        noisy_target = _apply_gaussian_noise(self._gear_position, self.cfg.actuator_noise_std_rad)
+        noisy_target = torch.max(
+            torch.min(noisy_target, self._upper_limits.unsqueeze(0)),
+            self._lower_limits.unsqueeze(0),
+        )
+
+        self._last_applied_target[:] = active_target
+        self._asset.set_joint_position_target(noisy_target, joint_ids=self._joint_ids)
+
+
+@configclass
+class BimoLikeJointPositionActionCfg(ActionTermCfg):
+    """Configuration for the Bimo-like joint position action term."""
+
+    class_type: type[ActionTerm] = BimoLikeJointPositionAction
+
+    asset_name: str = "robot"
+    joint_names: list[str] = MISSING
+    preserve_order: bool = True
+
+    scale: float | dict[str, float] = 1.0
+    offset: float | dict[str, float] | None = None
+    use_default_offset: bool = True
+
+    raw_action_min: float = -1.0
+    raw_action_max: float = 1.0
+
+    actuator_delay_min: int = ACTUATOR_DELAY_MIN
+    actuator_delay_max: int = ACTUATOR_DELAY_MAX
+    actuator_noise_std_rad: float = ACTUATOR_NOISE_STD_RAD
+    backlash_default_rad: float = BACKLASH_DEFAULT_RAD
+
+
+# ---------------------------------------------------------------------
+# Observation helpers
+# ---------------------------------------------------------------------
 @history_observation_descriptor(
     observation_type="CommandHistory",
     terms_per_step=3,
@@ -126,9 +445,7 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
         dtype=commands.dtype,
     )
     cmd_norm = 2.0 * (commands - cmd_min) / (cmd_max - cmd_min).clamp_min(1.0e-6) - 1.0
-    return _update_history(
-        env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True
-    )
+    return _update_history(env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True)
 
 
 @history_observation_descriptor(
@@ -137,15 +454,16 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
     history_length=4,
     units="normalized",
     axes=["gravity_x", "gravity_y"],
-    source="projected_gravity_b[:2]",
+    source="projected_gravity_b[:2] with additive Bimo-like IMU orientation noise",
     normalization="clamp_to_minus1_plus1",
 )
 def canele_obs_projected_gravity_history(
     env, asset_cfg: SceneEntityCfg
 ) -> torch.Tensor:
-    """Flattened 4-step history of projected gravity x/y components in the body frame."""
+    """Flattened 4-step history of projected gravity x/y with Bimo-like IMU orientation noise."""
     asset = env.scene[asset_cfg.name]
     projected_gravity = asset.data.projected_gravity_b[:, :2]
+    projected_gravity = _apply_gaussian_noise(projected_gravity, IMU_ORIENTATION_NOISE_STD)
     gravity_xy = projected_gravity.clamp(-1.0, 1.0)
     return _update_history(
         env,
@@ -160,14 +478,15 @@ def canele_obs_projected_gravity_history(
     terms_per_step=3,
     history_length=4,
     units="normalized",
-    axes=["wx", "wy", "wz"],
-    source="root_ang_vel_b",
-    normalization="clamp(-2,2)/2",
+    axes=["ang_vel_x", "ang_vel_y", "ang_vel_z"],
+    source="root_ang_vel_b[:3] with additive Bimo-like gyro noise",
+    normalization="clamp_to_minus2_plus2_then_divide_by_2",
 )
 def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Flattened 4-step history of normalized base angular velocity [wx, wy, wz]."""
+    """Flattened 4-step history of body-frame angular velocity with Bimo-like gyro noise."""
     asset = env.scene[asset_cfg.name]
     angular_vel = asset.data.root_ang_vel_b[:, :3]
+    angular_vel = _apply_gaussian_noise(angular_vel, IMU_GYRO_NOISE_STD)
     angular_vel = angular_vel.clamp(-2.0, 2.0) / 2.0
     return _update_history(
         env,
@@ -182,13 +501,13 @@ def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     terms_per_step=13,
     history_length=4,
     units="normalized",
-    source="env.action_manager.action for the actuated joints",
+    source="env.action_manager.prev_action for the actuated joints",
     normalization="policy_action_clamped_to_minus1_plus1",
     include_joint_names=True,
 )
 def canele_obs_action_history(env) -> torch.Tensor:
     """Flattened 4-step history of previous policy actions."""
-    action = env.action_manager.action
+    action = env.action_manager.prev_action
     action = action.clamp(-1.0, 1.0)
     return _update_history(env, "_canele_action_hist", action, init_with_current=True)
 
@@ -363,13 +682,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # -----------------------------------------------------------
         self.scene.robot = CANELE_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-        try:
-            robot_prim_resolved = self.scene.robot.prim_path
-        except Exception:
-            robot_prim_resolved = "{ENV_REGEX_NS}/Robot"
-
-        print("[DEBUG] Detected robot prim path BEFORE spawn:", robot_prim_resolved)
-
         # -----------------------------------------------------------
         # 3. Disable synthetic height scanner and its observation
         # -----------------------------------------------------------
@@ -378,25 +690,19 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             self.observations.policy.height_scan = None
 
         # -----------------------------------------------------------
-        # 4. Restrict action joints to actuated leg/body joints only
+        # 4. Restrict joints to locomotion/body joints only
         # -----------------------------------------------------------
         actuated_joint_names: list[str] = []
         try:
             for actuator_cfg in self.scene.robot.actuators.values():
                 actuated_joint_names.extend(list(actuator_cfg.joint_names_expr))
-        except Exception as e:
-            print(
-                "[DEBUG] Failed to collect actuated joints from self.scene.robot.actuators:",
-                e,
-            )
+        except Exception as exc:
+            print("[DEBUG] Failed to collect actuated joints from robot.actuators:", exc)
 
-        _seen = set()
+        seen = set()
         actuated_joint_names = [
-            j for j in actuated_joint_names if not (j in _seen or _seen.add(j))
+            joint_name for joint_name in actuated_joint_names if not (joint_name in seen or seen.add(joint_name))
         ]
-
-        print("[DEBUG] Actuated joint names count:", len(actuated_joint_names))
-        print("[DEBUG] Actuated joint names:", actuated_joint_names)
 
         arm_joints = [
             "left_shoulder_yaw",
@@ -416,13 +722,7 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             "right_wrist_roll",
             "right_wrist_pitch",
         ]
-
-        print("[DEBUG] Arm joints to exclude:", arm_joints)
-        actuated_joint_names = [j for j in actuated_joint_names if j not in arm_joints]
-        print(
-            "[DEBUG] Actuated joint names after excluding arm joints:",
-            actuated_joint_names,
-        )
+        actuated_joint_names = [joint_name for joint_name in actuated_joint_names if joint_name not in arm_joints]
 
         def _make_actuated_asset_cfg() -> SceneEntityCfg:
             return SceneEntityCfg(
@@ -431,18 +731,32 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 preserve_order=True,
             )
 
+        # -----------------------------------------------------------
+        # 5. Replace the default action term with a Bimo-like one
+        # -----------------------------------------------------------
         if hasattr(self, "actions") and hasattr(self.actions, "joint_pos"):
-            action_term = self.actions.joint_pos
-            if hasattr(action_term, "joint_names"):
-                action_term.joint_names = actuated_joint_names
-                print("[DEBUG] Restricted action term 'joint_pos' via joint_names")
+            old_action_cfg = self.actions.joint_pos
+            self.actions.joint_pos = BimoLikeJointPositionActionCfg(
+                asset_name="robot",
+                joint_names=actuated_joint_names,
+                preserve_order=True,
+                scale=getattr(old_action_cfg, "scale", 1.0),
+                offset=getattr(old_action_cfg, "offset", None),
+                use_default_offset=getattr(old_action_cfg, "use_default_offset", True),
+                raw_action_min=-1.0,
+                raw_action_max=1.0,
+                actuator_delay_min=ACTUATOR_DELAY_MIN,
+                actuator_delay_max=ACTUATOR_DELAY_MAX,
+                actuator_noise_std_rad=ACTUATOR_NOISE_STD_RAD,
+                backlash_default_rad=BACKLASH_DEFAULT_RAD,
+            )
+            print("[DEBUG] Replaced joint_pos action term with Bimo-like delay/backlash/noise model")
 
         # -----------------------------------------------------------
-        # 5. Replace policy observations completely
+        # 6. Replace policy observations completely
         # -----------------------------------------------------------
         if hasattr(self.observations, "policy"):
             policy_obs = self.observations.policy
-
             policy_obs.enable_corruption = True
             policy_obs.concatenate_terms = True
             policy_obs.concatenate_dim = -1
@@ -467,127 +781,75 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 func=canele_obs_ang_vel_history,
                 params={"asset_cfg": SceneEntityCfg("robot")},
             )
-            policy_obs.action_history = ObsTerm(
-                func=canele_obs_action_history,
-            )
-            print(
-                "[DEBUG] Replaced policy observations with cmd_vel/projected_gravity/ang_vel/action 4-step histories"
-            )
+            policy_obs.action_history = ObsTerm(func=canele_obs_action_history)
+            print("[DEBUG] Replaced policy observations with Bimo-like IMU/action histories")
 
         # -----------------------------------------------------------
-        # 6. Update reset config
+        # 7. Update reset config and add Bimo-like joint randomization
         # -----------------------------------------------------------
+        actuated_asset_cfg = _make_actuated_asset_cfg()
         if getattr(self.events, "reset_robot_joints", None) is not None:
-            self.events.reset_robot_joints.params["asset_cfg"] = (
-                _make_actuated_asset_cfg()
-            )
-            print(
-                "[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg"
+            self.events.reset_robot_joints.params["asset_cfg"] = actuated_asset_cfg
+            self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
+
+        self.events.randomize_like_joint_params = EventTerm(
+            func=randomize_like_joint_parameters,
+            mode="reset",
+            params={
+                "asset_cfg": actuated_asset_cfg,
+                "friction_range": JOINT_FRICTION_RANGE,
+                "effort_limit_range": JOINT_EFFORT_LIMIT_RANGE,
+                "damping_range": JOINT_DAMPING_RANGE,
+                "backlash_range_rad": BACKLASH_RANDOM_RANGE_RAD,
+            },
+        )
+
+        # -----------------------------------------------------------
+        # 8. Fix startup event base body name
+        # -----------------------------------------------------------
+        event_base_com = getattr(self.events, "base_com", None)
+        if event_base_com is not None and hasattr(event_base_com, "params"):
+            if event_base_com.params is None:
+                event_base_com.params = {}
+            event_base_com.params["asset_cfg"] = SceneEntityCfg(
+                "robot",
+                body_names=[base_link_name],
+                preserve_order=True,
             )
 
         # -----------------------------------------------------------
-        # 7. Fix startup event base body name
-        # -----------------------------------------------------------
-        if hasattr(self, "events") and getattr(self, "events", None) is not None:
-            event_base_com = getattr(self.events, "base_com", None)
-            if event_base_com is not None and hasattr(event_base_com, "params"):
-                if event_base_com.params is None:
-                    event_base_com.params = {}
-                event_base_com.params["asset_cfg"] = SceneEntityCfg(
-                    "robot",
-                    body_names=[base_link_name],
-                    preserve_order=True,
-                )
-                print(
-                    f"[DEBUG] Patched startup event term 'base_com' to use body '{base_link_name}'"
-                )
-
-        # -----------------------------------------------------------
-        # 8. Rewards & terminations use short names only
+        # 9. Rewards & terminations use short names only
         # -----------------------------------------------------------
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
 
-        print("[DEBUG] Feet link names for reward:", ankle_names)
-        print("[DEBUG] Base contact link:", base_link_name)
-
         # -----------------------------------------------------------
-        # 9. Reduce terrain size if terrain generator exists
-        # -----------------------------------------------------------
-        if hasattr(self.scene, "terrain") and self.scene.terrain is not None:
-            terrain_cfg = self.scene.terrain
-            terrain_gen = getattr(terrain_cfg, "terrain_generator", None)
-            if terrain_gen is not None:
-                print("[DEBUG] Original terrain generator:", terrain_gen)
-
-                terrain_scale = 0.5
-
-                for attr in [
-                    "size",
-                    "border_width",
-                    "horizontal_scale",
-                    "vertical_scale",
-                ]:
-                    if hasattr(terrain_gen, attr):
-                        val = getattr(terrain_gen, attr)
-                        if isinstance(val, (int, float)):
-                            setattr(terrain_gen, attr, val * terrain_scale)
-                        elif isinstance(val, tuple) and len(val) == 2:
-                            setattr(
-                                terrain_gen,
-                                attr,
-                                (val[0] * terrain_scale, val[1] * terrain_scale),
-                            )
-
-                sub_terrains = getattr(terrain_gen, "sub_terrains", None)
-                if sub_terrains:
-                    for _, cfg in sub_terrains.items():
-                        for attr in [
-                            "step_height_range",
-                            "platform_width",
-                            "platform_width_range",
-                            "stone_width_range",
-                            "stone_distance_range",
-                            "noise_range",
-                        ]:
-                            if hasattr(cfg, attr):
-                                val = getattr(cfg, attr)
-                                if isinstance(val, (int, float)):
-                                    setattr(cfg, attr, val * terrain_scale)
-                                elif isinstance(val, tuple) and len(val) == 2:
-                                    lo, hi = val
-                                    setattr(
-                                        cfg,
-                                        attr,
-                                        (lo * terrain_scale, hi * terrain_scale),
-                                    )
-
-        # -----------------------------------------------------------
-        # 10. Randomize events
+        # 10. Randomization events
         # -----------------------------------------------------------
         self.events.physics_material.params["asset_cfg"].body_names = ankle_names
         self.events.physics_material.params["static_friction_range"] = (0.1, 1.0)
         self.events.physics_material.params["dynamic_friction_range"] = (0.1, 1.0)
+
         self.events.add_base_mass.params["asset_cfg"].body_names = [base_link_name]
         self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 1.0)
+
         self.events.base_com.params["asset_cfg"].body_names = [base_link_name]
         self.events.base_com.params["com_range"] = {
             "x": (-0.02, 0.02),
             "y": (-0.02, 0.02),
             "z": (-0.02, 0.02),
         }
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [
-            base_link_name
-        ]
+
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
         self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
         self.events.base_external_force_torque.params["torque_range"] = (-0.8, 0.8)
+
         self.events.push_robot.params["velocity_range"] = {
             "x": (-0.2, 0.2),
             "y": (-0.2, 0.2),
         }
         self.events.push_robot.interval_range_s = (5.0, 20.0)
 
-        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
         self.events.reset_base.params = {
             "pose_range": {
                 "x": (-0.5, 0.5),
@@ -607,7 +869,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             },
         }
 
-        # Rewards
+        # -----------------------------------------------------------
+        # 11. Rewards
+        # -----------------------------------------------------------
         self.rewards.dof_pos_limits = None
         self.rewards.lin_vel_z_l2 = RewTerm(
             func=canele_rewards_link.lin_vel_z_l2, weight=-0.2
@@ -623,12 +887,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-1.0e-9,
             params={"dt": self.decimation * self.sim.dt},
         )
-        self.rewards.dof_vel_l2 = RewTerm(
-            func=canele_rewards_joint.joint_action_vel_l2,
-            weight=-1.0e-6,
-            params={"dt": self.decimation * self.sim.dt},
-        )
-
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
@@ -637,23 +895,23 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "left_hip_roll",
                 "left_hip_pitch",
                 "left_knee_pitch",
-                "left_ankle_pitch",
-                "left_ankle_roll",
                 "right_hip_yaw",
                 "right_hip_roll",
                 "right_hip_pitch",
                 "right_knee_pitch",
-                "right_ankle_pitch",
-                "right_ankle_roll",
             ],
         )
 
-        # Commands
+        # -----------------------------------------------------------
+        # 12. Commands
+        # -----------------------------------------------------------
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.6, 0.6)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.2, 1.2)
 
-        # terminations
+        # -----------------------------------------------------------
+        # 13. Terminations
+        # -----------------------------------------------------------
         self.terminations.base_contact = None
 
         self.terminations.detect_fall = DoneTerm(
@@ -729,6 +987,7 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.6, 0.6)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.2, 1.2)
+
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
             "velocity_range": {
@@ -740,12 +999,12 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
                 "yaw": (0.0, 0.0),
             },
         }
+
         self.scene.height_scanner = None
         if hasattr(self.observations.policy, "height_scan"):
             self.observations.policy.height_scan = None
 
         self.observations.policy.enable_corruption = False
-
         self.events.base_external_force_torque = None
         self.events.push_robot = None
 

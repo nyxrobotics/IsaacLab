@@ -262,17 +262,17 @@ class CaneleRewards(RewardsCfg):
             )
         },
     )
-    flat_toe_penalty = RewTerm(
-        func=canele_rewards_link.flat_orientation_links_l2,
-        weight=0.1,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot", body_names=["right_toe_link", "left_toe_link"]
-            ),
-            "margin": 0.0,
-            "gain": 1.0,
-        },
-    )
+    # flat_toe_penalty = RewTerm(
+    #     func=canele_rewards_link.flat_orientation_links_l2,
+    #     weight=0.1,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot", body_names=["right_toe_link", "left_toe_link"]
+    #         ),
+    #         "margin": 0.0,
+    #         "gain": 1.0,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------
@@ -563,6 +563,12 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             weight=-1.0e-9,
             params={"dt": self.decimation * self.sim.dt},
         )
+        self.rewards.dof_vel_l2 = RewTerm(
+            func=canele_rewards_joint.joint_action_vel_l2,
+            weight=-1.0e-6,
+            params={"dt": self.decimation * self.sim.dt},
+        )
+
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
@@ -571,10 +577,14 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "left_hip_roll",
                 "left_hip_pitch",
                 "left_knee_pitch",
+                "left_ankle_pitch",
+                "left_ankle_roll",
                 "right_hip_yaw",
                 "right_hip_roll",
                 "right_hip_pitch",
                 "right_knee_pitch",
+                "right_ankle_pitch",
+                "right_ankle_roll",
             ],
         )
 

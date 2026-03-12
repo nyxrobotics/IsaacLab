@@ -26,7 +26,7 @@ from .rewards import canele_rewards_env
 from .rewards import canele_rewards_walk
 from .rewards import canele_rewards_joint
 from .rewards import canele_rewards_link
-
+from .io_descriptors import history_observation_descriptor
 
 # For USD prim inspection
 from pxr import Usd
@@ -69,12 +69,16 @@ def _get_history_buffer(env, attr_name: str, feature_dim: int) -> torch.Tensor:
     return hist
 
 
-def _update_history(env, attr_name: str, values: torch.Tensor, *, init_with_current: bool) -> torch.Tensor:
+def _update_history(
+    env, attr_name: str, values: torch.Tensor, *, init_with_current: bool
+) -> torch.Tensor:
     """Append current values to a 4-step per-env history buffer."""
     hist = _get_history_buffer(env, attr_name, int(values.shape[-1]))
     env_step_count = getattr(env, "episode_length_buf", None)
     if env_step_count is None:
-        reset_mask = torch.zeros(values.shape[0], dtype=torch.bool, device=values.device)
+        reset_mask = torch.zeros(
+            values.shape[0], dtype=torch.bool, device=values.device
+        )
     else:
         reset_mask = env_step_count == 0
 
@@ -92,12 +96,23 @@ def _update_history(env, attr_name: str, values: torch.Tensor, *, init_with_curr
     return hist.reshape(values.shape[0], -1)
 
 
-def _normalize_joint_positions(joint_pos: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+def _normalize_joint_positions(
+    joint_pos: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor
+) -> torch.Tensor:
     denom = (upper - lower).clamp_min(1.0e-6)
     return 2.0 * (joint_pos - lower) / denom - 1.0
 
 
+@history_observation_descriptor(
+    observation_type="CommandHistory",
+    terms_per_step=3,
+    history_length=4,
+    units="normalized",
+    source="base_velocity command [lin_vel_x, lin_vel_y, ang_vel_z]",
+    normalization="minmax_to_minus1_plus1",
+)
 def canele_obs_cmd_vel_history(env) -> torch.Tensor:
+    """Flattened 4-step history of normalized base velocity commands [vx, vy, wz]."""
     commands = env.command_manager.get_command("base_velocity")[:, :3]
     cmd_cfg = env.cfg.commands.base_velocity.ranges
     cmd_min = torch.tensor(
@@ -111,10 +126,24 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
         dtype=commands.dtype,
     )
     cmd_norm = 2.0 * (commands - cmd_min) / (cmd_max - cmd_min).clamp_min(1.0e-6) - 1.0
-    return _update_history(env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True)
+    return _update_history(
+        env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True
+    )
 
 
-def canele_obs_projected_gravity_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+@history_observation_descriptor(
+    observation_type="IMUHistory",
+    terms_per_step=2,
+    history_length=4,
+    units="normalized",
+    axes=["gravity_x", "gravity_y"],
+    source="projected_gravity_b[:2]",
+    normalization="clamp_to_minus1_plus1",
+)
+def canele_obs_projected_gravity_history(
+    env, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Flattened 4-step history of projected gravity x/y components in the body frame."""
     asset = env.scene[asset_cfg.name]
     projected_gravity = asset.data.projected_gravity_b[:, :2]
     gravity_xy = projected_gravity.clamp(-1.0, 1.0)
@@ -126,7 +155,17 @@ def canele_obs_projected_gravity_history(env, asset_cfg: SceneEntityCfg) -> torc
     )
 
 
+@history_observation_descriptor(
+    observation_type="IMUHistory",
+    terms_per_step=3,
+    history_length=4,
+    units="normalized",
+    axes=["wx", "wy", "wz"],
+    source="root_ang_vel_b",
+    normalization="clamp(-2,2)/2",
+)
 def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Flattened 4-step history of normalized base angular velocity [wx, wy, wz]."""
     asset = env.scene[asset_cfg.name]
     angular_vel = asset.data.root_ang_vel_b[:, :3]
     angular_vel = angular_vel.clamp(-2.0, 2.0) / 2.0
@@ -138,13 +177,20 @@ def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     )
 
 
-def canele_obs_action_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
-    asset = env.scene[asset_cfg.name]
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    lower = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
-    upper = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]
-    joint_pos_norm = _normalize_joint_positions(joint_pos, lower, upper).clamp(-1.0, 1.0)
-    return _update_history(env, "_canele_action_hist", joint_pos_norm, init_with_current=True)
+@history_observation_descriptor(
+    observation_type="ActionHistory",
+    terms_per_step=13,
+    history_length=4,
+    units="normalized",
+    source="env.action_manager.action for the actuated joints",
+    normalization="policy_action_clamped_to_minus1_plus1",
+    include_joint_names=True,
+)
+def canele_obs_action_history(env) -> torch.Tensor:
+    """Flattened 4-step history of previous policy actions."""
+    action = env.action_manager.action
+    action = action.clamp(-1.0, 1.0)
+    return _update_history(env, "_canele_action_hist", action, init_with_current=True)
 
 
 # ---------------------------------------------------------------------
@@ -262,17 +308,17 @@ class CaneleRewards(RewardsCfg):
             )
         },
     )
-    # flat_toe_penalty = RewTerm(
-    #     func=canele_rewards_link.flat_orientation_links_l2,
-    #     weight=0.1,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot", body_names=["right_toe_link", "left_toe_link"]
-    #         ),
-    #         "margin": 0.0,
-    #         "gain": 1.0,
-    #     },
-    # )
+    flat_toe_penalty = RewTerm(
+        func=canele_rewards_link.flat_orientation_links_l2,
+        weight=0.1,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["right_toe_link", "left_toe_link"]
+            ),
+            "margin": 0.0,
+            "gain": 1.0,
+        },
+    )
 
 
 # ---------------------------------------------------------------------
@@ -423,7 +469,6 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             )
             policy_obs.action_history = ObsTerm(
                 func=canele_obs_action_history,
-                params={"asset_cfg": _make_actuated_asset_cfg()},
             )
             print(
                 "[DEBUG] Replaced policy observations with cmd_vel/projected_gravity/ang_vel/action 4-step histories"
@@ -433,8 +478,12 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # 6. Update reset config
         # -----------------------------------------------------------
         if getattr(self.events, "reset_robot_joints", None) is not None:
-            self.events.reset_robot_joints.params["asset_cfg"] = _make_actuated_asset_cfg()
-            print("[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg")
+            self.events.reset_robot_joints.params["asset_cfg"] = (
+                _make_actuated_asset_cfg()
+            )
+            print(
+                "[DEBUG] Updated 'reset_robot_joints' event to use actuated asset_cfg"
+            )
 
         # -----------------------------------------------------------
         # 7. Fix startup event base body name
@@ -473,7 +522,12 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
                 terrain_scale = 0.5
 
-                for attr in ["size", "border_width", "horizontal_scale", "vertical_scale"]:
+                for attr in [
+                    "size",
+                    "border_width",
+                    "horizontal_scale",
+                    "vertical_scale",
+                ]:
                     if hasattr(terrain_gen, attr):
                         val = getattr(terrain_gen, attr)
                         if isinstance(val, (int, float)):
@@ -502,7 +556,11 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                                     setattr(cfg, attr, val * terrain_scale)
                                 elif isinstance(val, tuple) and len(val) == 2:
                                     lo, hi = val
-                                    setattr(cfg, attr, (lo * terrain_scale, hi * terrain_scale))
+                                    setattr(
+                                        cfg,
+                                        attr,
+                                        (lo * terrain_scale, hi * terrain_scale),
+                                    )
 
         # -----------------------------------------------------------
         # 10. Randomize events
@@ -518,7 +576,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             "y": (-0.02, 0.02),
             "z": (-0.02, 0.02),
         }
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = [
+            base_link_name
+        ]
         self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
         self.events.base_external_force_torque.params["torque_range"] = (-0.8, 0.8)
         self.events.push_robot.params["velocity_range"] = {

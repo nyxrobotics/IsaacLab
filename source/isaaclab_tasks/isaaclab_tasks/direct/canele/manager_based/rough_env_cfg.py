@@ -94,12 +94,16 @@ def _get_history_buffer(env, attr_name: str, feature_dim: int) -> torch.Tensor:
     return hist
 
 
-def _update_history(env, attr_name: str, values: torch.Tensor, *, init_with_current: bool) -> torch.Tensor:
+def _update_history(
+    env, attr_name: str, values: torch.Tensor, *, init_with_current: bool
+) -> torch.Tensor:
     """Append current values to a 4-step per-env history buffer."""
     hist = _get_history_buffer(env, attr_name, int(values.shape[-1]))
     env_step_count = getattr(env, "episode_length_buf", None)
     if env_step_count is None:
-        reset_mask = torch.zeros(values.shape[0], dtype=torch.bool, device=values.device)
+        reset_mask = torch.zeros(
+            values.shape[0], dtype=torch.bool, device=values.device
+        )
     else:
         reset_mask = env_step_count == 0
 
@@ -136,9 +140,13 @@ def _ensure_env_buffer(
         or buf.dtype != dtype
     ):
         if dtype.is_floating_point:
-            buf = torch.full(expected_shape, float(fill_value), device=env.device, dtype=dtype)
+            buf = torch.full(
+                expected_shape, float(fill_value), device=env.device, dtype=dtype
+            )
         else:
-            buf = torch.full(expected_shape, int(fill_value), device=env.device, dtype=dtype)
+            buf = torch.full(
+                expected_shape, int(fill_value), device=env.device, dtype=dtype
+            )
         setattr(env, attr_name, buf)
     return buf
 
@@ -183,7 +191,9 @@ def _match_values(
     raise TypeError(f"Unsupported value type for joint mapping: {type(value)}")
 
 
-def _get_joint_limits_for_ids(asset, joint_ids: list[int], device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def _get_joint_limits_for_ids(
+    asset, joint_ids: list[int], device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return lower and upper soft joint limits for the selected joints."""
     limits = asset.data.soft_joint_pos_limits
     if limits.dim() == 3:
@@ -195,7 +205,9 @@ def _get_joint_limits_for_ids(asset, joint_ids: list[int], device: torch.device)
     return lower, upper
 
 
-def _get_current_joint_effort_limits(asset, joint_ids: torch.Tensor, device: torch.device) -> torch.Tensor:
+def _get_current_joint_effort_limits(
+    asset, joint_ids: torch.Tensor, device: torch.device
+) -> torch.Tensor:
     """Return current per-joint effort limits from the runtime articulation interface."""
     if hasattr(asset, "root_physx_view") and asset.root_physx_view is not None:
         view = asset.root_physx_view
@@ -208,7 +220,10 @@ def _get_current_joint_effort_limits(asset, joint_ids: torch.Tensor, device: tor
                 effort = effort[joint_ids]
             return effort
 
-    if hasattr(asset.data, "joint_effort_limits") and asset.data.joint_effort_limits is not None:
+    if (
+        hasattr(asset.data, "joint_effort_limits")
+        and asset.data.joint_effort_limits is not None
+    ):
         effort = asset.data.joint_effort_limits
         if effort.dim() == 2:
             return effort[0, joint_ids].to(device=device)
@@ -247,16 +262,28 @@ def randomize_joint_drive_parameters(
     n_reset = int(env_ids.shape[0])
     n_joints = int(joint_ids.shape[0])
 
-    friction = torch.empty((n_reset, n_joints), device=env.device).uniform_(*friction_range)
-    damping = torch.empty((n_reset, n_joints), device=env.device).uniform_(*damping_range)
-    backlash = torch.empty((n_reset, n_joints), device=env.device).uniform_(*backlash_range_rad)
+    friction = torch.empty((n_reset, n_joints), device=env.device).uniform_(
+        *friction_range
+    )
+    damping = torch.empty((n_reset, n_joints), device=env.device).uniform_(
+        *damping_range
+    )
+    backlash = torch.empty((n_reset, n_joints), device=env.device).uniform_(
+        *backlash_range_rad
+    )
 
     base_effort_limit = _get_current_joint_effort_limits(asset, joint_ids, env.device)
-    effort_ratio = torch.empty((n_reset, n_joints), device=env.device).uniform_(*effort_limit_ratio_range)
+    effort_ratio = torch.empty((n_reset, n_joints), device=env.device).uniform_(
+        *effort_limit_ratio_range
+    )
     effort_limit = effort_ratio * base_effort_limit.unsqueeze(0)
 
-    asset.write_joint_friction_coefficient_to_sim(friction, joint_ids=joint_ids, env_ids=env_ids)
-    asset.write_joint_effort_limit_to_sim(effort_limit, joint_ids=joint_ids, env_ids=env_ids)
+    asset.write_joint_friction_coefficient_to_sim(
+        friction, joint_ids=joint_ids, env_ids=env_ids
+    )
+    asset.write_joint_effort_limit_to_sim(
+        effort_limit, joint_ids=joint_ids, env_ids=env_ids
+    )
     asset.write_joint_damping_to_sim(damping, joint_ids=joint_ids, env_ids=env_ids)
 
     env_backlash = _ensure_env_buffer(env, "_canele_joint_backlash_rad", (n_joints,))
@@ -276,29 +303,46 @@ class DelayedBacklashJointPositionAction(ActionTerm):
         self._device = env.device
         self._action_dim = len(self._joint_ids)
 
-        self._raw_actions = torch.zeros(self._num_envs, self._action_dim, device=self._device)
+        self._raw_actions = torch.zeros(
+            self._num_envs, self._action_dim, device=self._device
+        )
         self._processed_actions = torch.zeros_like(self._raw_actions)
         self._pending_target = torch.zeros_like(self._raw_actions)
         self._last_applied_target = torch.zeros_like(self._raw_actions)
         self._gear_position = torch.zeros_like(self._raw_actions)
         self._last_direction = torch.zeros_like(self._raw_actions)
-        self._delay_counter = torch.zeros(self._num_envs, device=self._device, dtype=torch.long)
-        self._delay_steps = torch.zeros(self._num_envs, device=self._device, dtype=torch.long)
+        self._delay_counter = torch.zeros(
+            self._num_envs, device=self._device, dtype=torch.long
+        )
+        self._delay_steps = torch.zeros(
+            self._num_envs, device=self._device, dtype=torch.long
+        )
 
         self._lower_limits, self._upper_limits = _get_joint_limits_for_ids(
             self._asset, self._joint_ids, self._device
         )
 
-        self._scale = _match_values(self._joint_names, cfg.scale, default=1.0).to(self._device)
+        self._scale = _match_values(self._joint_names, cfg.scale, default=1.0).to(
+            self._device
+        )
         if cfg.offset is not None:
-            self._offset = _match_values(self._joint_names, cfg.offset, default=0.0).to(self._device)
+            self._offset = _match_values(self._joint_names, cfg.offset, default=0.0).to(
+                self._device
+            )
         elif cfg.use_default_offset:
-            self._offset = self._asset.data.default_joint_pos[0, self._joint_ids].detach().clone().to(self._device)
+            self._offset = (
+                self._asset.data.default_joint_pos[0, self._joint_ids]
+                .detach()
+                .clone()
+                .to(self._device)
+            )
         else:
             self._offset = torch.zeros(self._action_dim, device=self._device)
 
         self._default_backlash = torch.full(
-            (self._num_envs, self._action_dim), cfg.backlash_default_rad, device=self._device
+            (self._num_envs, self._action_dim),
+            cfg.backlash_default_rad,
+            device=self._device,
         )
         self.reset()
 
@@ -336,7 +380,10 @@ class DelayedBacklashJointPositionAction(ActionTerm):
         self._processed_actions[:] = clipped
 
         target = clipped * self._scale.unsqueeze(0) + self._offset.unsqueeze(0)
-        target = torch.max(torch.min(target, self._upper_limits.unsqueeze(0)), self._lower_limits.unsqueeze(0))
+        target = torch.max(
+            torch.min(target, self._upper_limits.unsqueeze(0)),
+            self._lower_limits.unsqueeze(0),
+        )
         self._pending_target[:] = target
 
         self._delay_counter.zero_()
@@ -366,7 +413,9 @@ class DelayedBacklashJointPositionAction(ActionTerm):
 
         delta = active_target - self._gear_position
         direction = torch.sign(delta)
-        direction_changed = (direction != self._last_direction) & (self._last_direction != 0)
+        direction_changed = (direction != self._last_direction) & (
+            self._last_direction != 0
+        )
 
         movement = torch.where(
             direction_changed,
@@ -377,7 +426,9 @@ class DelayedBacklashJointPositionAction(ActionTerm):
         self._gear_position += movement
         self._last_direction = torch.where(delta != 0, direction, self._last_direction)
 
-        noisy_target = _apply_gaussian_noise(self._gear_position, self.cfg.actuator_noise_std_rad)
+        noisy_target = _apply_gaussian_noise(
+            self._gear_position, self.cfg.actuator_noise_std_rad
+        )
         noisy_target = torch.max(
             torch.min(noisy_target, self._upper_limits.unsqueeze(0)),
             self._lower_limits.unsqueeze(0),
@@ -433,7 +484,9 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
         dtype=commands.dtype,
     )
     cmd_norm = 2.0 * (commands - cmd_min) / (cmd_max - cmd_min).clamp_min(1.0e-6) - 1.0
-    return _update_history(env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True)
+    return _update_history(
+        env, "_canele_cmd_vel_hist", cmd_norm, init_with_current=True
+    )
 
 
 @history_observation_descriptor(
@@ -445,13 +498,19 @@ def canele_obs_cmd_vel_history(env) -> torch.Tensor:
     source="projected_gravity_b[:2] with additive IMU orientation noise",
     normalization="clamp_to_minus1_plus1",
 )
-def canele_obs_projected_gravity_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+def canele_obs_projected_gravity_history(
+    env, asset_cfg: SceneEntityCfg
+) -> torch.Tensor:
     """Flattened 4-step history of projected gravity x/y with IMU orientation noise."""
     asset = env.scene[asset_cfg.name]
     projected_gravity = asset.data.projected_gravity_b[:, :2]
-    projected_gravity = _apply_gaussian_noise(projected_gravity, IMU_ORIENTATION_NOISE_STD)
+    projected_gravity = _apply_gaussian_noise(
+        projected_gravity, IMU_ORIENTATION_NOISE_STD
+    )
     gravity_xy = projected_gravity.clamp(-1.0, 1.0)
-    return _update_history(env, "_canele_projected_gravity_hist", gravity_xy, init_with_current=False)
+    return _update_history(
+        env, "_canele_projected_gravity_hist", gravity_xy, init_with_current=False
+    )
 
 
 @history_observation_descriptor(
@@ -469,7 +528,9 @@ def canele_obs_ang_vel_history(env, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     angular_vel = asset.data.root_ang_vel_b[:, :3]
     angular_vel = _apply_gaussian_noise(angular_vel, IMU_GYRO_NOISE_STD)
     angular_vel = angular_vel.clamp(-2.0, 2.0) / 2.0
-    return _update_history(env, "_canele_ang_vel_hist", angular_vel, init_with_current=False)
+    return _update_history(
+        env, "_canele_ang_vel_hist", angular_vel, init_with_current=False
+    )
 
 
 @history_observation_descriptor(
@@ -499,7 +560,9 @@ class CaneleRewards(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "std": 0.5,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_toe_link", "left_toe_link"]),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["right_toe_link", "left_toe_link"]
+            ),
             "contact_time_eps": 1.0e-3,
             "force_eps": 1.0e-3,
         },
@@ -510,7 +573,9 @@ class CaneleRewards(RewardsCfg):
         params={
             "command_name": "base_velocity",
             "std": 0.5,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_toe_link", "left_toe_link"]),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["right_toe_link", "left_toe_link"]
+            ),
             "contact_time_eps": 1.0e-3,
             "force_eps": 1.0e-3,
         },
@@ -520,7 +585,9 @@ class CaneleRewards(RewardsCfg):
         weight=1.0,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_toe_link", "left_toe_link"]),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["right_toe_link", "left_toe_link"]
+            ),
             "linear_cmd_threshold": 0.0,
             "angular_cmd_threshold": 0.0,
             "body_tilt_threshold": 0.0,
@@ -538,8 +605,12 @@ class CaneleRewards(RewardsCfg):
         func=canele_rewards_walk.feet_slide_keep_flat,
         weight=-0.1,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["right_toe_link", "left_toe_link"]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=["right_toe_link", "left_toe_link"]),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["right_toe_link", "left_toe_link"]
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["right_toe_link", "left_toe_link"]
+            ),
             "air_time_eps": 0.02,
         },
     )
@@ -549,20 +620,31 @@ class CaneleRewards(RewardsCfg):
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                joint_names=["left_hip_roll", "left_hip_pitch", "right_hip_roll", "right_hip_pitch"],
+                joint_names=[
+                    "left_hip_roll",
+                    "left_hip_pitch",
+                    "right_hip_roll",
+                    "right_hip_pitch",
+                ],
             )
         },
     )
     joint_deviation_torso = RewTerm(
         func=canele_rewards_joint.joint_action_deviation_l1,
         weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_hip_yaw", "right_hip_yaw", "torso_yaw"])} ,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["left_hip_yaw", "right_hip_yaw", "torso_yaw"]
+            )
+        },
     )
     flat_toe_penalty = RewTerm(
         func=canele_rewards_link.flat_orientation_links_l2,
         weight=0.1,
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=["right_toe_link", "left_toe_link"]),
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["right_toe_link", "left_toe_link"]
+            ),
             "margin": 0.0,
             "gain": 1.0,
         },
@@ -607,21 +689,45 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             for actuator_cfg in self.scene.robot.actuators.values():
                 actuated_joint_names.extend(list(actuator_cfg.joint_names_expr))
         except Exception as exc:
-            print("[DEBUG] Failed to collect actuated joints from robot.actuators:", exc)
+            print(
+                "[DEBUG] Failed to collect actuated joints from robot.actuators:", exc
+            )
 
         seen = set()
-        actuated_joint_names = [joint_name for joint_name in actuated_joint_names if not (joint_name in seen or seen.add(joint_name))]
+        actuated_joint_names = [
+            joint_name
+            for joint_name in actuated_joint_names
+            if not (joint_name in seen or seen.add(joint_name))
+        ]
 
         arm_joints = [
-            "left_shoulder_yaw", "left_shoulder_pitch", "left_shoulder_roll", "left_elbow_yaw",
-            "left_elbow_pitch", "left_wrist_yaw", "left_wrist_roll", "left_wrist_pitch",
-            "right_shoulder_yaw", "right_shoulder_pitch", "right_shoulder_roll", "right_elbow_yaw",
-            "right_elbow_pitch", "right_wrist_yaw", "right_wrist_roll", "right_wrist_pitch",
+            "left_shoulder_yaw",
+            "left_shoulder_pitch",
+            "left_shoulder_roll",
+            "left_elbow_yaw",
+            "left_elbow_pitch",
+            "left_wrist_yaw",
+            "left_wrist_roll",
+            "left_wrist_pitch",
+            "right_shoulder_yaw",
+            "right_shoulder_pitch",
+            "right_shoulder_roll",
+            "right_elbow_yaw",
+            "right_elbow_pitch",
+            "right_wrist_yaw",
+            "right_wrist_roll",
+            "right_wrist_pitch",
         ]
-        actuated_joint_names = [joint_name for joint_name in actuated_joint_names if joint_name not in arm_joints]
+        actuated_joint_names = [
+            joint_name
+            for joint_name in actuated_joint_names
+            if joint_name not in arm_joints
+        ]
 
         def _make_actuated_asset_cfg() -> SceneEntityCfg:
-            return SceneEntityCfg("robot", joint_names=actuated_joint_names, preserve_order=True)
+            return SceneEntityCfg(
+                "robot", joint_names=actuated_joint_names, preserve_order=True
+            )
 
         if hasattr(self, "actions") and hasattr(self.actions, "joint_pos"):
             old_action_cfg = self.actions.joint_pos
@@ -639,7 +745,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
                 actuator_noise_std_rad=ACTUATOR_NOISE_STD_RAD,
                 backlash_default_rad=BACKLASH_DEFAULT_RAD,
             )
-            print("[DEBUG] Replaced joint_pos action term with delayed-backlash/noise model")
+            print(
+                "[DEBUG] Replaced joint_pos action term with delayed-backlash/noise model"
+            )
 
         if hasattr(self.observations, "policy"):
             policy_obs = self.observations.policy
@@ -659,8 +767,14 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             policy_obs.height_scan = None
 
             policy_obs.cmd_vel_history = ObsTerm(func=canele_obs_cmd_vel_history)
-            policy_obs.projected_gravity_history = ObsTerm(func=canele_obs_projected_gravity_history, params={"asset_cfg": SceneEntityCfg("robot")})
-            policy_obs.ang_vel_history = ObsTerm(func=canele_obs_ang_vel_history, params={"asset_cfg": SceneEntityCfg("robot")})
+            policy_obs.projected_gravity_history = ObsTerm(
+                func=canele_obs_projected_gravity_history,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
+            policy_obs.ang_vel_history = ObsTerm(
+                func=canele_obs_ang_vel_history,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            )
             policy_obs.action_history = ObsTerm(func=canele_obs_action_history)
             print("[DEBUG] Replaced policy observations with IMU/action histories")
 
@@ -685,7 +799,9 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         if event_base_com is not None and hasattr(event_base_com, "params"):
             if event_base_com.params is None:
                 event_base_com.params = {}
-            event_base_com.params["asset_cfg"] = SceneEntityCfg("robot", body_names=[base_link_name], preserve_order=True)
+            event_base_com.params["asset_cfg"] = SceneEntityCfg(
+                "robot", body_names=[base_link_name], preserve_order=True
+            )
 
         self.rewards.feet_slide.params["sensor_cfg"].body_names = ankle_names
         self.rewards.feet_slide.params["asset_cfg"].body_names = ankle_names
@@ -698,30 +814,51 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 1.0)
 
         self.events.base_com.params["asset_cfg"].body_names = [base_link_name]
-        self.events.base_com.params["com_range"] = {"x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.02, 0.02)}
+        self.events.base_com.params["com_range"] = {
+            "x": (-0.02, 0.02),
+            "y": (-0.02, 0.02),
+            "z": (-0.02, 0.02),
+        }
 
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [base_link_name]
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = [
+            base_link_name
+        ]
         self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
         self.events.base_external_force_torque.params["torque_range"] = (-0.8, 0.8)
 
-        self.events.push_robot.params["velocity_range"] = {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}
+        self.events.push_robot.params["velocity_range"] = {
+            "x": (-0.2, 0.2),
+            "y": (-0.2, 0.2),
+        }
         self.events.push_robot.interval_range_s = (5.0, 20.0)
 
         self.events.reset_base.params = {
             "pose_range": {
-                "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.0, 0.05),
-                "roll": (-0.1, 0.1), "pitch": (-0.1, 0.1), "yaw": (-3.14, 3.14),
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (0.0, 0.05),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-3.14, 3.14),
             },
             "velocity_range": {
-                "x": (-0.1, 0.1), "y": (-0.1, 0.1), "z": (-0.1, 0.1),
-                "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
+                "x": (-0.1, 0.1),
+                "y": (-0.1, 0.1),
+                "z": (-0.1, 0.1),
+                "roll": (-0.3, 0.3),
+                "pitch": (-0.3, 0.3),
+                "yaw": (-0.3, 0.3),
             },
         }
 
         self.rewards.dof_pos_limits = None
-        self.rewards.lin_vel_z_l2 = RewTerm(func=canele_rewards_link.lin_vel_z_l2, weight=-0.2)
+        self.rewards.lin_vel_z_l2 = RewTerm(
+            func=canele_rewards_link.lin_vel_z_l2, weight=-0.2
+        )
         self.rewards.undesired_contacts = None
-        self.rewards.flat_orientation_l2 = RewTerm(func=canele_rewards_link.flat_orientation_l2, weight=-1.0)
+        self.rewards.flat_orientation_l2 = RewTerm(
+            func=canele_rewards_link.flat_orientation_l2, weight=-1.0
+        )
         self.rewards.ang_vel_xy_l2.weight = -0.01
         self.rewards.action_rate_l2.weight = -0.01
         self.rewards.dof_acc_l2 = RewTerm(
@@ -733,8 +870,14 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[
-                "left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee_pitch",
-                "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee_pitch",
+                "left_hip_yaw",
+                "left_hip_roll",
+                "left_hip_pitch",
+                "left_knee_pitch",
+                "right_hip_yaw",
+                "right_hip_roll",
+                "right_hip_pitch",
+                "right_knee_pitch",
             ],
         )
 
@@ -745,24 +888,36 @@ class CaneleRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.base_contact = None
         self.terminations.detect_fall = DoneTerm(
             func=canele_terminations.detect_fall,
-            params={"limit_angle": 1.3, "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name])},
+            params={
+                "limit_angle": 1.3,
+                "asset_cfg": SceneEntityCfg("robot", body_names=[base_link_name]),
+            },
             time_out=False,
         )
 
         body_and_ankle_names = [base_link_name] + ankle_names
         self.terminations.detect_height_too_low_relative = DoneTerm(
             func=canele_terminations.detect_height_too_low_relative,
-            params={"min_height": 0.5, "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names)},
+            params={
+                "min_height": 0.5,
+                "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names),
+            },
             time_out=False,
         )
         self.terminations.detect_tilt = DoneTerm(
             func=canele_terminations.detect_tilt_too_high_any_link,
-            params={"max_tilt": 1.5, "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names)},
+            params={
+                "max_tilt": 1.5,
+                "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names),
+            },
             time_out=False,
         )
         self.terminations.support_plane_tilt = DoneTerm(
             func=canele_terminations.detect_support_plane_tilt_too_high,
-            params={"max_tilt": 1.3, "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names)},
+            params={
+                "max_tilt": 1.3,
+                "asset_cfg": SceneEntityCfg("robot", body_names=body_and_ankle_names),
+            },
             time_out=False,
         )
 
@@ -791,8 +946,12 @@ class CaneleRoughEnvCfg_PLAY(CaneleRoughEnvCfg):
         self.events.reset_base.params = {
             "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0, 0)},
             "velocity_range": {
-                "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
-                "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (0.0, 0.0),
             },
         }
 
